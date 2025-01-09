@@ -5,3 +5,4 @@ Logs
 DatabaseManager
 DataScrappingSessions
 ApplicationProgrammingInterface/api_v4a.py
+ApplicationProgrammingInterface/new_prediction_fetch_time_range.py

@@ -681,7 +681,7 @@ RAWALPINDI_DIVISION_MAPPING = {
 }
 
 GUJRANWALA_DIVISION_MAPPING = {
-    'Cantt': 'Civiline Division',
+    'Cantt': 'Civil Line Division',
     'Kamoke': 'Sadar Division',
     'Noushera Virka' : 'Sadar Division',
     'Wazirabad': 'Wazirabad Division',
@@ -689,23 +689,23 @@ GUJRANWALA_DIVISION_MAPPING = {
     'Kotwali' : 'City Division',
     'Khiali' : 'City Division',
     'Qila Dedar Singh' : 'City Division',
-    'Satellite Town' : 'Civiline Division',
-    'Peoples Colony' : 'Civiline Division'
+    'Satellite Town' : 'Civil Line Division',
+    'Peoples Colony' : 'Civil Line Division'
 }
 
 
 FAISALABAD_DIVISION_MAPPING = {
     'Jarranwala' : 'Jarranwala Division',
     'Gulberg' : 'Lyallpur Division',
-    'Sargodha Road' : 'Madina Division',
+    'Sargodha Road' : 'Madina Town Division',
     'Tandlianwala' : 'Sadar Division',
-    'Batala Colony' : 'Iqbal Division' ,
-    'Sadar F/abad' : 'Iqbal Division',
+    'Batala Colony' : 'Iqbal Town Division' ,
+    'Sadar F/abad' : 'Iqbal Town Division',
     'Kotwali' : 'Lyallpur Division',
-    'Nishatabad' : 'Madina Division',
-    'Factory Area' : 'Iqbal Division',
+    'Nishatabad' : 'Madina Town Division',
+    'Factory Area' : 'Iqbal Town Division',
     'Civil Lines' : 'Lyallpur Division',
-    'People Colony' : 'Madina Division',
+    'People Colony' : 'Madina Town Division',
     'Khurrianwala' : 'Jarranwala Division',
     'Sammundri' : 'Sadar Division' ,
 }

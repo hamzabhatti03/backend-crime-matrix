@@ -485,6 +485,20 @@ def punjab_stats_dashboard():
                 category_avg_response_dict[category] = {}
             category_avg_response_dict[category] = f"{int(avg_time // 60)}:{int(avg_time % 60):02d}"
 
+        where_cond = ""
+        if view_role in [3,4]:
+            where_cond = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
+
+
+        processed_db_cursor.execute(f"""
+                                    SELECT SUM(negative)
+                                    FROM dist_feedback_count
+                                    Where 1=1
+                                    {where_cond}
+                                """)
+        row = processed_db_cursor.fetchone()
+        negative_feedback_count = row[0] if row is not None else 0
+
         dashboard_data = {
             'terrorist_act': {'count': terrorism, 'fir': terrorism_fir,
                               'fake/other': 0,
@@ -590,7 +604,8 @@ def punjab_stats_dashboard():
             'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses else 0,
             'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses else 0,
             'police_encounter': 0,
-            'environment_smog': 0
+            'environment_smog': 0,
+            'negative_feedbacks' : negative_feedback_count
         }
 
         response = {
@@ -3159,7 +3174,8 @@ def police_vehicle_locations():
 @jwt_required()
 def vwps_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    db_conn = db_config.get_vwps_db_connection()
+    db_cursor = db_conn.cursor()
     try:
         district_str = request.form.get('district')
         police_station_str = request.form.get('police_station')
@@ -3170,7 +3186,7 @@ def vwps_stats():
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
 
-        if not all([district_str, police_station_str,from_date,to_date]):
+        if not all([district_str, police_station_str, from_date, to_date]):
             return jsonify({
                 'status': False,
                 'message': 'Missing required parameters',
@@ -3199,35 +3215,47 @@ def vwps_stats():
         else:
             district_condition = ""
 
+        from_date_obj = datetime.strptime(from_date, '%Y-%m-%d')
+        to_date_obj = datetime.strptime(to_date, '%Y-%m-%d')
+
+        current_date_str = from_date_obj.strftime('%Y-%m-%d 00:00:00')
+        to_date_str = to_date_obj.strftime('%Y-%m-%d 23:59:59')
+
         vwps_query = f"""
-                SELECT 
-                    SUM(total_vwps),SUM(under_inquiry_vwps),
-                    SUM(escalated_vwps),SUM(fir_vwps),SUM(challan_vwps),SUM(resolved_vwps)
-                FROM
-                    combined_dashboards
-                WHERE 
-                    date(date) BETWEEN ? and ?
+               SELECT
+                    COUNT(*) AS total_vwps,
+                    SUM(CASE WHEN final_status_id = 8 THEN 1 ELSE 0 END +
+                        CASE WHEN final_status_id = 1 THEN 1 ELSE 0 END +
+                        CASE WHEN final_status_id = 7 THEN 1 ELSE 0 END) AS under_inquiry_vwps,
+                    COUNT(CASE WHEN final_status_id = 7 THEN 1 ELSE NULL END) AS escalated_vwps,
+                    SUM(CASE WHEN final_status_id = 2 THEN 1 ELSE 0 END +
+                        CASE WHEN final_status_id = 3 THEN 1 ELSE 0 END +
+                        CASE WHEN final_status_id IN (5, 9, 10, 11) THEN 1 ELSE 0 END) AS fir_vwps,
+                    SUM(CASE WHEN final_status_id IN (5, 9, 10, 11) THEN 1 ELSE 0 END) AS challan_vwps,
+                    SUM(CASE WHEN final_status_id = 6 THEN 1 ELSE 0 END) AS resolved_vwps
+                FROM case_final_status
+                WHERE created_at BETWEEN %s AND %s
+                    AND district_id IS NOT NULL
                     {district_condition}
                 """
-        processed_db_cursor.execute(vwps_query, (from_date, to_date))
-        (recieved_vwps_cases, under_inquiry_vwps_cases, escalated_vwps_cases,
-        fir_registered_vwps_cases, challan_submitted_vwps_cases, resolved_vwps_cases) = processed_db_cursor.fetchone()
+        db_cursor.execute(vwps_query, (current_date_str, to_date_str))
+        values = db_cursor.fetchone()
 
-        from_date_obj = datetime.strptime(from_date, '%Y-%m-%d')
-        to_date_obj = datetime.strptime(to_date,'%Y-%m-%d')
-
-        current_date_str = from_date_obj.strftime('%d-%m-%Y 00:00:00')
-        to_date_str = to_date_obj.strftime('%d-%m-%Y 23:59:59')
+        (received_vwps_cases, under_inquiry_vwps_cases, escalated_vwps_cases,
+         fir_registered_vwps_cases, challan_submitted_vwps_cases, resolved_vwps_cases) = [
+            str(val).encode('utf-8').decode('utf-8') if isinstance(val, Decimal) else val
+            for val in values
+        ]
 
         cases_query = f"""
-                    SELECT case_number, level3_case_nature, caller_name, phone_number,
-                        police_station, final_status_remarks, description, district, created_at
-                    FROM vwps_cases
-                    WHERE created_at BETWEEN ? AND ?
-                        {district_condition}
+                    SELECT pucar_case_number, level3_case_nature, pucar_caller_name, pucar_cli,
+                        pucar_police_station, final_status_remarks, pucar_cro_comments, pucar_district, created_at
+                    FROM case_final_status
+                    WHERE created_at BETWEEN %s AND %s
+                    {district_condition}
                 """
-        processed_db_cursor.execute(cases_query, (current_date_str, to_date_str))
-        cases = processed_db_cursor.fetchall()
+        db_cursor.execute(cases_query, (current_date_str, to_date_str))
+        cases = db_cursor.fetchall()
 
         cases_list = [
             {
@@ -3247,19 +3275,19 @@ def vwps_stats():
 
         response = {"status": "success",
                     "data": {
-                        'stats':{
-                        'recieved_cases': int(recieved_vwps_cases) if recieved_vwps_cases else 0,
-                        'under_inquiry_cases':int(under_inquiry_vwps_cases) if under_inquiry_vwps_cases else 0,
-                        'escalated_cases' :int(escalated_vwps_cases) if escalated_vwps_cases else 0,
-                        'fir_registered':int(fir_registered_vwps_cases) if fir_registered_vwps_cases else 0,
-                        'vwps_challan_count':int(challan_submitted_vwps_cases) if challan_submitted_vwps_cases else 0,
-                        'resolved_cases' : int(resolved_vwps_cases) if resolved_vwps_cases else 0
+                        'stats': {
+                            'recieved_cases': received_vwps_cases,
+                            'under_inquiry_cases': under_inquiry_vwps_cases,
+                            'escalated_cases': escalated_vwps_cases,
+                            'fir_registered': fir_registered_vwps_cases,
+                            'vwps_challan_count': challan_submitted_vwps_cases,
+                            'resolved_cases': resolved_vwps_cases
                         },
-                        'cases':cases_list,
+                        'cases': cases_list,
                     },
-                    "message": "VWPS STATS AND CASES fetched successfully",}
+                    "message": "VWPS STATS AND CASES fetched successfully", }
 
-        return jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -3578,10 +3606,14 @@ def crime_trends():
                     'message': "User not found"
                 }), 400
 
-        # Choose time grouping based on the time_period parameter
         if time_period == 'week':
-            time_grouping = "strftime('%Y-W%W', date)"  # Weekly
-        else:  # Default to 'month'
+            time_grouping = """
+            date(
+                date,
+                '-' || strftime('%w', date) || ' days'
+            )
+            """  # Weekly
+        else:
             time_grouping = "strftime('%Y-%m', date)"  # Monthly
 
         if selected_category:
@@ -3590,7 +3622,8 @@ def crime_trends():
             columns_to_sum = (
                 "SUM(dacoity) + SUM(burglary) + SUM(robbery_snatching) + "
                 "SUM(motorcycle_theft) + SUM(car_theft) + SUM(vehicle_theft) + "
-                "SUM(vehicle_snatching) + SUM(car_snatching) + SUM(motorcycle_snatching)"
+                "SUM(vehicle_snatching) + SUM(car_snatching) + SUM(motorcycle_snatching) +"
+                "SUM(murder) + SUM(firing) + SUM(sexual_assault) + SUM(kidnapping)"
             )
 
         query = f"""
@@ -3654,7 +3687,7 @@ def crime_trends():
         }), 500
 
 
-@app.route(configs.CALLER_FEEDBACK['ENDPOINT'], methods=[configs.CRIME_TRENDS['METHOD']])
+@app.route(configs.CALLER_FEEDBACK['ENDPOINT'], methods=[configs.CALLER_FEEDBACK['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
 @jwt_required()
@@ -3662,6 +3695,15 @@ def caller_feedback():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+
+        districts = district_str.split(",") if district_str else []
+
+        district_condition = ""
+        if view_role in [3, 4]:
+            district_condition = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
+
         processed_db_cursor.execute("""
                     SELECT accepted , dispatched , feedback , reopen ,closed , caller_feedback
                     FROM feedback_stats
@@ -3670,22 +3712,36 @@ def caller_feedback():
                 """)
         (accepted , dispatched , feedback , reopen ,closed , feedback_caller) = processed_db_cursor.fetchone()
 
-        processed_db_cursor.execute("""
-                            SELECT *
+        processed_db_cursor.execute(f"""
+                            SELECT district, positive, negative, not_responding
                             FROM dist_feedback_count
+                            Where 1=1
+                            {district_condition}
                         """)
 
         district_feedback_stats = processed_db_cursor.fetchall()
+
+        existing_stats = {row['district']: dict(row) for row in district_feedback_stats}
+
+        dist_stats = []
+        for district in districts:
+            dist_stats.append(
+                existing_stats.get(
+                    district,
+                    {
+                        "district": district,
+                        "positive": 0,
+                        "negative": 0,
+                        "not_responding": 0,
+                    },
+                )
+            )
+
         processed_db_conn.close()
 
-        if district_feedback_stats:
-            dist_stats = [dict(row) for row in district_feedback_stats]
-
-            total_positive = sum(row["positive"] for row in dist_stats)
-            total_negative = sum(row["negative"] for row in dist_stats)
-            total_not_responding = sum(row["not_responding"] for row in dist_stats)
-        else:
-            return jsonify({"success": False,"message": "No data found"}), 404
+        total_positive = sum(row["positive"] for row in dist_stats)
+        total_negative = sum(row["negative"] for row in dist_stats)
+        total_not_responding = sum(row["not_responding"] for row in dist_stats)
 
         response = {"status": "success",
                     "data": {

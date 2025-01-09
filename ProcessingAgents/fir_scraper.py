@@ -101,7 +101,7 @@ def fetch_and_store_all_data(start_date, end_date):
 
 # Run the script
 if __name__ == '__main__':
-    start_date = "2024-12-25"
+    start_date = "2025-01-06"
     end_date = "2025-01-07"
     initialize_database()
     fetch_and_store_all_data(start_date, end_date)
