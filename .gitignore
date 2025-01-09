@@ -1,0 +1,7 @@
+.venv
+.env
+.idea
+Logs
+DatabaseManager
+DataScrappingSessions
+ApplicationProgrammingInterface/api_v4a.py
