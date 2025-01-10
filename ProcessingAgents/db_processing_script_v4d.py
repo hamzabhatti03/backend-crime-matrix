@@ -1072,6 +1072,10 @@ def crime_trends_processing(db_conn):
                                 WHEN level3_case_nature = 'Motorcycle Snatching' THEN 'motorcycle_snatching'
                                 WHEN level3_case_nature = 'Car Snatching' THEN 'car_snatching'
                                 WHEN level2_case_nature in ('Vehicle Snatching') THEN 'vehicle_snatching'
+                                WHEN level2_case_nature = 'Murder' THEN 'murder'
+                                WHEN level2_case_nature =  'Kiddnapping / Abduction' THEN 'kidnapping'
+                                WHEN level2_case_nature =  'Sexual Assault' THEN 'sexual_assault'
+                                WHEN level3_case_nature = 'Aerial Firing' THEN 'firing'
                                 ELSE 'other'
                             END AS case_type
                         FROM `15_preprocessed`
@@ -1111,6 +1115,10 @@ def crime_trends_processing(db_conn):
                     'vehicle_snatching': 0,
                     'car_snatching': 0,
                     'motorcycle_snatching': 0,
+                    'murder' : 0,
+                    'kidnapping' : 0,
+                    'sexual_assault' : 0,
+                    'firing' : 0,
                     'other': 0
                 }
             results[(date, district_id, police_station)][case_type] += count
@@ -1127,8 +1135,8 @@ def insert_crime_trends(db_connection, results):
         INSERT OR REPLACE INTO crime_trends (
             date, police_station, district_id, burglary, robbery_snatching, 
             dacoity, motorcycle_theft, car_theft, vehicle_theft, vehicle_snatching,
-            car_snatching, motorcycle_snatching
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)
+            car_snatching, motorcycle_snatching, murder, kidnapping, sexual_assault, firing
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?)
         """
 
         # Define default values for each column
@@ -1141,7 +1149,11 @@ def insert_crime_trends(db_connection, results):
             'burglary': 0,
             'vehicle_snatching':0,
             'car_snatching' : 0,
-            'motorcycle_snatching' : 0
+            'motorcycle_snatching' : 0,
+            'murder': 0,
+            'kidnapping': 0,
+            'sexual_assault': 0,
+            'firing': 0,
         }
 
         for (date, district_id, police_station), result in results.items():
@@ -1157,7 +1169,8 @@ def insert_crime_trends(db_connection, results):
                 row['date'], row['police_station'], row['district_id'],
                 row['burglary'],row['robbery_snatching'], row['dacoity'],
                 row['motorcycle_theft'],row['car_theft'],row['vehicle_theft'],
-                row['vehicle_snatching'],row['car_snatching'],row['motorcycle_snatching']
+                row['vehicle_snatching'],row['car_snatching'],row['motorcycle_snatching'],
+                row['murder'], row['kidnapping'], row['sexual_assault'] ,row['firing']
             ))
 
         db_connection.commit()
@@ -1377,6 +1390,10 @@ def main(start_date, end_date, start):
                                vehicle_snatching INTEGER,
                                car_snatching INTEGER,
                                motorcycle_snatching INTEGER,
+                               murder INTEGER,
+                               sexual_assault INTEGER,
+                               firing INTEGER,
+                               kidnapping INTEGER,
                                PRIMARY KEY (date,district_id,police_station)
                    )
                    ''')

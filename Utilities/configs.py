@@ -181,12 +181,13 @@ CAP = ['Kidnapping for Ransom', 'Attempt to Kidnap / Abduct', 'Assault on Govt. 
        'Murder', 'Street Fight', 'Hurt / Injuries', 'Criminal Intimidation (Threat with Weapon)',
        'Male Kidnapping/ Abduction', 'Attempt to Murder', 'Other Assault']
 
+
 """MODULARITY OF API QUERIES"""
 # common columns that are frequently used
 PROCESSED_COLUMNS = [
     "total_calls", "siraiki", "punjabi", "potohari", "english", "traffic", "vwps",
     "app_alerts", "transfered", "call_backs", "video_calls", "estimated_response_time",
-    "succ_conf_calls", "unsucc_conf_calls", "vccs", "vcm", "generated_cases"
+    "succ_conf_calls","unsucc_conf_calls", "vccs", "vcm", "generated_cases"
 ]
 
 # Base query for processed_data table
@@ -201,7 +202,8 @@ AND district_id IS NOT NULL
 PROCESSED_COLUMNS_WITH_DISTRICT_ID = ["district_id"] + PROCESSED_COLUMNS
 PROCESSED_COLUMNS_WITH_DATE = ["date"] + PROCESSED_COLUMNS
 
-# common additional conditions
+
+#common additional conditions
 DATE_CONDITION = " date = ? "
 DATE_RANGE_CONDITION = " AND date BETWEEN ? AND ? "
 DATE_RANGE_EXTENDED_CONDITION = " AND (((date = ?) AND (hour BETWEEN '20' AND '23')) OR ((date = ?) AND (hour BETWEEN '00' AND '07'))) "
@@ -210,6 +212,7 @@ AGENT_CONDITION = " AND agent = ? "
 HOUR_RANGE_CONDITION = " AND hour BETWEEN '08' AND '19' "
 UNIX_DATETIME_CONDITION = " AND datetime(time_id, 'unixepoch','localtime') BETWEEN ? AND ?"
 UNIX_DATE_CONDITION = " AND DATE(datetime(time_id, 'unixepoch','localtime')) BETWEEN ? AND ?"
+
 
 """REGIONAL_RESPONSE_TIME_AVG QUERY COMPONENTS FOR DASHBOARD AND REPORTS"""
 # Base query components
@@ -254,6 +257,7 @@ AGENT_STATS_BASE_QUERY = """
         {group_by_str}
         {order_by_str}
 """
+
 
 AGENT_STATS_COMMON_COLUMNS = {
     "hoax_calls": "sum(hoax_calls) as hoax_calls",
@@ -691,32 +695,32 @@ RAWALPINDI_DIVISION_MAPPING = {
 }
 
 GUJRANWALA_DIVISION_MAPPING = {
-    'Cantt': 'Civiline Division',
+    'Cantt': 'Civil Line Division',
     'Kamoke': 'Sadar Division',
     'Noushera Virka': 'Sadar Division',
     'Wazirabad': 'Wazirabad Division',
-    'Model Town': 'City Division',
-    'Kotwali': 'City Division',
-    'Khiali': 'City Division',
-    'Qila Dedar Singh': 'City Division',
-    'Satellite Town': 'Civiline Division',
-    'Peoples Colony': 'Civiline Division'
+    'Model Town' : 'City Division',
+    'Kotwali' : 'City Division',
+    'Khiali' : 'City Division',
+    'Qila Dedar Singh' : 'City Division',
+    'Satellite Town' : 'Civil Line Division',
+    'Peoples Colony' : 'Civil Line Division'
 }
 
 FAISALABAD_DIVISION_MAPPING = {
-    'Jarranwala': 'Jarranwala Division',
-    'Gulberg': 'Lyallpur Division',
-    'Sargodha Road': 'Madina Division',
-    'Tandlianwala': 'Sadar Division',
-    'Batala Colony': 'Iqbal Division',
-    'Sadar F/abad': 'Iqbal Division',
-    'Kotwali': 'Lyallpur Division',
-    'Nishatabad': 'Madina Division',
-    'Factory Area': 'Iqbal Division',
-    'Civil Lines': 'Lyallpur Division',
-    'People Colony': 'Madina Division',
-    'Khurrianwala': 'Jarranwala Division',
-    'Sammundri': 'Sadar Division',
+    'Jarranwala' : 'Jarranwala Division',
+    'Gulberg' : 'Lyallpur Division',
+    'Sargodha Road' : 'Madina Town Division',
+    'Tandlianwala' : 'Sadar Division',
+    'Batala Colony' : 'Iqbal Town Division' ,
+    'Sadar F/abad' : 'Iqbal Town Division',
+    'Kotwali' : 'Lyallpur Division',
+    'Nishatabad' : 'Madina Town Division',
+    'Factory Area' : 'Iqbal Town Division',
+    'Civil Lines' : 'Lyallpur Division',
+    'People Colony' : 'Madina Town Division',
+    'Khurrianwala' : 'Jarranwala Division',
+    'Sammundri' : 'Sadar Division' ,
 }
 
 # Define API endpoints
