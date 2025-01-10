@@ -13,7 +13,7 @@ ONE_TIME_RUN = True
 
 """ALLOWED IPs for API REQUESTS"""
 WHITE_LISTED_IPS = ['10.22.15.235', '10.20.170.151', '10.20.170.219', '10.20.170.232', '10.22.15.119', '10.20.12.146',
-                    '10.20.12.157', '10.21.63.149','10.22.16.245'] #'10.22.15.91'
+                    '10.20.12.157', '10.21.63.149', '10.22.16.245']  # '10.22.15.91'
 
 """API REQUEST LIMITER"""
 DEFAULT_LIMITER = ["50000 per day", "5000 per hour"]
@@ -36,6 +36,15 @@ POLICE_STATIONS_MAIN = r'../DatabaseManager/police_stations.db'
 CCM_AGENTS_MAIN = '../DatabaseManager/ccm_agents_13082024.db'
 FIR_DB = '../DatabaseManager/leads_in_fir_14112024.db'
 PROCESSED_STATS_TEST_DB = '../DatabaseManager/processed1.db'
+
+"""PostgreSQL DATABASES"""
+POSTGRES_PROCESSED_STATS_MAIN = {
+    'dbname': 'dev_processed_15',
+    'user': 'postgres',
+    'password': 'psca@officialmai1',
+    'host': '10.20.170.151',
+    'port': 5432  # Default PostgreSQL port
+}
 
 """STAGING DATABASES"""
 CMS_STAGING = '../DatabaseManager/cms_staging.db'
@@ -73,7 +82,6 @@ VEHICLE_STATS = {'ENDPOINT': '/get_vehicle_stats', 'METHOD': 'GET'}
 GENERATE_DIST_REPORT = {'ENDPOINT': '/generate_district_report', 'METHOD': 'GET'}
 DETAILED_DISTRICT_RESPONSE = {'ENDPOINT': '/detailed_district_report', 'METHOD': 'GET'}
 CONF_CALLS_REPORT = {'ENDPOINT': '/conf_calls_report', 'METHOD': 'GET'}
-
 
 """ALL DISTRICTS FROM MASTER DATABASE FOR USE AS DICTIONARY MAPPING"""
 DISTRICTS_MAPPING = [(1, "Sheikhupura"), (2, "Nankana Sb"), (3, "Kasur"), (4, "Gujranwala"), (6, "Hafizabad"),
@@ -173,13 +181,12 @@ CAP = ['Kidnapping for Ransom', 'Attempt to Kidnap / Abduct', 'Assault on Govt. 
        'Murder', 'Street Fight', 'Hurt / Injuries', 'Criminal Intimidation (Threat with Weapon)',
        'Male Kidnapping/ Abduction', 'Attempt to Murder', 'Other Assault']
 
-
 """MODULARITY OF API QUERIES"""
 # common columns that are frequently used
 PROCESSED_COLUMNS = [
     "total_calls", "siraiki", "punjabi", "potohari", "english", "traffic", "vwps",
     "app_alerts", "transfered", "call_backs", "video_calls", "estimated_response_time",
-    "succ_conf_calls","unsucc_conf_calls", "vccs", "vcm", "generated_cases"
+    "succ_conf_calls", "unsucc_conf_calls", "vccs", "vcm", "generated_cases"
 ]
 
 # Base query for processed_data table
@@ -194,8 +201,7 @@ AND district_id IS NOT NULL
 PROCESSED_COLUMNS_WITH_DISTRICT_ID = ["district_id"] + PROCESSED_COLUMNS
 PROCESSED_COLUMNS_WITH_DATE = ["date"] + PROCESSED_COLUMNS
 
-
-#common additional conditions
+# common additional conditions
 DATE_CONDITION = " date = ? "
 DATE_RANGE_CONDITION = " AND date BETWEEN ? AND ? "
 DATE_RANGE_EXTENDED_CONDITION = " AND (((date = ?) AND (hour BETWEEN '20' AND '23')) OR ((date = ?) AND (hour BETWEEN '00' AND '07'))) "
@@ -204,7 +210,6 @@ AGENT_CONDITION = " AND agent = ? "
 HOUR_RANGE_CONDITION = " AND hour BETWEEN '08' AND '19' "
 UNIX_DATETIME_CONDITION = " AND datetime(time_id, 'unixepoch','localtime') BETWEEN ? AND ?"
 UNIX_DATE_CONDITION = " AND DATE(datetime(time_id, 'unixepoch','localtime')) BETWEEN ? AND ?"
-
 
 """REGIONAL_RESPONSE_TIME_AVG QUERY COMPONENTS FOR DASHBOARD AND REPORTS"""
 # Base query components
@@ -250,7 +255,6 @@ AGENT_STATS_BASE_QUERY = """
         {order_by_str}
 """
 
-
 AGENT_STATS_COMMON_COLUMNS = {
     "hoax_calls": "sum(hoax_calls) as hoax_calls",
     "consult_calls": "sum(consult_calls) as consult_calls",
@@ -264,9 +268,8 @@ AGENT_STATS_COMMON_COLUMNS = {
 AGENT_STATS_CONDITIONS = {
     "date_range": DATE_RANGE_CONDITION[4:],
     "agent": AGENT_CONDITION[4:],
-    "agent_null":" agent_name IS NOT NULL",
+    "agent_null": " agent_name IS NOT NULL",
 }
-
 
 """AVG RESPONSE TIME QUERY COMPONENTS"""
 RESPONSE_TIME_BASE_QUERY = """
@@ -294,9 +297,8 @@ RESPONSE_TIME_COMMON_CONDITIONS = [
     "parent_id = 0"
 ]
 
-
 """RESPONSE TIME STATS QUERY COMPONENTS"""
-RESPONSE_TIME_STATS_QUERY="""
+RESPONSE_TIME_STATS_QUERY = """
                         SELECT 
                             district_id,
                             {time_range_counts}
@@ -305,7 +307,6 @@ RESPONSE_TIME_STATS_QUERY="""
                         WHERE 
                             {conditions}
                         {group_by}"""
-
 
 RESPONSE_TIME_STATS_RANGES = [
     (60, "less_than_60"),
@@ -347,33 +348,45 @@ CALLER_FEEDBACK = {'ENDPOINT': '/caller_feedback', 'METHOD': 'POST'}
 VWPS_STATS_1 = {'ENDPOINT': '/vwps_stats_1', 'METHOD': 'POST'}
 VCCS_STATS_1 = {'ENDPOINT': '/vccs_stats_1', 'METHOD': 'POST'}
 VCM_STATS_1 = {'ENDPOINT': '/vcm_stats_1', 'METHOD': 'POST'}
-PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
-
+PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'}  # currently unused API
 
 """CATEGORIES MAPPING"""
 CATEGORIES = {
-    'murder' : ['Murder','Attempt to Murder'], #level3
-    'dacoity_with_murder':[ 'Dacoity with Murder'],
-    'dacoity': ['Highway/Road/Street Dacoity','House Dacoity' ,'Any Other Dacoity' , 'Shop Dacoity' ,'Cattle Dacoity','Patrol Pump Dacoity','Jewellery Shop Dacoity'],#level3
-    'attempt_to_murder': [], # level 3
-    'aerial_firing' : ['Aerial Firing'], #level3
-    'rape' : ["Sexual Assault/ Harrasment To Women"], #level 3
-    'kidnapping' : ["Child Kidnapping","Female Kidnapping/ Abduction","Male Kidnapping/ Abduction","Kidnapping for Ransom",
-                    "Attempt to Kidnap / Abduct","Child Kidnapping "] , #level3
-    'hurt' : ["Hurt / Injuries","Street Fight","Other Assault","Criminal Intimidation (Threat with Weapon)","Assault on Govt. Officials","Acid Throwing","Other Help"], #level3
-    'robbery_snatching' : ['Highway/Road/Street Robbery','Any Other Robbery', 'Cattle Robbery','House Robbery', 'Shop Robbery',
-                           'Patrol Pump Robbery','Bank/Money Exchange/ ATM Robbery','Car Snatching','Other Vehicles Snatching',
-                           'Snatching/Jhapatta','Motorcycle Snatching','Jewellery Shop Robbery','Robbery with Murder'], #level3
-    'motorcycle_theft' : ['Motorcycle Theft'], #level3
-    'car_theft' : ['Car Theft'], #level3
-    'theft' : ['Mobile Theft','Any Other Theft','Cattle theft','Transformer/ Motor Theft','Pick Pocketing','Purse / Wallet / Luggage Theft',
-                    'Cycle Theft','Weapon Theft','Other Vehicles Theft','House Burglary','Shop Burglary','Other Burglary'],#level3
-    'burglary' : ['House Burglary','Shop Burglary','Other Burglary'],#level3
-    'terrorist_act' : ['Firing on Police','Suicidal Attack/ Bomb Blast/ Terrorist Attack'],#level3
-    'other_person' : ['Prostitution/ Brothel House','Acid Throwing','Hurt / Injuries','Street Fight','Other Assault',
-                      'Physical Threats / Harrasment','Domestic Violence','Criminal Intimidation (Threat with Weapon)'],
-    'other_property' : ['Attempt to Illegal Possession of Land/ Premises'], #level3
-    'child_abuse' : ['Rape','Child Abuse / Molestation'] #level3
+    'murder': ['Murder', 'Attempt to Murder'],  # level3
+    'dacoity_with_murder': ['Dacoity with Murder'],
+    'dacoity': ['Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 'Shop Dacoity', 'Cattle Dacoity',
+                'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'],
+    # level3
+    'attempt_to_murder': [],  # level 3
+    'aerial_firing': ['Aerial Firing'],  # level3
+    'rape': ["Sexual Assault/ Harrasment To Women"],  # level 3
+    'kidnapping': ["Child Kidnapping", "Female Kidnapping/ Abduction", "Male Kidnapping/ Abduction",
+                   "Kidnapping for Ransom",
+                   "Attempt to Kidnap / Abduct", "Child Kidnapping "],  # level3
+    'hurt': ["Hurt / Injuries", "Street Fight", "Other Assault", "Criminal Intimidation (Threat with Weapon)",
+             "Assault on Govt. Officials", "Acid Throwing", "Other Help"],
+    # level3
+    'robbery_snatching': ['Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                          'Shop Robbery',
+                          'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                          'Other Vehicles Snatching',
+                          'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
+                          'Robbery with Murder'],
+    # level3
+    'motorcycle_theft': ['Motorcycle Theft'],  # level3
+    'car_theft': ['Car Theft'],  # level3
+    'theft': ['Mobile Theft', 'Any Other Theft', 'Cattle theft', 'Transformer/ Motor Theft', 'Pick Pocketing',
+              'Purse / Wallet / Luggage Theft',
+              'Cycle Theft', 'Weapon Theft', 'Other Vehicles Theft', 'House Burglary', 'Shop Burglary',
+              'Other Burglary'],
+    # level3
+    'burglary': ['House Burglary', 'Shop Burglary', 'Other Burglary'],  # level3
+    'terrorist_act': ['Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack'],  # level3
+    'other_person': ['Prostitution/ Brothel House', 'Acid Throwing', 'Hurt / Injuries', 'Street Fight', 'Other Assault',
+                     'Physical Threats / Harrasment', 'Domestic Violence',
+                     'Criminal Intimidation (Threat with Weapon)'],
+    'other_property': ['Attempt to Illegal Possession of Land/ Premises'],  # level3
+    'child_abuse': ['Rape', 'Child Abuse / Molestation']  # level3
 }
 
 REGIONAL_CATEGORY_RT_QUERY = """        
@@ -521,32 +534,30 @@ FIR_QUERY = """
     GROUP BY c.category
 """
 
-
 COMB_DASHBOARD_COND = {
-    'Recieved_vccs' : "",
-    'Under_inquiry_vccs' : " final_status_id IN (8,12) AND handed_over_to IN (1, 3, 4, 5)",
-    'Escalated_vccs' : " final_status_id = 7",
-    'Fir_vccs' : " is_fir_registered = 1 OR is_challan_submitted = 1",
-    'Challan_vccs' : "  is_challan_submitted = 1",
-    'Resolved_vccs' : " (final_status_id = 6 OR (final_status_id = 12 AND handed_over_to = 2 ))",
-    'Recieved_vwps' : "",
-    'Under_inquiry_vwps' : " final_status_id in (1,7,8)",
-    'Escalated_vwps' : " final_status_id = 7",
-    'Fir_vwps' : " final_status_id in (2,3,5,9,10,11)",
-    'Challan_vwps' : " final_status_id in (5,9,10,11)",
-    'Recieved_vcm' : "",
-    'Under_inquiry_vcm' : " final_status_id in (1,8)",
-    'Escalated_vcm' : " final_status_id = 7",
-    'Fir_vcm' : " final_status_id in (2,3,5,9,10,11)",
-    'Challan_vcm' : " final_status_id in (5,9,10,11)",
-    'Resolved_vcm' : " final_status_id = 6"
+    'Recieved_vccs': "",
+    'Under_inquiry_vccs': " final_status_id IN (8,12) AND handed_over_to IN (1, 3, 4, 5)",
+    'Escalated_vccs': " final_status_id = 7",
+    'Fir_vccs': " is_fir_registered = 1 OR is_challan_submitted = 1",
+    'Challan_vccs': "  is_challan_submitted = 1",
+    'Resolved_vccs': " (final_status_id = 6 OR (final_status_id = 12 AND handed_over_to = 2 ))",
+    'Recieved_vwps': "",
+    'Under_inquiry_vwps': " final_status_id in (1,7,8)",
+    'Escalated_vwps': " final_status_id = 7",
+    'Fir_vwps': " final_status_id in (2,3,5,9,10,11)",
+    'Challan_vwps': " final_status_id in (5,9,10,11)",
+    'Recieved_vcm': "",
+    'Under_inquiry_vcm': " final_status_id in (1,8)",
+    'Escalated_vcm': " final_status_id = 7",
+    'Fir_vcm': " final_status_id in (2,3,5,9,10,11)",
+    'Challan_vcm': " final_status_id in (5,9,10,11)",
+    'Resolved_vcm': " final_status_id = 6"
 }
 
 FIR_API_URL = "https://police15.psca.gop.pk/public/fir/police-stations"
 
-
-RANKS_USERNAME={
-    "ig.punjab" : "IG Punjab",
+RANKS_USERNAME = {
+    "ig.punjab": "IG Punjab",
     "addligp.sppo@punjabpolice.gov.pk": "Addl: IGP South Punjab",
     "ccpo.lhr@punjabpolice.gov.pk": "CCPO Lahore",
     "digops.lhr@punjabpolice.gov.pk": "DIG Operations Lahore",
@@ -597,117 +608,115 @@ RANKS_USERNAME={
     "dpo.tts@punjabpolice.gov.pk": "District Police Officer T.T.Singh",
     "dpo.vri@punjabpolice.gov.pk": "District Police Officer Vehari",
     "sdpo.baghbanpura@punjabpolice.gov.pk": "sdpo Baghbanpura",
-    "sho.baghbanpura@punjabpolice.gov.pk" : "sho baghbanpura",
-    "dpo.modeltown@punjabpolice.gov.pk" : "dpo Model town"
+    "sho.baghbanpura@punjabpolice.gov.pk": "sho baghbanpura",
+    "dpo.modeltown@punjabpolice.gov.pk": "dpo Model town"
 }
 
-
 CRIME_TRENDS_CATEGORY = {
-    'total' : """(SUM(dacoity) + SUM(burglary) + SUM(robbery_snatching) + SUM(motorcycle_theft) + SUM(car_theft) + SUM(vehicle_theft) + 
+    'total': """(SUM(dacoity) + SUM(burglary) + SUM(robbery_snatching) + SUM(motorcycle_theft) + SUM(car_theft) + SUM(vehicle_theft) + 
                    SUM(vehicle_snatching) + SUM(car_snatching) + SUM(motorcycle_snatching))""",
-    'vehicle_snatching' : "(SUM(vehicle_snatching) + SUM(car_snatching) + SUM(motorcycle_snatching))",
-    'car_snatching' : "(SUM(car_snatching))",
-    'motorcycle_snatching' : "(SUM(motorcycle_snatching))",
+    'vehicle_snatching': "(SUM(vehicle_snatching) + SUM(car_snatching) + SUM(motorcycle_snatching))",
+    'car_snatching': "(SUM(car_snatching))",
+    'motorcycle_snatching': "(SUM(motorcycle_snatching))",
     'dacoity': "(SUM(dacoity))",
-    'burglary' : "(SUM(burglary))",
-    'robbery_snatching' : "(SUM(robbery_snatching))",
-    'motorcycle_theft' : "(SUM(motorcycle_theft))",
-    'car_theft' : "(SUM(car_theft))",
+    'burglary': "(SUM(burglary))",
+    'robbery_snatching': "(SUM(robbery_snatching))",
+    'motorcycle_theft': "(SUM(motorcycle_theft))",
+    'car_theft': "(SUM(car_theft))",
     'vehicle_theft': "(SUM(motorcycle_theft) + SUM(car_theft) + SUM(vehicle_theft))"
 }
 
 MULTAN_DIVISON_MAPPING = {
-    'Multan Cantt' : 'Cantt Division',
-    'Muzaffarabad' : 'Cantt Division',
-    'Mumtazabad'  : 'Cantt Division',
-    'Gulgasht' : 'Gulgasht Division',
-    'Sadar' : 'Gulgasht Division',
-    'New Multan' : 'City Division',
-    'Haram Gate' : 'City Division',
-    'Dehli Gate' : 'City Division',
-    'Makhdoom Rashid' : 'Saddar Division',
-    'Shujahbad' : 'Saddar Division',
-    'Jalalpur Pirwala' : 'Saddar Division'
+    'Multan Cantt': 'Cantt Division',
+    'Muzaffarabad': 'Cantt Division',
+    'Mumtazabad': 'Cantt Division',
+    'Gulgasht': 'Gulgasht Division',
+    'Sadar': 'Gulgasht Division',
+    'New Multan': 'City Division',
+    'Haram Gate': 'City Division',
+    'Dehli Gate': 'City Division',
+    'Makhdoom Rashid': 'Saddar Division',
+    'Shujahbad': 'Saddar Division',
+    'Jalalpur Pirwala': 'Saddar Division'
 }
 
 LAHORE_DIVISION_MAPPING = {
     'Badami Bagh': 'City Division',
     'Baghbanpura.': 'Cantt Division',
-    'Shahdara' : 'City Division',
+    'Shahdara': 'City Division',
     'Model Town': 'Model Town Division',
     'Defence': 'Cantt Division',
     'Iqbal Town': 'Iqbal Town Division',
     'Harbanspura': 'Cantt Division',
     'Garden Town': 'Model Town Division',
     'Raiwind': 'Sadar Division',
-    'Town Ship' : 'Sadar Division',
-    'Kahna' : 'Model Town Division',
-    'Gulberg' : 'Model Town Division',
-    'Mughalpura' : 'Civiline Division',
-    'Sabzazar' : 'Sadar Division',
-    'Misri Shah' : 'Civiline Division',
-    'Nawankot' : 'Iqbal Town Division',
-    'Chung' : 'Sadar Division',
-    'North Cantt.' : 'Cantt Division',
-    'Shafiqabad' : 'City Division' ,
-    'Qila Gujar Sinch' : 'Civiline Division',
-    'Samanabad' : 'Civiline Division',
-    'Lower Mall' : 'City Division',
-    'Cantt.' : 'Cantt Division',
-    'Muslim Town' : 'Iqbal Town Division',
-    'Manawan' : 'Cantt Division',
-    'Ichhra' : 'Model Town Division',
+    'Town Ship': 'Sadar Division',
+    'Kahna': 'Model Town Division',
+    'Gulberg': 'Model Town Division',
+    'Mughalpura': 'Civiline Division',
+    'Sabzazar': 'Sadar Division',
+    'Misri Shah': 'Civiline Division',
+    'Nawankot': 'Iqbal Town Division',
+    'Chung': 'Sadar Division',
+    'North Cantt.': 'Cantt Division',
+    'Shafiqabad': 'City Division',
+    'Qila Gujar Sinch': 'Civiline Division',
+    'Samanabad': 'Civiline Division',
+    'Lower Mall': 'City Division',
+    'Cantt.': 'Cantt Division',
+    'Muslim Town': 'Iqbal Town Division',
+    'Manawan': 'Cantt Division',
+    'Ichhra': 'Model Town Division',
     'Islampura': 'City Division',
-    'Old Anarkali' : 'Civiline Division',
-    'Naulakha' : 'City Division',
-    'Burki' : 'Cantt Division',
-    'Gulshan Ravi' : 'Iqbal Town Division',
-    'Gowalmandi' : 'City Division',
-    'Rang Mehal' : 'City Division',
-    'Tibbi City' : 'City Division',
-    'Race Course' : 'Civiline Division'
+    'Old Anarkali': 'Civiline Division',
+    'Naulakha': 'City Division',
+    'Burki': 'Cantt Division',
+    'Gulshan Ravi': 'Iqbal Town Division',
+    'Gowalmandi': 'City Division',
+    'Rang Mehal': 'City Division',
+    'Tibbi City': 'City Division',
+    'Race Course': 'Civiline Division'
 }
 
 RAWALPINDI_DIVISION_MAPPING = {
-    'Civil Lines' : 'Potohar Division',
-    'Rawalpindi Cantt' : 'Potohar Division',
-    'Taxila' : 'Potohar Division',
-    'Waris Khan' : 'Rawal Division',
-    'City' : 'Rawal Division',
-    'New Town' : 'Rawal Division',
-    'Sadar' : 'Saddar Division',
-    'Gujjar Khan' : 'Saddar Division',
-    'Kahuta' : 'Saddar Division',
+    'Civil Lines': 'Potohar Division',
+    'Rawalpindi Cantt': 'Potohar Division',
+    'Taxila': 'Potohar Division',
+    'Waris Khan': 'Rawal Division',
+    'City': 'Rawal Division',
+    'New Town': 'Rawal Division',
+    'Sadar': 'Saddar Division',
+    'Gujjar Khan': 'Saddar Division',
+    'Kahuta': 'Saddar Division',
 }
 
 GUJRANWALA_DIVISION_MAPPING = {
     'Cantt': 'Civiline Division',
     'Kamoke': 'Sadar Division',
-    'Noushera Virka' : 'Sadar Division',
+    'Noushera Virka': 'Sadar Division',
     'Wazirabad': 'Wazirabad Division',
-    'Model Town' : 'City Division',
-    'Kotwali' : 'City Division',
-    'Khiali' : 'City Division',
-    'Qila Dedar Singh' : 'City Division',
-    'Satellite Town' : 'Civiline Division',
-    'Peoples Colony' : 'Civiline Division'
+    'Model Town': 'City Division',
+    'Kotwali': 'City Division',
+    'Khiali': 'City Division',
+    'Qila Dedar Singh': 'City Division',
+    'Satellite Town': 'Civiline Division',
+    'Peoples Colony': 'Civiline Division'
 }
 
-
 FAISALABAD_DIVISION_MAPPING = {
-    'Jarranwala' : 'Jarranwala Division',
-    'Gulberg' : 'Lyallpur Division',
-    'Sargodha Road' : 'Madina Division',
-    'Tandlianwala' : 'Sadar Division',
-    'Batala Colony' : 'Iqbal Division' ,
-    'Sadar F/abad' : 'Iqbal Division',
-    'Kotwali' : 'Lyallpur Division',
-    'Nishatabad' : 'Madina Division',
-    'Factory Area' : 'Iqbal Division',
-    'Civil Lines' : 'Lyallpur Division',
-    'People Colony' : 'Madina Division',
-    'Khurrianwala' : 'Jarranwala Division',
-    'Sammundri' : 'Sadar Division' ,
+    'Jarranwala': 'Jarranwala Division',
+    'Gulberg': 'Lyallpur Division',
+    'Sargodha Road': 'Madina Division',
+    'Tandlianwala': 'Sadar Division',
+    'Batala Colony': 'Iqbal Division',
+    'Sadar F/abad': 'Iqbal Division',
+    'Kotwali': 'Lyallpur Division',
+    'Nishatabad': 'Madina Division',
+    'Factory Area': 'Iqbal Division',
+    'Civil Lines': 'Lyallpur Division',
+    'People Colony': 'Madina Division',
+    'Khurrianwala': 'Jarranwala Division',
+    'Sammundri': 'Sadar Division',
 }
 
 # Define API endpoints

@@ -5,3 +5,4 @@ Logs
 DatabaseManager
 DataScrappingSessions
 ApplicationProgrammingInterface/api_v4a.py
+ProcessingAgents/pgs.py
