@@ -6,14 +6,16 @@ from requests.exceptions import RequestException
 import pickle
 import os
 import mysql.connector
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 from Utilities import configs
 import sqlite3
 from dotenv import load_dotenv
+import psycopg2
 
 load_dotenv()
 
 SYS_IP = os.getenv("SYS_IP_ADDRESS")
+
 
 def initialize_session():
     login_page_url = "https://admin15.psca.gop.pk/public/login"
@@ -263,7 +265,7 @@ def handle_400_error(e):
 #         abort(configs.UNAUTHORIZED_REQUEST_ERROR, f"Unauthorized access attempt from IP: {client_ip}")
 
 
-def case_stats_response(row, regional_avg_responses,fir_result):
+def case_stats_response(row, regional_avg_responses, fir_result):
     total_calls, siraiki, punjabi, potohari, english, traffic, vwps, app_alerts, transfered, call_backs, video_calls, estimated_response_time, succ_conf_calls, unsucc_conf_calls, vccs, vcm, generated_cases = row
     emergency_15 = (total_calls - vwps - traffic - vccs - vcm - generated_cases) if total_calls else None
     stats = {
@@ -283,14 +285,14 @@ def case_stats_response(row, regional_avg_responses,fir_result):
         'pucar-15': (emergency_15 / total_calls) * 100 if total_calls else 0,
         'total_generated_cases': generated_cases,
         'fir_rate': configs.FIR_RATE * 100,
-        'total_fir': int(configs.FIR_RATE * generated_cases)if generated_cases else 0,
+        'total_fir': int(configs.FIR_RATE * generated_cases) if generated_cases else 0,
         'video_calls': video_calls,
         'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses else 0,
         'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if len(
             regional_avg_responses) > 1 else 0,
         'estimated_response_time': estimated_response_time,
         'successful_conference': succ_conf_calls,
-        'unsuccessful_conference':unsucc_conf_calls,
+        'unsuccessful_conference': unsucc_conf_calls,
         'vccs-15_count': vccs,
         'vcm-15_count': vcm
         # 'CAW': fir_result[0] if fir_result else 0,
@@ -344,7 +346,7 @@ def format_report_response(district, processed_data, regional_avg_response, resp
         processed_data_row = processed_data[i]
         if len(processed_data_row) == 16:
             list_header = district
-            total_calls, siraiki, punjabi, potohari, english, traffic, vwps, app_alerts, transfered, call_backs, video_calls, estimated_response_time, conference_calls, vccs, vcm,generated_cases = processed_data_row
+            total_calls, siraiki, punjabi, potohari, english, traffic, vwps, app_alerts, transfered, call_backs, video_calls, estimated_response_time, conference_calls, vccs, vcm, generated_cases = processed_data_row
         else:
             list_header, total_calls, siraiki, punjabi, potohari, english, traffic, vwps, app_alerts, transfered, call_backs, video_calls, estimated_response_time, conference_calls, vccs, vcm, generated_cases = processed_data_row
         # total_generated_cases = sum(generated_cases)
@@ -409,7 +411,7 @@ def get_max_lead_time():
 """DETAILS OF DISTRICT CASES WITH RESPONSE TIME"""
 
 
-def get_district_cases(district_id, fromDate, toDate,shift):
+def get_district_cases(district_id, fromDate, toDate, shift):
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -444,11 +446,11 @@ def get_district_cases(district_id, fromDate, toDate,shift):
                 AND ((datetime(time_id, 'unixepoch','localtime') BETWEEN ? AND ?))
                 AND parent_id = 0
         """
-        cursor.execute(query, (district_id,start_time_1,end_time_1))
+        cursor.execute(query, (district_id, start_time_1, end_time_1))
         rows = cursor.fetchall()
         conn.close()
 
-    elif shift is not None and  shift == configs.NIGHT_SHIFT:
+    elif shift is not None and shift == configs.NIGHT_SHIFT:
         start_time_1 = f"{fromDate} 20:00:00"
         end_time_1 = f"{fromDate} 23:59:59"
         start_time_2 = f"{toDate} 00:00:00"
@@ -476,7 +478,7 @@ def get_district_cases(district_id, fromDate, toDate,shift):
                         AND ((datetime(time_id, 'unixepoch','localtime') BETWEEN ? AND ?) OR (datetime(time_id, 'unixepoch','localtime') BETWEEN ? AND ?))
                         AND parent_id = 0
                 """
-        cursor.execute(query, (district_id, start_time_1,end_time_1,start_time_2,end_time_2))
+        cursor.execute(query, (district_id, start_time_1, end_time_1, start_time_2, end_time_2))
         rows = cursor.fetchall()
         conn.close()
 
@@ -503,13 +505,13 @@ def get_district_cases(district_id, fromDate, toDate,shift):
                 AND parent_id = 0
                 AND (DATE(datetime(time_id, 'unixepoch','localtime')) = ? ) 
 """
-        cursor.execute(query, (district_id,fromDate))
+        cursor.execute(query, (district_id, fromDate))
         rows = cursor.fetchall()
         conn.close()
 
     response = []
     for row in rows:
-        case_number, district_id, call_time, accepted_time, first_arrival_time, created_time, accept_time, start_time,responder_id,assigned_by, reached_time, completed_time, response_time = row
+        case_number, district_id, call_time, accepted_time, first_arrival_time, created_time, accept_time, start_time, responder_id, assigned_by, reached_time, completed_time, response_time = row
         response_time = int(response_time) if response_time else 0
         district = configs.DISTRICTS_DICTIONARY.get(district_id, "Unknown District")  # Default to "Unknown District"
         response.append({
@@ -521,8 +523,8 @@ def get_district_cases(district_id, fromDate, toDate,shift):
             'created_time': created_time,
             'accept_time': accept_time,
             'start_time': start_time,
-            'responder_id':responder_id,
-            'assigned_by':assigned_by,
+            'responder_id': responder_id,
+            'assigned_by': assigned_by,
             'reached_time': reached_time,
             'completed_time': completed_time,
             'response_time': f"{int(response_time // 60)}:{int(response_time % 60):02d}"
@@ -533,9 +535,12 @@ def get_district_cases(district_id, fromDate, toDate,shift):
 
 def log_to_database(log_conn, log_cursor, level, message):
     query = "INSERT INTO 15_stats_log (status, time_date, description,Host_IP_address) VALUES (%s, %s, %s, %s)"
-    data = (level, get_current_time(), message,SYS_IP)
+    data = (level, get_current_time(), message, SYS_IP)
     try:
         log_cursor.execute(query, data)
+        # Print the error to the console
+        print("ERROR:", message)
+
         log_conn.commit()
     except mysql.connector.Error as err:
         print(f"Database Error: {err}")
@@ -546,7 +551,6 @@ def get_current_time():
 
 
 def district_categorical_response_data(results):
-
     """Formats the database results into the required response structure."""
     response_data_dict = {}
 
@@ -613,7 +617,7 @@ def build_avg_regional_response_query(columns_key="basic", additional_conditions
     return query
 
 
-def build_agent_stats_query(columns=None, conditions=None,group_by=None, order_by=None):
+def build_agent_stats_query(columns=None, conditions=None, group_by=None, order_by=None):
     if columns is None:
         columns = list(configs.AGENT_STATS_COMMON_COLUMNS.keys())
 
@@ -683,10 +687,40 @@ def build_response_time_stats_query(additional_conditions=None, group_by=None):
 
     return query
 
+
 def split_name(string):
     try:
         new_str = string.split('@')[0].split('.')
-        return str(new_str[0] +" "+ new_str[1]).upper()
-    except :
+        return str(new_str[0] + " " + new_str[1]).upper()
+    except:
         new_str = string.split('.')
         return str(new_str[0] + " " + new_str[1]).upper()
+
+
+###########################################################
+# PostgreSQL Database Connection Utility Functions
+###########################################################
+def get_processed_db_connection(database=configs.POSTGRES_PROCESSED_STATS_MAIN):
+    try:
+        conn = psycopg2.connect(
+            dbname=database['dbname'],
+            user=database['user'],
+            password=database['password'],
+            host=database['host'],
+            port=database['port']
+        )
+        return conn
+    except Exception as e:
+        print(e)
+        raise
+
+
+def log_error_to_db_and_console(db_conn, log_db_cursor, error_message):
+    # Capture the error message
+    error_message = traceback.format_exc()
+
+    # Log the error to the database
+    log_to_database(db_conn, log_db_cursor, "ERROR", error_message)
+
+    # Print the error to the console
+    print("ERROR:", error_message)
