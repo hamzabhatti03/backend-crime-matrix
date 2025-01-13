@@ -10,6 +10,7 @@ import json
 
 def yesterday_forecast_db(ps, district):
     police_station = None
+    results_for_actual = {}
     try:
         ps_id = None
         conn = db.get_db_connection()
@@ -21,52 +22,104 @@ def yesterday_forecast_db(ps, district):
             curser.execute(query)
             ps_id = curser.fetchall()
             police_station = ps_id[0][0]
+
+
+        target_date_for_actual = datetime.now() - timedelta(days=1)
+        target_date_for_actual = target_date_for_actual.strftime('%Y-%m-%d')
+        query_for_actual = """
+                SELECT category, COUNT(*) AS count
+                FROM pred_pol_preprocessed_crime_data
+                WHERE ps_station_id = %s AND report_date = %s
+                GROUP BY category;
+                """
+        cursor = conn.cursor()
+        cursor.execute(query_for_actual, (police_station, target_date_for_actual))
+        results_for_actual = cursor.fetchall()
+
+        results_for_actual_dict = {}
+        for category, count in results_for_actual:
+            results_for_actual_dict[category] = count
+
+        conn.close()
+
     except Exception as e:
         print(e)
 
-    target_date_for_actual = datetime.now() - timedelta(days=1)
-    target_date_for_actual = target_date_for_actual.strftime('%Y-%m-%d')
-    query_for_actual = """
-            SELECT category, COUNT(*) AS count
-            FROM pred_pol_preprocessed_crime_data
-            WHERE ps_station_id = %s AND report_date = %s
-            GROUP BY category;
-            """
     target_date_for_predict = datetime.now() - timedelta(days=1)
     target_date_for_predict = target_date_for_predict.strftime('%d-%m-%Y')
-    query_for_predict = """
-                SELECT category, COUNT(*) AS count
-                FROM pred_pol_predictions
-                WHERE police_station= %s AND date = %s
-                GROUP BY category;
-                """
-    query_for_today = """
-                    SELECT category, COUNT(*) AS count
-                    FROM pred_pol_predictions
-                    WHERE police_station= %s AND date = %s
-                    GROUP BY category;
-                    """
-    target_date_for_today = datetime.now()
-    target_date_for_today = target_date_for_today.strftime('%d-%m-%Y')
-    try:
-        # Connect to the database
-        connection = db.get_db_connection()
-        cursor = connection.cursor()
-        cursor.execute(query_for_actual, (police_station, target_date_for_actual))
-        results_for_actual = cursor.fetchall()
-        crime_counts_for_actual = {category.decode('utf-8') if isinstance(category, bytes) else category: count for category, count in results_for_actual}
-        cursor = connection.cursor()
-        cursor.execute(query_for_predict, (police_station, target_date_for_predict))
-        results_for_predict = cursor.fetchall()
-        crime_counts_for_predict = {category.decode('utf-8') if isinstance(category, bytearray) else category: count for category, count in results_for_predict}
-        cursor = connection.cursor()
-        cursor.execute(query_for_today, (police_station, target_date_for_today))
-        results_for_today = cursor.fetchall()
-        crime_counts_for_today = {category.decode('utf-8') if isinstance(category, bytearray) else category: count for category, count in results_for_today}
 
-    except mysql.connector.Error as err:
-        print(f"Error: {err}")
-        return {}
+    predicted_categories = {}
+    try:
+        connection = db.get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        target_date_for_prediction = datetime.now() - timedelta(days=1)
+        target_date_for_prediction = target_date_for_prediction.strftime('%d-%m-%Y')
+
+        query = (
+            "SELECT * FROM pred_pol_prediction "
+            "WHERE district = %s AND police_station = %s AND date = %s"
+        )
+        cursor.execute(query, (district_id, police_station, target_date_for_prediction))
+        rows = cursor.fetchall()
+
+        # Column names to categorize the data
+        columns = [
+            "Assault/Hurt", "Vehicle Theft", "Robbery/Snatching", "Theft", "Kidnapping",
+            "Traffic Accident", "Burglary", "Murder", "Religious Offences", "Dacoity"
+        ]
+
+        # Process each row
+        for row in rows:
+            for i, category in enumerate(columns):
+                column_name = list(row.keys())[i + 3]  # Get the actual column name
+                category_data = row[column_name]
+                if category_data:
+                    parsed_data = json.loads(category_data)
+                    # If data is a single item, wrap it in a list for uniformity
+                    if isinstance(parsed_data, dict):
+                        parsed_data = [parsed_data]
+
+                    # Check if the message is empty
+                    count = len(parsed_data) if parsed_data and parsed_data[0].get("message", "") != "" else 0
+                    predicted_categories[category] = count
+                else:
+                    predicted_categories[category] = 0
+
+        crime_counts_for_today = {}
+        cursor = connection.cursor(dictionary=True)
+        target_date_for_today = datetime.now()
+        target_date_for_today = target_date_for_today.strftime('%d-%m-%Y')
+
+        query = (
+            "SELECT * FROM pred_pol_prediction "
+            "WHERE district = %s AND police_station = %s AND date = %s"
+        )
+        cursor.execute(query, (district_id, police_station, target_date_for_today))
+        rows = cursor.fetchall()
+
+        # Column names to categorize the data
+        columns = [
+            "Assault/Hurt", "Vehicle Theft", "Robbery/Snatching", "Theft", "Kidnapping",
+            "Traffic Accident", "Burglary", "Murder", "Religious Offences", "Dacoity"
+        ]
+
+        # Process each row
+        for row in rows:
+            for i, category in enumerate(columns):
+                column_name = list(row.keys())[i + 3]  # Get the actual column name
+                category_data = row[column_name]
+                if category_data:
+                    parsed_data = json.loads(category_data)
+                    # If data is a single item, wrap it in a list for uniformity
+                    if isinstance(parsed_data, dict):
+                        parsed_data = [parsed_data]
+
+                    # Check if the message is empty
+                    count = len(parsed_data) if parsed_data and parsed_data[0].get("message", "") != "" else 0
+                    crime_counts_for_today[category] = count
+                else:
+                    crime_counts_for_today[category] = 0
+
 
     finally:
         # Close the connection
@@ -75,12 +128,11 @@ def yesterday_forecast_db(ps, district):
         if 'connection' in locals() and connection.is_connected():
             connection.close()
 
-    yesterday_target_date = datetime.now() - timedelta(days=2)
-    yesterday_target_date = yesterday_target_date.strftime('%Y-%m-%d')
+
     return {
-        'yesterday_actual_count': crime_counts_for_actual,
-        'yesterday_predicted_count': crime_counts_for_predict,
-        'today_predicted_count':crime_counts_for_today
+        'yesterday_actual_count': results_for_actual_dict,
+        'yesterday_predicted_count': predicted_categories,
+        'today_predicted_count': crime_counts_for_today
     }
 
 
@@ -267,3 +319,73 @@ def get_category_data(ps,district):
     finally:
         cursor.close()
         connection.close()
+
+
+def forecast_date(ps, district, start_date, end_date):
+    police_station = None
+    try:
+        ps_id = None
+        conn = db.get_db_connection()
+        cursor = conn.cursor()
+        district_id = conf.REVERSED_DISTRICTS_DICTIONARY.get(district)
+        if ps is not None:
+            query = f"SELECT id FROM 15_police_stations WHERE name ='{ps}' AND district_id = '{district_id}'"
+            cursor.execute(query)
+            ps_id = cursor.fetchall()
+            police_station = ps_id[0][0]
+    except Exception as e:
+        print(e)
+
+    # Format dates for predictions
+    start_date_prediction = start_date
+    end_date_prediction = end_date
+
+    # Get predicted category counts grouped by date
+    predictions_by_date = {}
+    try:
+        connection = db.get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
+        query = (
+            "SELECT * FROM pred_pol_prediction "
+            "WHERE district = %s AND police_station = %s AND date BETWEEN %s AND %s"
+        )
+        cursor.execute(query, (district_id, police_station, start_date_prediction, end_date_prediction))
+        rows = cursor.fetchall()
+
+        # Column names to categorize the data
+        columns = [
+            "Assault/Hurt", "Vehicle Theft", "Robbery/Snatching", "Theft", "Kidnapping",
+            "Traffic Accident", "Burglary", "Murder", "Religious Offences", "Dacoity"
+        ]
+
+        # Process each row
+        for row in rows:
+            date = row['date']  # Assuming 'date' is the column name in the table
+            if date not in predictions_by_date:
+                predictions_by_date[date] = {}
+
+            for i, category in enumerate(columns):
+                column_name = list(row.keys())[i + 3]  # Get the actual column name
+                category_data = row[column_name]
+                if category_data:
+                    parsed_data = json.loads(category_data)
+                    # If data is a single item, wrap it in a list for uniformity
+                    if isinstance(parsed_data, dict):
+                        parsed_data = [parsed_data]
+
+                    # Check if the message is empty
+                    count = len(parsed_data) if parsed_data and parsed_data[0].get("message", "") != "" else 0
+                    predictions_by_date[date][category] = count
+                else:
+                    predictions_by_date[date][category] = 0
+
+    except mysql.connector.Error as err:
+        print(f"Error getting predictions: {err}")
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'connection' in locals() and connection.is_connected():
+            connection.close()
+
+    return predictions_by_date

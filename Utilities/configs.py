@@ -316,7 +316,7 @@ RESPONSE_TIME_STATS_RANGES = [
     (float('inf'), "above_3600")
 ]
 
-""" PUNJAB CRIME MATRIX API ENDPOINTS AND METHODS"""
+""" PUNJAB EMERGENCY-i APIs ENDPOINTS AND METHODS"""
 LOGIN = {'ENDPOINT': '/login', 'METHOD': 'POST'}
 DASHBOARD_PUNJAB = {'ENDPOINT': '/dashboard_punjab', 'METHOD': 'POST'}
 PUNJAB_MORE_INFO = {'ENDPOINT': '/punjab_more_info', 'METHOD': 'POST'}
@@ -326,6 +326,7 @@ PUNJABTODAY_CASE_DETAILS = {'ENDPOINT': '/case_details', 'METHOD': 'POST'}
 DIST_CATEGORY_DETAILS = {'ENDPOINT': '/district_categorywise_details', 'METHOD': 'POST'}
 PSWISE_CATEGORIES = {'ENDPOINT': '/pswise_categories', 'METHOD': 'POST'}
 PREDICTIVE_FORECAST = {'ENDPOINT': '/predicitve_forecast', 'METHOD': 'POST'}
+DATEWISE_FORECAST = {'ENDPOINT': '/datewise_forecast', 'METHOD': 'POST'}
 EMERGENCY_15_INTEGRATION = {'ENDPOINT': '/emergency15_integration', 'METHOD': 'POST'}
 ADD_REMARKS = {'ENDPOINT': '/add_remarks', 'METHOD': 'POST'}
 UPDATE_REMARKS = {'ENDPOINT': '/update_remarks', 'METHOD': 'POST'}
@@ -343,10 +344,9 @@ VCCS_STATS = {'ENDPOINT': '/vccs_stats', 'METHOD': 'POST'}
 VCM_STATS = {'ENDPOINT': '/vcm_stats', 'METHOD': 'POST'}
 CRIME_TRENDS = {'ENDPOINT': '/crime_trends', 'METHOD': 'POST'}
 CALLER_FEEDBACK = {'ENDPOINT': '/caller_feedback', 'METHOD': 'POST'}
+BLOOD_DONATION = {'ENDPOINT': '/blood_donation', 'METHOD': 'POST'}
+ESCALATED_CASES = {'ENDPOINT': '/escalated_cases', 'METHOD': 'POST'}
 
-VWPS_STATS_1 = {'ENDPOINT': '/vwps_stats_1', 'METHOD': 'POST'}
-VCCS_STATS_1 = {'ENDPOINT': '/vccs_stats_1', 'METHOD': 'POST'}
-VCM_STATS_1 = {'ENDPOINT': '/vcm_stats_1', 'METHOD': 'POST'}
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
 
 

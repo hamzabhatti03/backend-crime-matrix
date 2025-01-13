@@ -15,7 +15,7 @@ import traceback
 import os
 from dotenv import load_dotenv
 from predictive_api import yesterday_forecast_db as yesterday_forecast
-from predictive_api import process_dashboard_stats_db as predictive_dashboard
+from predictive_api import forecast_date
 from predictive_api import get_category_data
 from decimal import Decimal
 import math
@@ -489,7 +489,7 @@ def punjab_stats_dashboard():
         if view_role in [3,4]:
             where_cond = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
 
-
+        ############################### Negative caller Feedback
         processed_db_cursor.execute(f"""
                                     SELECT SUM(negative)
                                     FROM dist_feedback_count
@@ -498,6 +498,74 @@ def punjab_stats_dashboard():
                                 """)
         row = processed_db_cursor.fetchone()
         negative_feedback_count = row[0] if row is not None else 0
+
+
+        ############################## Escalated Cases Count (VWPS , VCCS , VCM)
+
+        from_date_obj = datetime.strptime(from_date_str, '%Y-%m-%d')
+        to_date_obj = datetime.strptime(to_date_str, '%Y-%m-%d')
+
+        current_date_str = from_date_obj.strftime('%Y-%m-%d 00:00:00')
+        to_date_str = to_date_obj.strftime('%Y-%m-%d 23:59:59')
+
+
+        if view_role == 5 and district_ids:
+            additional_cond = (
+                f"AND district_id IN ({', '.join(map(str, district_ids))}) "
+                f"AND pucar_police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        elif view_role in [3, 4]:
+            additional_cond = f"AND district_id IN ({', '.join(map(str, district_ids))})"
+        else:
+            additional_cond = ""
+
+
+        vwps_conn = db_config.get_vwps_db_connection()
+        vwps_cursor = vwps_conn.cursor()
+
+        vccs_conn = db_config.get_vccs_db_connection()
+        vccs_cursor = vccs_conn.cursor()
+
+        vcm_conn = db_config.get_vcm_db_connection()
+        vcm_cursor = vcm_conn.cursor()
+
+        vwps_escalated_query = f"""
+                            SELECT count(*)
+                            FROM case_final_status
+                            WHERE final_status_id = 7
+                            AND district_id is not Null
+                            AND created_at BETWEEN %s AND %s
+                            {additional_cond}
+        """
+        vwps_cursor.execute(vwps_escalated_query,(current_date_str,to_date_str))
+        row = vwps_cursor.fetchone()
+        vwps_escalated = row[0] if row is not None else 0
+
+        vccs_escalated_query = f"""
+                                    SELECT count(*)
+                                    FROM case_final_status
+                                    WHERE final_status_id = 7
+                                    AND district_id is not Null
+                                    AND created_at BETWEEN %s AND %s
+                                    {additional_cond}
+                """
+        vccs_cursor.execute(vccs_escalated_query, (current_date_str, to_date_str))
+        row = vccs_cursor.fetchone()
+        vccs_escalated = row[0] if row is not None else 0
+
+        vcm_escalated_query = f"""
+                                    SELECT count(*)
+                                    FROM case_final_status
+                                    WHERE final_status_id = 7
+                                    AND district_id is not Null
+                                    AND created_at BETWEEN %s AND %s
+                                    {additional_cond}
+                """
+        vcm_cursor.execute(vcm_escalated_query, (current_date_str, to_date_str))
+        row = vcm_cursor.fetchone()
+        vcm_escalated = row[0] if row is not None else 0
+
+        escalated_case_count = vwps_escalated + vccs_escalated + vcm_escalated
 
         dashboard_data = {
             'terrorist_act': {'count': terrorism, 'fir': terrorism_fir,
@@ -605,7 +673,11 @@ def punjab_stats_dashboard():
             'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses else 0,
             'police_encounter': 0,
             'environment_smog': 0,
-            'negative_feedbacks' : negative_feedback_count
+            'negative_feedbacks' : 0 if view_role == 5 else negative_feedback_count,
+            'escalated_cases' : escalated_case_count,
+            'vwps_escalated' : vwps_escalated,
+            'vcm_escalated' : vcm_escalated,
+            'vccs_escalated' : vccs_escalated
         }
 
         response = {
@@ -841,7 +913,7 @@ def punjab_more_info():
                 "assigned_time": created_time,
                 "cli": caller_number,
                 "police_station": police_station,
-                "status": 'CompCa',
+                "status": 'Completed',
                 "district": configs.DISTRICTS_DICTIONARY.get(district_id),
                 "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
                 "description": description,
@@ -947,7 +1019,7 @@ def districtwise_counts():
             )
         # Query to get district-wise case counts
         cases_query = f"""
-            SELECT 
+            SELECT
                 district_id, 
                 count(*) AS total_cases
             FROM 
@@ -1050,6 +1122,7 @@ def districtwise_more_info():
         else :
             district_condition = f"AND district_id = {configs.REVERSED_DISTRICTS_DICTIONARY.get(district_str)}"
 
+        # For PS Query
         if view_role == 5 and district_ids:
             additional_condition = (
                 f"AND rt.district_id IN ({', '.join(map(str, district_ids))}) "
@@ -1069,8 +1142,9 @@ def districtwise_more_info():
                 SUM(other_person), SUM(other_property), SUM(dacoity_with_murder)
             FROM punjab_today
             WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-                AND date BETWEEN ? AND ?
-                {district_condition}
+            AND district_id IS NOT NULL
+            AND date BETWEEN ? AND ?
+            {district_condition}
         """
         processed_db_cursor.execute(category_query, (from_date, to_date))
         (murder, dacoity, firing, rape_sexual_assault, kidnapping,
@@ -1092,6 +1166,7 @@ def districtwise_more_info():
             'other': other_person,
             'environment_smog_issues': 0,
             'firing': firing,
+            'sexual_assault' : rape_sexual_assault,
             'dacoity_with_murder': dacoity_with_murder,
             'police_encounter': 0
         }
@@ -1147,67 +1222,77 @@ def districtwise_more_info():
             elif district_str == 'Lahore':
                 police_division = configs.LAHORE_DIVISION_MAPPING[police_circle]
             elif district_str == 'Rawalpindi':
-                police_division = configs.RAWALPINDI_DIVISION_MAPPING[police_circle]
+                if police_circle in configs.RAWALPINDI_DIVISION_MAPPING:
+                    police_division = configs.RAWALPINDI_DIVISION_MAPPING[police_circle]
+                else:
+                    continue
             elif district_str == 'Gujranwala':
                 police_division = configs.GUJRANWALA_DIVISION_MAPPING[police_circle]
             elif district_str == 'Faisalabad':
                 police_division = configs.FAISALABAD_DIVISION_MAPPING[police_circle]
             else:
-                # use a generic division
+                # Use a generic division
                 police_division = GENERIC_DIVISION_NAME
 
+            # Initialize nested dictionaries if not already present
             if police_division not in ps_wise_response_dict:
                 ps_wise_response_dict[police_division] = {}
 
-            if police_circle not in ps_wise_response_dict[police_division]:
-                ps_wise_response_dict[police_division][police_circle] = {}
+            # Handle specific renaming case for 'Sadar F/abad'
+            if district_str == 'Faisalabad' and police_circle == 'Sadar F/abad':
+                corrected_circle = 'Sadar'
+                if corrected_circle not in ps_wise_response_dict[police_division]:
+                    ps_wise_response_dict[police_division][corrected_circle] = {}
+                ps_wise_response_dict[police_division][corrected_circle][police_station] = count
+            else:
+                if police_circle not in ps_wise_response_dict[police_division]:
+                    ps_wise_response_dict[police_division][police_circle] = {}
+                ps_wise_response_dict[police_division][police_circle][police_station] = count
 
-            ps_wise_response_dict[police_division][police_circle][police_station] = count
-
-        cases_query = f"""
-            SELECT case_number, level3_case_nature, caller_name, caller_number,
-                   accepted_time, police_station, district_id, time_id,
-                   description, first_arrival_time, response_time
-            FROM response_time
-            WHERE date BETWEEN ? AND ?
-                {district_condition}
-                AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
-                    OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
-                AND district_id NOT IN ('0','41','42','43','44','45','46')
-                AND police_station is not Null
-                AND parent_id = 0
-        """
-        processed_db_cursor.execute(cases_query, (from_date, to_date))
-        cases = processed_db_cursor.fetchall()
-
-        cases_list = [
-            {
-                "case_number": case_number,
-                "case_nature": level3_case_nature,
-                "caller_name": caller_name,
-                "assigned_time": created_time,
-                "cli": caller_number,
-                "police_station": police_station,
-                "status": 'CompCa',
-                "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)),
-                "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
-                "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
-                    configs.YMD_HMS) if reached_time else None,
-                "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else 0
-            }
-            for (case_number, level3_case_nature, caller_name, caller_number,
-                 created_time, police_station, district_id, time_id,
-                 description, reached_time, response_time) in cases
-        ]
+        # cases_query = f"""
+        #     SELECT case_number, level3_case_nature, caller_name, caller_number,
+        #            accepted_time, police_station, district_id, time_id,
+        #            description, first_arrival_time, response_time
+        #     FROM response_time
+        #     WHERE date BETWEEN ? AND ?
+        #         {district_condition}
+        #         AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
+        #             OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
+        #         AND district_id NOT IN ('0','41','42','43','44','45','46')
+        #         AND police_station is not Null
+        #         AND parent_id = 0
+        # """
+        # processed_db_cursor.execute(cases_query, (from_date, to_date))
+        # cases = processed_db_cursor.fetchall()
+        #
+        # cases_list = [
+        #     {
+        #         "case_number": case_number,
+        #         "case_nature": level3_case_nature,
+        #         "caller_name": caller_name,
+        #         "assigned_time": created_time,
+        #         "cli": caller_number,
+        #         "police_station": police_station,
+        #         "status": 'CompCa',
+        #         "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)),
+        #         "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
+        #         "description": description,
+        #         "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+        #             configs.YMD_HMS) if reached_time else None,
+        #         "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else 0
+        #     }
+        #     for (case_number, level3_case_nature, caller_name, caller_number,
+        #          created_time, police_station, district_id, time_id,
+        #          description, reached_time, response_time) in cases
+        # ]
 
         response = {
             'status': True,
             'message': 'District details fetched successfully',
             'data': {
                 'categorywise_response': categorywise_response,
-                'ps_wise_response': ps_wise_response_dict,
-                'cases': cases_list
+                'ps_wise_response': ps_wise_response_dict
+                # 'cases': cases_list
             }
         }
 
@@ -1219,6 +1304,7 @@ def districtwise_more_info():
             'status': False,
             'message': f'Internal server error {traceback.format_exc()}'
         }), 500
+
 
 
 @app.route(configs.PSWISE_CATEGORIES['ENDPOINT'], methods=[configs.PSWISE_CATEGORIES['METHOD']])
@@ -1341,7 +1427,7 @@ def pswise_categories():
                 "assigned_time": created_time,
                 "cli": caller_number,
                 "police_station": police_station,
-                "status": 'CompCa',
+                "status": 'Completed',
                 "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)),
                 "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
                 "description": description,
@@ -1661,7 +1747,7 @@ def district_category_details():
             }), 400
 
         category = "other_property" if category == "Illegal Possession" else category
-        category = "rape" if category == "women_harrassment" else category
+        category = "rape" if category == "sexual_assault" else category
         category = "aerial_firing" if category == "firing" else category
 
         districts = district_str.split(",") if district_str else []
@@ -1734,7 +1820,7 @@ def district_category_details():
                 "assigned_time": created_time,
                 "cli": caller_number,
                 "police_station": police_station,
-                "status": 'CompCa',
+                "status": 'Completed',
                 "district": configs.DISTRICTS_DICTIONARY.get(district_id),
                 "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
                 "description": description,
@@ -1812,6 +1898,7 @@ def forcast_predpol():
         dashboard_data = get_category_data(ps,district)
 
         data = {**forecast, **dashboard_data}
+
         response = {
             'status': True,
             'message': 'Prediction Comparison fetched successfully',
@@ -1825,6 +1912,43 @@ def forcast_predpol():
         return jsonify({
             'status': False,
             'message': 'Internal server error',
+            'data': None
+        }), 500
+
+
+@app.route(configs.DATEWISE_FORECAST['ENDPOINT'], methods=[configs.DATEWISE_FORECAST['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@jwt_required()
+def forecast_datewise():
+    try:
+        log_db_conn, log_db_cursor = get_log_db_connection()
+
+        ps = request.form.get('police_station')
+        district = request.form.get('district')
+        start_date_str = request.form.get('start_date')
+        end_date_str = request.form.get('end_date')
+
+        if not all([start_date_str, end_date_str]):
+            return jsonify({"error": "Missing required params"}), 400
+
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
+
+        data = forecast_date(ps, district, start_date, end_date)
+
+        response = {
+            'status': True,
+            'message': 'Datewise Prediction fetched successfully',
+            'data': data
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error : {e}',
             'data': None
         }), 500
 
@@ -2705,6 +2829,8 @@ def cm_ps_responsetime():
         district_str = request.form.get('district')
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
+        view_role = request.form.get('view_role', type=int)
+        police_station_str = request.form.get('police_station')
 
         if not all([district_str, from_date, to_date]):
             return jsonify({
@@ -2713,8 +2839,20 @@ def cm_ps_responsetime():
                 'data': None
             }), 400
 
+        districts = district_str.split(",") if district_str else []
+        police_stations = police_station_str.split(",") if police_station_str else []
+
         if district_str:
             district_id = configs.REVERSED_DISTRICTS_DICTIONARY[district_str]
+
+
+        if view_role == 5 and district_id:
+            district_condition = (
+                f"  AND district_id IN ({district_id}) "
+                f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        else :
+            district_condition = ""
 
         processed_db_cursor.execute(f"""
                         SELECT police_station, avg(response_time)
@@ -2725,6 +2863,7 @@ def cm_ps_responsetime():
                         AND parent_id = 0
                         AND response_time IS NOT NULL AND response_time > 0
                         AND district_id = ?
+                        {district_condition}
                         GROUP BY police_station
                     """, (from_date, to_date, district_id))
         ps_results = processed_db_cursor.fetchall()
@@ -2846,6 +2985,9 @@ def ps_fir_stats():
         district_str = request.form.get('district')
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
+        view_role = request.form.get('view_role', type=int)
+        police_station_str = request.form.get('police_station')
+
 
         if not all([district_str, from_date, to_date]):
             return jsonify({
@@ -2857,6 +2999,13 @@ def ps_fir_stats():
         if district_str:
             district_id = configs.REVERSED_DISTRICTS_DICTIONARY[district_str]
 
+        police_stations = police_station_str.split(",") if police_station_str else []
+
+        if view_role == 5:
+            ps_condition = f" AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+        else :
+            ps_condition = ""
+
         fir_stats_query = f"""
                 SELECT 
                     police_station,
@@ -2867,6 +3016,7 @@ def ps_fir_stats():
                     date BETWEEN ? AND ?
                     AND district_id is not NULL
                     AND district_id = ?
+                    {ps_condition}
                 GROUP BY 
                     police_station;
                  """
@@ -3025,7 +3175,7 @@ def response_time_alerts():
         current_date = datetime.now()
         previous_date = current_date - timedelta(days=3)
 
-        current_date = current_date.strftime("%Y-%m-%d")
+        current_date_str = current_date.strftime("%Y-%m-%d")
         previous_date= previous_date.strftime("%Y-%m-%d")
 
         alerts_count_query = f"""
@@ -3039,7 +3189,7 @@ def response_time_alerts():
                     {district_condition}
                     GROUP BY district_id
         """
-        processed_db_cursor.execute(alerts_count_query,(previous_date,current_date))
+        processed_db_cursor.execute(alerts_count_query,(previous_date,current_date_str))
         alerts = processed_db_cursor.fetchall()
 
         alerts_count = []
@@ -3057,19 +3207,40 @@ def response_time_alerts():
                     {district_condition}
                     GROUP BY district_id
         """
-        processed_db_cursor.execute(alerts_casenumbers, (previous_date, current_date))
+        processed_db_cursor.execute(alerts_casenumbers, (previous_date, current_date_str))
         alerts = processed_db_cursor.fetchall()
 
         alerts_cases = []
         for i in alerts:
             alerts_cases.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1].split(",")})
 
+        if view_role == 5 and district_ids:
+            additional_condition = (
+                f"  AND district IN ({', '.join(map(str, district_ids))}) "
+                f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        elif view_role in [3, 4]:
+            additional_condition = f" AND district IN ({', '.join(map(str, district_ids))})"
+        else:
+            additional_condition = ""
+
+
+        db_conn = db_config.get_db_connection()
+        db_cursor = db_conn.cursor()
+
+        db_cursor.execute(f"""
+                    SELECT district, group_concat(case_number) 
+                    FROM pred_pol_crimes_hotspot 
+                    WHERE case_number IS NOT null
+                    AND date = %s
+                    {additional_condition}
+                    Group By district
+        """,(current_date.strftime('%d-%m-%Y'),))
+        re_occurrences_cases = db_cursor.fetchall()
+
         crime_occurence = []
-        for alert_case in alerts_cases:
-            for district, crimes in alert_case.items():
-                num_crimes = max(1, math.ceil(len(crimes) * 0.03))
-                limited_crimes = crimes[:num_crimes]
-                crime_occurence.append({district: limited_crimes})
+        for i in re_occurrences_cases:
+            crime_occurence.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1].split(",")})
 
         response = {
             "status": True,
@@ -3208,7 +3379,7 @@ def vwps_stats():
         if view_role == 5 and district_ids:
             district_condition = (
                 f"  AND district_id IN ({', '.join(map(str, district_ids))}) "
-                f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+                f"AND pucar_police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
         elif view_role in [3, 4]:
             district_condition = f" AND district_id IN ({', '.join(map(str, district_ids))})"
@@ -3764,6 +3935,258 @@ def caller_feedback():
 
         return jsonify(response), 200
 
+
+    except Exception as e:
+        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "message": f"An error occurred: {str(e)}"
+        }), 500
+
+
+@app.route(configs.BLOOD_DONATION['ENDPOINT'], methods=[configs.BLOOD_DONATION['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@jwt_required()
+def blood_donation():
+    log_db_conn, log_db_cursor = get_log_db_connection()
+    db_conn = db_config.get_blood_db_connection()
+    db_cursor = db_conn.cursor()
+    try:
+        district_str = request.form.get('district')
+        police_station_str = request.form.get('police_station')
+        view_role = request.form.get('view_role', type=int)
+
+        current_date = datetime.now().strftime('%Y-%m-%d')
+
+        districts = district_str.split(",") if district_str else []
+        police_stations = police_station_str.split(",") if police_station_str else []
+
+        if not all([district_str, police_station_str, view_role]):
+            return jsonify({
+                'status': False,
+                'message': 'Missing required parameters',
+                'data': None
+            }), 400
+
+        district_ids = []
+        if districts:
+            for district in districts:
+                if district in configs.REVERSED_DISTRICTS_DICTIONARY:
+                    district_ids.append(configs.REVERSED_DISTRICTS_DICTIONARY[district])
+                else:
+                    return jsonify({
+                        'status': False,
+                        'message': f"Invalid district name: {district}",
+                        'data': None
+                    }), 400
+
+        if view_role == 5 and district_ids:
+            district_condition = (
+                f"  AND district_id IN ({', '.join(map(str, district_ids))}) "
+                f"AND police_station_name IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        elif view_role in [3, 4]:
+            district_condition = f" AND district_id IN ({', '.join(map(str, district_ids))})"
+        else:
+            district_condition = ""
+
+        db_cursor.execute(f"""
+            SELECT 
+                COUNT(*) AS total_request_count,
+                SUM(CASE WHEN final_status_id = 3 THEN 1 ELSE 0 END) AS blood_donated,
+                SUM(CASE WHEN final_status_id = 2 THEN 1 ELSE 0 END) AS connected_with_donor,
+                SUM(CASE WHEN final_status_id = 1 THEN 1 ELSE 0 END) AS pending_request,
+                SUM(CASE WHEN final_status_id = 4 THEN 1 ELSE 0 END) AS withdrawn_by_caller,
+                SUM(CASE WHEN DATE(created_at) = %s THEN 1 ELSE 0 END) AS today_request_count
+            FROM requests
+            WHERE 1=1
+            {district_condition}
+        """, (current_date,))
+
+        result = db_cursor.fetchone()
+        result = [int(value) if isinstance(value, Decimal) else value for value in result]
+
+        # Assign to stats_array
+        stats_array = {}
+        stats_array['total_requests'] = result[0]
+        stats_array['blood_donated'] = result[1]
+        stats_array['connected_to_donor'] = result[2]
+        stats_array['closed'] = result[1] + result[4]
+        stats_array['pending'] = result[3]
+        stats_array['withdrawn_by_caller'] = result[4]
+        stats_array['today_request_recieved_count'] = result[5]
+
+        db_cursor.execute(f"""
+        SELECT 
+        COUNT(*) AS active_donors_count,
+        SUM(CASE WHEN DATE(last_donated_at) = %s THEN 1 ELSE 0 END) AS today_blood_donated
+        FROM donars
+        WHERE is_active = 1 OR DATE(last_donated_at) = %s
+""", (current_date, current_date))
+
+        result = db_cursor.fetchone()
+        result = [int(value) if isinstance(value, Decimal) else value for value in result]
+        stats_array['donors_registered'] = result[0]
+        stats_array['blood_donated_today'] = result[1]
+
+        db_cursor.execute(f"""
+            SELECT final_status_name, contact_person_name, contact_person_phone, 
+                   required_blood_group, hospital_address, blood_required_date_time , created_at
+            FROM requests
+            WHERE 1=1
+            {district_condition}
+        """)
+        requests_details = db_cursor.fetchall()
+
+        # Storing the data in a list of dictionaries
+        requests_list = [
+            {
+                "status": final_status_name,
+                "caller_name": contact_person_name,
+                "caller_phone": contact_person_phone,
+                "bloodgroup_required": required_blood_group,
+                "address": hospital_address,
+                "donation_date": blood_required_date_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "case_created_at": created_at.strftime("%Y-%m-%d %H:%M:%S")
+            }
+
+            for (final_status_name, contact_person_name, contact_person_phone,
+                 required_blood_group, hospital_address, blood_required_date_time, created_at) in requests_details
+        ]
+
+        db_cursor.execute(f"""
+                    SELECT district_name , COUNT(*)
+                    FROM requests
+                    WHERE 1=1
+                    {district_condition}
+                    group BY  district_name
+        """, )
+        districtwise_rows = db_cursor.fetchall()
+        districtwise_dict = {district_name: count for district_name, count in districtwise_rows}
+
+        response = {
+            "status": "success",
+            "data": {
+                'blood_donation_stats': stats_array,
+                'cases': requests_list,
+                'districtwise_donors': districtwise_dict
+            },
+            "message": "Blood Donation Stats and  Cases fetched successfully"
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "message": f"An error occurred: {str(e)}"
+        }), 500
+
+
+@app.route(configs.ESCALATED_CASES['ENDPOINT'], methods=[configs.ESCALATED_CASES['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@jwt_required()
+def escalated_cases():
+    log_db_conn, log_db_cursor = get_log_db_connection()
+    vccs_conn = db_config.get_vccs_db_connection()
+    vccs_cursor = vccs_conn.cursor()
+    vwps_conn = db_config.get_vwps_db_connection()
+    vwps_cursor = vwps_conn.cursor()
+    vcm_conn = db_config.get_vcm_db_connection()
+    vcm_cursor = vcm_conn.cursor()
+    try:
+        category = request.form.get('category')
+        from_date_str = request.form.get('fromDate')
+        to_date_str = request.form.get('toDate')
+        view_role = request.form.get('view_role',type=int)
+        district_str = request.form.get('district')
+        police_station_str = request.form.get('police_station')
+
+        districts = district_str.split(",") if district_str else []
+        police_stations = police_station_str.split(",") if police_station_str else []
+
+        # Validate date format
+        try:
+            datetime.strptime(from_date_str, configs.YM_DATE)
+            datetime.strptime(to_date_str, configs.YM_DATE)
+        except ValueError:
+            return jsonify({
+                'status': False,
+                'message': 'Invalid date format. Use YYYY-MM-DD',
+                'data': None
+            }), 400
+
+        district_ids = []
+        if districts:
+            for district in districts:
+                if district in configs.REVERSED_DISTRICTS_DICTIONARY:
+                    district_ids.append(configs.REVERSED_DISTRICTS_DICTIONARY[district])
+                else:
+                    return jsonify({
+                        'status': False,
+                        'message': f"Invalid district name: {district}",
+                        'data': None
+                    }), 400
+
+        from_date_obj = datetime.strptime(from_date_str, '%Y-%m-%d')
+        to_date_obj = datetime.strptime(to_date_str, '%Y-%m-%d')
+
+        current_date_str = from_date_obj.strftime('%Y-%m-%d 00:00:00')
+        to_date_str = to_date_obj.strftime('%Y-%m-%d 23:59:59')
+
+        if view_role == 5 and district_ids:
+            district_condition = (
+                f"AND pucar_district_id IN ({', '.join(map(str, district_ids))}) "
+                f"AND pucar_police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        elif view_role in [3, 4]:
+            district_condition = f"AND pucar_district_id IN ({', '.join(map(str, district_ids))})"
+        else:
+            district_condition = ""
+
+        query = f"""
+            SELECT pucar_case_number, level3_case_nature, pucar_caller_name, pucar_cli,
+                        pucar_police_station, final_status_remarks, pucar_cro_comments, pucar_district, created_at
+            FROM case_final_status
+            WHERE final_status_id = 7
+            AND created_at BETWEEN %s AND %s
+            {district_condition}
+        """
+
+        if category == 'vccs':
+            vccs_cursor.execute(query, (current_date_str, to_date_str))
+            results = vccs_cursor.fetchall()
+        elif category == 'vwps':
+            vwps_cursor.execute(query, (current_date_str, to_date_str))
+            results = vwps_cursor.fetchall()
+        elif category == 'vcm':
+            vcm_cursor.execute(query, (current_date_str, to_date_str))
+            results = vcm_cursor.fetchall()
+        else:
+            results = []
+            print("Invalid category provided!")
+
+        columns = [
+            "pucar_case_number", "level3_case_nature", "pucar_caller_name", "pucar_cli",
+            "pucar_police_station", "final_status_remarks", "pucar_cro_comments",
+            "pucar_district", "created_at"
+        ]
+
+        # Convert results into a list of dictionaries
+        result_dicts = [
+            {**dict(zip(columns[:-1], row[:-1])), "created_at": row[-1].strftime("%Y-%m-%d %H:%M:%S")}
+            for row in results
+        ]
+
+        response = {
+            "status": "success",
+            "data": result_dicts,
+            "message": "Escalated Cases fetched successfully"
+        }
+        return jsonify(response),200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
