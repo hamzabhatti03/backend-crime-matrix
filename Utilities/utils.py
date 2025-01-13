@@ -538,6 +538,9 @@ def log_to_database(log_conn, log_cursor, level, message):
     data = (level, get_current_time(), message, SYS_IP)
     try:
         log_cursor.execute(query, data)
+        # Print the error to the console
+        print("ERROR:", message)
+
         log_conn.commit()
     except mysql.connector.Error as err:
         print(f"Database Error: {err}")
@@ -710,3 +713,14 @@ def get_processed_db_connection(database=configs.POSTGRES_PROCESSED_STATS_MAIN):
     except Exception as e:
         print(e)
         raise
+
+
+def log_error_to_db_and_console(db_conn, log_db_cursor, error_message):
+    # Capture the error message
+    error_message = traceback.format_exc()
+
+    # Log the error to the database
+    log_to_database(db_conn, log_db_cursor, "ERROR", error_message)
+
+    # Print the error to the console
+    print("ERROR:", error_message)
