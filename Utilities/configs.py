@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 """"MAIN SERVER CONFIGURATIONS"""
-PORT = 5005
+PORT = 5025
 DEBUG_ = True
 HOST = '0.0.0.0'
 ONE_TIME_RUN = True
