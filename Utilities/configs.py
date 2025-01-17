@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 """"MAIN SERVER CONFIGURATIONS"""
-PORT = 5025
+PORT = 5005
 DEBUG_ = True
 HOST = '0.0.0.0'
 ONE_TIME_RUN = True
@@ -17,7 +17,7 @@ WHITE_LISTED_IPS = ['10.22.15.235', '10.20.170.151', '10.20.170.219', '10.20.170
 
 """API REQUEST LIMITER"""
 DEFAULT_LIMITER = ["50000 per day", "5000 per hour"]
-LIMITER = "2000 per minute"
+LIMITER = "750 per minute"
 
 """CACHE CONFIGS"""
 CACHE_CONFIGS = {'CACHE_TYPE': 'simple'}
@@ -351,6 +351,7 @@ CRIME_TRENDS = {'ENDPOINT': '/crime_trends', 'METHOD': 'POST'}
 CALLER_FEEDBACK = {'ENDPOINT': '/caller_feedback', 'METHOD': 'POST'}
 BLOOD_DONATION = {'ENDPOINT': '/blood_donation', 'METHOD': 'POST'}
 ESCALATED_CASES = {'ENDPOINT': '/escalated_cases', 'METHOD': 'POST'}
+CRIME_TREND_CASES = {'ENDPOINT': '/crime_trend_cases', 'METHOD': 'POST'}
 
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
 
@@ -679,7 +680,9 @@ LAHORE_DIVISION_MAPPING = {
     'Gowalmandi': 'City Division',
     'Rang Mehal': 'City Division',
     'Tibbi City': 'City Division',
-    'Race Course': 'Civiline Division'
+    'Race Course': 'Civiline Division',
+    'Women Race Course' : 'Civiline Division'
+
 }
 
 RAWALPINDI_DIVISION_MAPPING = {
@@ -726,3 +729,31 @@ FAISALABAD_DIVISION_MAPPING = {
 # Define API endpoints
 FEEDBACK_15_STATS_URL = "https://police15.psca.gop.pk/public/caller/feedback/get_status_count"
 FEEDBACK_DISTRICT_COUNT_URL = "https://police15.psca.gop.pk/public/caller/feedback/get_dist_status_count"
+
+CRIME_TRENDS_CATEGORIES = {
+    "motorcycle_theft": "level3_case_nature = 'Motorcycle Theft'",
+    "murder": "level2_case_nature = 'Murder'",
+    "sexual_assault": "level2_case_nature = 'Sexual Assault'",
+    "firing": "level3_case_nature = 'Aerial Firing'",
+    "kidnapping": "level2_case_nature = 'Kiddnapping / Abduction'",
+    "dacoity": "level2_case_nature IN ('Dacoity')",
+    "robbery_snatching": "level2_case_nature IN ('Robbery/Snatching')",
+    "vehicle_theft": "level3_case_nature IN ('Cycle Theft', 'Other Vehicles Theft')",
+    "burglary": "level2_case_nature IN ('Burglary')",
+    "car_theft": "level3_case_nature = 'Car Theft'",
+    "motorcycle_snatching": "level3_case_nature = 'Motorcycle Snatching'",
+    "car_snatching": "level3_case_nature = 'Car Snatching'",
+    "vehicle_snatching": "level2_case_nature IN ('Vehicle Snatching')",
+    "crime_against_property": """
+        (level2_case_nature IN ('Vehicle Snatching', 'Burglary', 'Robbery/Snatching', 'Dacoity')
+         OR level3_case_nature IN ('Motorcycle Theft', 'Car Theft', 'Cycle Theft', 'Other Vehicles Theft'))
+    """,
+    "crime_against_person": """
+        (level2_case_nature IN ('Murder', 'Sexual Assault', 'Kidnapping / Abduction')
+         OR level3_case_nature = 'Aerial Firing')
+    """,
+    "": """
+        AND (level2_case_nature IN ('Vehicle Snatching', 'Burglary', 'Robbery/Snatching', 'Dacoity', 'Murder', 'Sexual Assault', 'Kiddnapping / Abduction')
+         OR level3_case_nature IN ('Aerial Firing', 'Motorcycle Theft', 'Car Theft', 'Cycle Theft', 'Other Vehicles Theft'))
+    """
+}

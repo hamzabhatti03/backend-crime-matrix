@@ -1,5 +1,6 @@
 import psycopg2
 from psycopg2 import sql
+from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
 import time
 import traceback
@@ -1119,6 +1120,296 @@ def process_fir_cases(db_conn, processed_conn, start_timestamp, end_timestamp, d
         utils.log_to_database(processed_conn, None, "ERROR", traceback.format_exc())
 
 
+def crime_trends_processing(db_conn):
+    try:
+        cursor = db_conn.cursor()
+
+        category_query = """
+                        SELECT 
+                            DATE(FROM_UNIXTIME(time_id)) AS date,
+                            district_id,
+                            police_station,
+                            COUNT(*) AS count,
+                            CASE 
+                                WHEN level2_case_nature in ('Robbery/Snatching') THEN 'robbery_snatching'
+                                WHEN level2_case_nature in ('Dacoity') THEN 'dacoity'
+                                WHEN level3_case_nature = 'Motorcycle Theft' THEN 'motorcycle_theft'
+                                WHEN level3_case_nature IN ('Cycle Theft','Other Vehicles Theft') THEN 'vehicle_theft'
+                                WHEN level2_case_nature in ('Burglary') THEN 'burglary'
+                                WHEN level3_case_nature = 'Car Theft' THEN 'car_theft'
+                                WHEN level3_case_nature = 'Motorcycle Snatching' THEN 'motorcycle_snatching'
+                                WHEN level3_case_nature = 'Car Snatching' THEN 'car_snatching'
+                                WHEN level2_case_nature in ('Vehicle Snatching') THEN 'vehicle_snatching'
+                                WHEN level2_case_nature = 'Murder' THEN 'murder'
+                                WHEN level2_case_nature =  'Kiddnapping / Abduction' THEN 'kidnapping'
+                                WHEN level2_case_nature =  'Sexual Assault' THEN 'sexual_assault'
+                                WHEN level3_case_nature = 'Aerial Firing' THEN 'firing'
+                                ELSE 'other'
+                            END AS case_type
+                        FROM 15_preprocessed
+                        WHERE status = 'CompCa'
+                          AND district_id IS NOT NULL
+                          AND police_station IS NOT NULL
+                          AND parent_id = 0
+                        GROUP BY district_id, police_station, case_type, date
+                    """
+
+        # Execute the query
+        cursor.execute(category_query)
+        query_results = cursor.fetchall()
+
+        results = {}
+
+        for date, district_id, police_station, count, case_type in query_results:
+            if isinstance(date, bytes):
+                date = date.decode('utf-8')
+            if isinstance(district_id, bytes):
+                district_id = district_id.decode('utf-8')
+
+            if isinstance(police_station, bytes):
+                police_station = police_station.decode('utf-8')
+
+            if isinstance(case_type, bytes):
+                case_type = case_type.decode('utf-8')
+
+            if (date, district_id, police_station) not in results:
+                results[(date, district_id, police_station)] = {
+                    'robbery_snatching': 0,
+                    'dacoity': 0,
+                    'motorcycle_theft': 0,
+                    'burglary': 0,
+                    'car_theft': 0,
+                    'vehicle_theft': 0,
+                    'vehicle_snatching': 0,
+                    'car_snatching': 0,
+                    'motorcycle_snatching': 0,
+                    'murder':0,
+                    'kidnapping' : 0,
+                    'sexual_assault' : 0,
+                    'firing' : 0,
+                    'other': 0
+                }
+            results[(date, district_id, police_station)][case_type] += count
+        return results
+
+    except Exception as e:
+        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+
+
+def insert_crime_trends(db_connection, results):
+    try:
+        cursor = db_connection.cursor()
+        insert_query = sql.SQL("""
+        INSERT INTO crime_trends (
+            date, police_station, district_id, burglary, robbery_snatching, 
+            dacoity, motorcycle_theft, car_theft, vehicle_theft, vehicle_snatching,
+            car_snatching, motorcycle_snatching , murder, kidnapping, sexual_assault, firing
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        ON CONFLICT (date, district_id, police_station) DO UPDATE SET
+            burglary = EXCLUDED.burglary,
+            robbery_snatching = EXCLUDED.robbery_snatching,
+            dacoity = EXCLUDED.dacoity,
+            motorcycle_theft = EXCLUDED.motorcycle_theft,
+            car_theft = EXCLUDED.car_theft,
+            vehicle_theft = EXCLUDED.vehicle_theft,
+            vehicle_snatching = EXCLUDED.vehicle_snatching,
+            car_snatching = EXCLUDED.car_snatching,
+            motorcycle_snatching = EXCLUDED.motorcycle_snatching,
+            murder = EXCLUDED.murder,
+            kidnapping = EXCLUDED.kidnapping,
+            sexual_assault = EXCLUDED.sexual_assault,
+            firing = EXCLUDED.firing
+        """)
+
+        # Define default values for each column
+        default_values = {
+            'robbery_snatching': 0,
+            'dacoity': 0,
+            'motorcycle_theft': 0,
+            'car_theft': 0,
+            'vehicle_theft': 0,
+            'burglary': 0,
+            'vehicle_snatching': 0,
+            'car_snatching': 0,
+            'motorcycle_snatching': 0,
+            'murder' : 0,
+            'kidnapping' : 0,
+            'sexual_assault' : 0,
+            'firing' : 0,
+        }
+
+        for (date, district_id, police_station), result in results.items():
+            row = {
+                'date': date,
+                'police_station': f"{police_station}",
+                'district_id': district_id
+            }
+            row.update(default_values)
+            row.update(result)
+
+            cursor.execute(insert_query, (
+                row['date'], row['police_station'], row['district_id'],
+                row['burglary'], row['robbery_snatching'], row['dacoity'],
+                row['motorcycle_theft'], row['car_theft'], row['vehicle_theft'],
+                row['vehicle_snatching'], row['car_snatching'], row['motorcycle_snatching'],
+                row['murder'],row['kidnapping'],row['sexual_assault'],row['firing']
+            ))
+
+        db_connection.commit()
+    except Exception as e:
+        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        db_connection.rollback()
+    finally:
+        cursor.close()
+
+
+def fir_trends_processing(db_conn):
+    try:
+        cursor = db_conn.cursor()
+
+        category_query = """
+                        SELECT 
+                            DATE(dispatch_time) AS date,
+                            psca_district_id,
+                            psca_ps_name,
+                            COUNT(*) AS count,
+                            CASE 
+                                WHEN level2_case_nature in ('Robbery/Snatching') THEN 'robbery_snatching'
+                                WHEN level2_case_nature in ('Dacoity') THEN 'dacoity'
+                                WHEN level3_case_nature = 'Motorcycle Theft' THEN 'motorcycle_theft'
+                                WHEN level3_case_nature IN ('Cycle Theft','Other Vehicles Theft') THEN 'vehicle_theft'
+                                WHEN level2_case_nature in ('Burglary') THEN 'burglary'
+                                WHEN level3_case_nature = 'Car Theft' THEN 'car_theft'
+                                WHEN level3_case_nature = 'Motorcycle Snatching' THEN 'motorcycle_snatching'
+                                WHEN level3_case_nature = 'Car Snatching' THEN 'car_snatching'
+                                WHEN level2_case_nature in ('Vehicle Snatching') THEN 'vehicle_snatching'
+                                WHEN level2_case_nature = 'Murder' THEN 'murder'
+                                WHEN level2_case_nature =  'Kiddnapping / Abduction' THEN 'kidnapping'
+                                WHEN level2_case_nature =  'Sexual Assault' THEN 'sexual_assault'
+                                WHEN level3_case_nature = 'Aerial Firing' THEN 'firing'
+                                ELSE 'other'
+                            END AS case_type
+                        FROM `leads_in_fir_preprocessed`
+                        WHERE psca_district_id IS NOT NULL
+                          AND psca_ps_name IS NOT NULL
+                        GROUP BY psca_district_id, psca_ps_name, case_type, date
+                    """
+
+        # Execute the query
+        cursor.execute(category_query)
+        query_results = cursor.fetchall()
+
+        results = {}
+
+        for date, district_id, police_station, count, case_type in query_results:
+            if isinstance(date, bytes):
+                date = date.decode('utf-8')
+            if isinstance(district_id, bytes):
+                district_id = district_id.decode('utf-8')
+
+            if isinstance(police_station, bytes):
+                police_station = police_station.decode('utf-8')
+
+            if isinstance(case_type, bytes):
+                case_type = case_type.decode('utf-8')
+
+            if (date, district_id, police_station) not in results:
+                results[(date, district_id, police_station)] = {
+                    'robbery_snatching': 0,
+                    'dacoity': 0,
+                    'motorcycle_theft': 0,
+                    'burglary': 0,
+                    'car_theft': 0,
+                    'vehicle_theft': 0,
+                    'vehicle_snatching': 0,
+                    'car_snatching': 0,
+                    'motorcycle_snatching': 0,
+                    'murder' : 0,
+                    'kidnapping' : 0,
+                    'sexual_assault' : 0,
+                    'firing' : 0,
+                    'other': 0
+                }
+            results[(date, district_id, police_station)][case_type] += count
+        return results
+
+    except Exception as e:
+        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+
+
+def insert_fir_trends(db_connection, results):
+    try:
+        cursor = db_connection.cursor()
+        insert_query = sql.SQL("""
+        INSERT INTO fir_trends (
+            date, police_station, district_id, burglary, robbery_snatching, 
+            dacoity, motorcycle_theft, car_theft, vehicle_theft, vehicle_snatching,
+            car_snatching, motorcycle_snatching , murder, kidnapping, sexual_assault, firing
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        ON CONFLICT (date, district_id, police_station) DO UPDATE SET
+            burglary = EXCLUDED.burglary,
+            robbery_snatching = EXCLUDED.robbery_snatching,
+            dacoity = EXCLUDED.dacoity,
+            motorcycle_theft = EXCLUDED.motorcycle_theft,
+            car_theft = EXCLUDED.car_theft,
+            vehicle_theft = EXCLUDED.vehicle_theft,
+            vehicle_snatching = EXCLUDED.vehicle_snatching,
+            car_snatching = EXCLUDED.car_snatching,
+            motorcycle_snatching = EXCLUDED.motorcycle_snatching,
+            murder = EXCLUDED.murder,
+            kidnapping = EXCLUDED.kidnapping,
+            sexual_assault = EXCLUDED.sexual_assault,
+            firing = EXCLUDED.firing
+        """)
+
+        # Define default values for each column
+        default_values = {
+            'robbery_snatching': 0,
+            'dacoity': 0,
+            'motorcycle_theft': 0,
+            'car_theft': 0,
+            'vehicle_theft': 0,
+            'burglary': 0,
+            'vehicle_snatching': 0,
+            'car_snatching': 0,
+            'motorcycle_snatching': 0,
+            'murder' : 0,
+            'kidnapping' : 0,
+            'sexual_assault' : 0,
+            'firing' : 0,
+        }
+
+        for (date, district_id, police_station), result in results.items():
+            if date is None:
+                continue
+            row = {
+                'date': date,
+                'police_station': f"{police_station}",
+                'district_id': district_id
+            }
+            row.update(default_values)
+            row.update(result)
+
+            cursor.execute(insert_query, (
+                row['date'], row['police_station'], row['district_id'],
+                row['burglary'], row['robbery_snatching'], row['dacoity'],
+                row['motorcycle_theft'], row['car_theft'], row['vehicle_theft'],
+                row['vehicle_snatching'], row['car_snatching'], row['motorcycle_snatching'],
+                row['murder'],row['kidnapping'],row['sexual_assault'],row['firing']
+            ))
+
+        db_connection.commit()
+    except Exception as e:
+        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        db_connection.rollback()
+    finally:
+        cursor.close()
+
+
 def main(start_date, end_date, start):
     try:
         processed_conn = utils.get_processed_db_connection()  # Function to get PostgreSQL connection
@@ -1358,9 +1649,35 @@ def main(start_date, end_date, start):
                     vehicle_snatching INTEGER,
                     car_snatching INTEGER,
                     motorcycle_snatching INTEGER,
+                    murder INTEGER,
+                    sexual_assault INTEGER,
+                    firing INTEGER,
+                    kidnapping INTEGER,
                     PRIMARY KEY (date, district_id, police_station)
                 )
             ''')
+
+            processed_cursor.execute('''
+                            CREATE TABLE IF NOT EXISTS fir_trends (
+                                date TEXT,
+                                district_id INTEGER,
+                                police_station TEXT,
+                                dacoity INTEGER,
+                                burglary INTEGER,
+                                robbery_snatching INTEGER,
+                                motorcycle_theft INTEGER,
+                                car_theft INTEGER,
+                                vehicle_theft INTEGER,
+                                vehicle_snatching INTEGER,
+                                car_snatching INTEGER,
+                                motorcycle_snatching INTEGER,
+                                murder INTEGER,
+                                sexual_assault INTEGER,
+                                firing INTEGER,
+                                kidnapping INTEGER,
+                                PRIMARY KEY (date, district_id, police_station)
+                            )
+                        ''')
 
             """ Add indexes for optimization """
             processed_cursor.execute('CREATE INDEX IF NOT EXISTS idx_time_id ON vccs_cases (time_id)')
@@ -1376,6 +1693,8 @@ def main(start_date, end_date, start):
                 'CREATE INDEX IF NOT EXISTS idx_date_district_ps_fir ON fir_cases (date, district_id, police_station)')
             processed_cursor.execute(
                 'CREATE INDEX IF NOT EXISTS idx_date_district_ps_crime ON crime_trends (date, district_id, police_station)')
+            processed_cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_date_district_ps_fir_trend ON fir_trends (date, district_id, police_station)')
             processed_cursor.execute('CREATE INDEX IF NOT EXISTS idx_response_lead_id ON response_time (lead_id)')
             processed_cursor.execute(
                 'CREATE INDEX IF NOT EXISTS idx_response_date_district ON response_time (date, district_id)')
@@ -1423,12 +1742,20 @@ def main(start_date, end_date, start):
             process_fir_cases(db_conn, processed_conn, start_timestamp, end_timestamp,
                               current_date.strftime(configs.YM_DATE))
 
+            """PROCESSES CRIME TRENDS AND INSERTING"""
+            results = crime_trends_processing(db_conn)
+            insert_crime_trends(processed_conn, results)
+
+            """PROCESSES FIR TRENDS AND INSERTING"""
+            results = fir_trends_processing(db_conn)
+            insert_fir_trends(processed_conn, results)
+
             current_date += timedelta(days=configs.DELTA_DAYS)
     except Exception as e:
         utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('07-01-25', '%d-%m-%y')
-    end_date = datetime.strptime('07-01-25', '%d-%m-%y')
+    start_date = datetime.strptime('17-01-25', '%d-%m-%y')
+    end_date = datetime.strptime('17-01-25', '%d-%m-%y')
     main(start_date, end_date, True)

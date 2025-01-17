@@ -1178,6 +1178,129 @@ def insert_crime_trends(db_connection, results):
         utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
+def fir_trends_processing(db_conn):
+    try:
+        cursor = db_conn.cursor()
+
+        category_query = """
+                        SELECT 
+                            DATE(dispatch_time) AS date,
+                            psca_district_id,
+                            psca_ps_name,
+                            COUNT(*) AS count,
+                            CASE 
+                                WHEN level2_case_nature in ('Robbery/Snatching') THEN 'robbery_snatching'
+                                WHEN level2_case_nature in ('Dacoity') THEN 'dacoity'
+                                WHEN level3_case_nature = 'Motorcycle Theft' THEN 'motorcycle_theft'
+                                WHEN level3_case_nature IN ('Cycle Theft','Other Vehicles Theft') THEN 'vehicle_theft'
+                                WHEN level2_case_nature in ('Burglary') THEN 'burglary'
+                                WHEN level3_case_nature = 'Car Theft' THEN 'car_theft'
+                                WHEN level3_case_nature = 'Motorcycle Snatching' THEN 'motorcycle_snatching'
+                                WHEN level3_case_nature = 'Car Snatching' THEN 'car_snatching'
+                                WHEN level2_case_nature in ('Vehicle Snatching') THEN 'vehicle_snatching'
+                                WHEN level2_case_nature = 'Murder' THEN 'murder'
+                                WHEN level2_case_nature =  'Kiddnapping / Abduction' THEN 'kidnapping'
+                                WHEN level2_case_nature =  'Sexual Assault' THEN 'sexual_assault'
+                                WHEN level3_case_nature = 'Aerial Firing' THEN 'firing'
+                                ELSE 'other'
+                            END AS case_type
+                        FROM `leads_in_fir_preprocessed`
+                        WHERE psca_district_id IS NOT NULL
+                          AND psca_ps_name IS NOT NULL
+                        GROUP BY psca_district_id, psca_ps_name, case_type, date
+                    """
+
+        # Execute the query
+        cursor.execute(category_query)
+        query_results = cursor.fetchall()
+
+        results = {}
+
+        for date, district_id, police_station, count, case_type in query_results:
+            if isinstance(date, bytes):
+                date = date.decode('utf-8')
+            if isinstance(district_id, bytes):
+                district_id = district_id.decode('utf-8')
+
+            if isinstance(police_station, bytes):
+                police_station = police_station.decode('utf-8')
+
+            if isinstance(case_type, bytes):
+                case_type = case_type.decode('utf-8')
+
+            if (date, district_id, police_station) not in results:
+                results[(date, district_id, police_station)] = {
+                    'robbery_snatching': 0,
+                    'dacoity': 0,
+                    'motorcycle_theft': 0,
+                    'burglary': 0,
+                    'car_theft': 0,
+                    'vehicle_theft': 0,
+                    'vehicle_snatching': 0,
+                    'car_snatching': 0,
+                    'motorcycle_snatching': 0,
+                    'murder' : 0,
+                    'kidnapping' : 0,
+                    'sexual_assault' : 0,
+                    'firing' : 0,
+                    'other': 0
+                }
+            results[(date, district_id, police_station)][case_type] += count
+        return results
+
+    except Exception as e:
+        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+
+
+def insert_fir_trends(db_connection, results):
+    try:
+        cursor = db_connection.cursor()
+        insert_query = """
+        INSERT OR REPLACE INTO fir_trends (
+            date, police_station, district_id, burglary, robbery_snatching, 
+            dacoity, motorcycle_theft, car_theft, vehicle_theft, vehicle_snatching,
+            car_snatching, motorcycle_snatching, murder, kidnapping, sexual_assault, firing
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?)
+        """
+
+        # Define default values for each column
+        default_values = {
+            'robbery_snatching': 0,
+            'dacoity': 0,
+            'motorcycle_theft': 0,
+            'car_theft': 0,
+            'vehicle_theft': 0,
+            'burglary': 0,
+            'vehicle_snatching':0,
+            'car_snatching' : 0,
+            'motorcycle_snatching' : 0,
+            'murder': 0,
+            'kidnapping': 0,
+            'sexual_assault': 0,
+            'firing': 0,
+        }
+
+        for (date, district_id, police_station), result in results.items():
+            row = {
+                'date': date,
+                'police_station': f"{police_station}",
+                'district_id': district_id
+            }
+            row.update(default_values)
+            row.update(result)
+
+            cursor.execute(insert_query, (
+                row['date'], row['police_station'], row['district_id'],
+                row['burglary'],row['robbery_snatching'], row['dacoity'],
+                row['motorcycle_theft'],row['car_theft'],row['vehicle_theft'],
+                row['vehicle_snatching'],row['car_snatching'],row['motorcycle_snatching'],
+                row['murder'], row['kidnapping'], row['sexual_assault'] ,row['firing']
+            ))
+
+        db_connection.commit()
+    except Exception as e:
+        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+
 
 def time_wrapper(func, *args, **kwargs):
     start_time = time.time()
@@ -1399,6 +1522,29 @@ def main(start_date, end_date, start):
                    ''')
         processed_conn.commit()
 
+        processed_cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS fir_trends (
+                       date TEXT,
+                       district_id INTEGER,
+                       police_station TEXT,
+                       dacoity INTEGER,
+                       burglary INTEGER,
+                       robbery_snatching INTEGER,
+                       motorcycle_theft INTEGER,
+                       car_theft INTEGER,
+                       vehicle_theft INTEGER,
+                       vehicle_snatching INTEGER,
+                       car_snatching INTEGER,
+                       motorcycle_snatching INTEGER,
+                       murder INTEGER,
+                       sexual_assault INTEGER,
+                       firing INTEGER,
+                       kidnapping INTEGER,
+                       PRIMARY KEY (date,district_id,police_station)
+           )
+           ''')
+        processed_conn.commit()
+
         current_date = start_date
         while current_date <= end_date:
             if start:
@@ -1441,6 +1587,9 @@ def main(start_date, end_date, start):
             results = crime_trends_processing(db_conn)
             insert_crime_trends(processed_conn,results)
 
+            results = fir_trends_processing(db_conn)
+            insert_fir_trends(processed_conn, results)
+
             current_date += timedelta(days=configs.DELTA_DAYS)
 
         processed_conn.close()
@@ -1449,6 +1598,6 @@ def main(start_date, end_date, start):
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('09-01-25', '%d-%m-%y')
-    end_date = datetime.strptime('09-01-25', '%d-%m-%y')
+    start_date = datetime.strptime('17-01-25', '%d-%m-%y')
+    end_date = datetime.strptime('17-01-25', '%d-%m-%y')
     main(start_date, end_date, True)

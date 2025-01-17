@@ -11,6 +11,7 @@ from Utilities import configs
 import sqlite3
 from dotenv import load_dotenv
 import psycopg2
+import traceback
 
 load_dotenv()
 
@@ -724,3 +725,55 @@ def log_error_to_db_and_console(db_conn, log_db_cursor, error_message):
 
     # Print the error to the console
     print("ERROR:", error_message)
+
+
+
+# def get_category_condition(category):
+#     """Returns the SQL condition for the given category."""
+#     if category in configs.CRIME_TRENDS_CATEGORIES:
+#         return configs.CRIME_TRENDS_CATEGORIES[category]
+#     else:
+#         return None
+
+def get_category_condition(category):
+    """
+    Returns the SQL condition for the given category or categories.
+    Handles multiple comma-separated categories.
+    """
+    if category == "":
+        # Handle the special case where the category is an empty string
+        return configs.CRIME_TRENDS_CATEGORIES.get("", None)
+
+    if not category:
+        return None
+
+    # Split the comma-separated categories
+    categories = category.split(',')
+
+    # Map each category to its corresponding condition
+    conditions = []
+    for cat in categories:
+        mapped_condition = configs.CRIME_TRENDS_CATEGORIES.get(cat.strip())
+        if mapped_condition:
+            conditions.append(f"({mapped_condition})")
+
+    # Combine all conditions with OR if there are multiple categories
+    if conditions:
+        return f" AND ({' OR '.join(conditions)})"
+    else:
+        return None
+
+
+def get_week_range(date_str):
+    """Calculate start and end of the week (Sunday to Saturday)."""
+    given_date = datetime.strptime(date_str, "%Y-%m-%d")
+    start_of_week = given_date - timedelta(days=given_date.weekday())
+    end_of_week = start_of_week + timedelta(days=6)
+    return start_of_week.strftime("%Y-%m-%d"), end_of_week.strftime("%Y-%m-%d")
+
+def get_month_range(date_str):
+    """Calculate start and end of the month."""
+    start_of_month = datetime.strptime(date_str, "%Y-%m")
+    next_month = start_of_month.replace(day=28) + timedelta(days=4)
+    end_of_month = next_month - timedelta(days=next_month.day)
+    return start_of_month.strftime("%Y-%m-%d"), end_of_month.strftime("%Y-%m-%d")
