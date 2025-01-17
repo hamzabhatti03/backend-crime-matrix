@@ -154,7 +154,7 @@ def main():
         fetch_and_store_dist_feedback_count()
 
         print("Data updated. Waiting for the next iteration...")
-        time.sleep(180)
+        time.sleep(20)
 
 if __name__ == "__main__":
     main()

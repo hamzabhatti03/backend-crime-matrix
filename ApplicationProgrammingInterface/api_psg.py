@@ -1,3 +1,4 @@
+from certifi.core import where
 from flask import Flask, jsonify, request, abort, g
 from flask_caching import Cache
 from datetime import datetime, timedelta
@@ -14,8 +15,10 @@ from dotenv import load_dotenv
 from predictive_api import yesterday_forecast_db as yesterday_forecast
 from predictive_api import forecast_date
 from predictive_api import get_category_data
+
 from decimal import Decimal
-from itertools import chain
+from psycopg2.extras import RealDictCursor
+
 
 load_dotenv()
 
@@ -29,6 +32,7 @@ jwt = JWTManager(app)
 cache = Cache(config=configs.CACHE_CONFIGS)
 cache.init_app(app)
 
+
 """REQUEST RATE LIMITER"""
 limiter = Limiter(
     get_remote_address,
@@ -36,7 +40,6 @@ limiter = Limiter(
     default_limits=configs.DEFAULT_LIMITER
 )
 
-# Function to establish database connection for logging database
 def get_log_db_connection():
     if 'log_db_conn' not in g:
         g.log_db_conn = db_config.get_db_connection()
@@ -47,12 +50,11 @@ def get_log_db_connection():
 # Function to establish database connection for processed data database
 def get_processed_db_connection():
     if 'processed_db_conn' not in g:
-        g.processed_db_conn = utils.get_db_connection()
+        g.processed_db_conn = utils.get_processed_db_connection()
         g.processed_db_cursor = g.processed_db_conn.cursor()
     return g.processed_db_conn, g.processed_db_cursor
 
 
-# Close database connections after each request or when app is reloaded
 @app.teardown_appcontext
 def close_db_connections(exception):
     log_db_conn = g.pop('log_db_conn', None)
@@ -70,8 +72,6 @@ def set_security_headers(response):
     response.headers['Content-Security-Policy'] = "default-src 'self'"
     return response
 
-
-# Custom error handler for 400 status code
 @app.errorhandler(configs.BAD_REQUEST_ERROR)
 def handle_400_error(e):
     return utils.handle_400_error(e)
@@ -86,6 +86,7 @@ def require_api_key(func):
     wrapper.__name__ = func.__name__
     return wrapper
 
+
 def require_login_key(func):
     def wrapper(*args, **kwargs):
         api_key = request.headers.get("Login-Access-Key")
@@ -94,6 +95,7 @@ def require_login_key(func):
         return func(*args, **kwargs)
     wrapper.__name__ = func.__name__
     return wrapper
+
 
 @jwt.unauthorized_loader
 def unauthorized_response(callback):
@@ -104,9 +106,8 @@ def unauthorized_response(callback):
 def expired_token_callback(jwt_header, jwt_payload):
     return jsonify({"msg": "JWT Token has expired"}), 401
 
-
-
 """PUNJAB EMERGENCY-i APIs"""
+
 @app.route(configs.LOGIN['ENDPOINT'], methods=[configs.LOGIN['METHOD']])
 @require_api_key
 @require_login_key
@@ -156,8 +157,7 @@ def login():
                 'name':user[1] +' '+ user[2],
                 'role' : user[10],
                 'districts' : user[7].decode('utf-8') if isinstance(user[7],bytes) else user[7],
-                'police_stations':user[9].decode('utf-8') if isinstance(user[9],bytes) else user[9],
-                'is_joining_req' : 0
+                'police_stations':user[9].decode('utf-8') if isinstance(user[9],bytes) else user[9]
             },
             'token': access_token,
             'message' : "Successfully created Access token",
@@ -195,8 +195,6 @@ def punjab_stats_dashboard():
 
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    # Attach FIR database
-    processed_db_cursor.execute(f"ATTACH DATABASE '{configs.FIR_DB}' AS fir_db")
     try:
         # Get parameters from request body
         from_date_str = request.form.get('fromDate')
@@ -241,7 +239,7 @@ def punjab_stats_dashboard():
         else:
             district_condition = ""
 
-        category_query = f"""
+        category_query = """
             SELECT 
                 sum(terrorist_act) as terrorism, sum(murder) as murder, 
                 sum(aerial_firing) as firing, sum(rape) as women_harrasment,
@@ -252,29 +250,31 @@ def punjab_stats_dashboard():
                 sum(other_property) as others_property, sum(minorities) as minorities,
                 sum(burglary) as burglary, sum(dacoity_with_murder) as dacoity_with_murder
             FROM punjab_today
-            WHERE date BETWEEN ? AND ?
+            WHERE date BETWEEN %s AND %s
             {district_condition}
         """
+        category_query = category_query.format(district_condition=district_condition)
         processed_db_cursor.execute(category_query, [from_date_str, to_date_str])
         category_stats = processed_db_cursor.fetchone()
 
-        calls_cases_query = f"""
+        calls_cases_query = """
             SELECT 
                 SUM(total_calls) AS total_calls,
                 SUM(CASE WHEN police_station != 'Unknown' THEN generated_cases ELSE 0 END) AS generated_cases
             FROM 
                 processed_data
             WHERE 
-                date BETWEEN ? AND ?
+                date BETWEEN %s AND %s
                 AND district_id NOT IN ('0','41','42','43','44','45','46')
                 AND district_id IS NOT NULL
             {district_condition}
         """
+        calls_cases_query = calls_cases_query.format(district_condition=district_condition)
 
         processed_db_cursor.execute(calls_cases_query, [from_date_str, to_date_str])
         total_calls, total_cases = processed_db_cursor.fetchone()
 
-        regional_response_query = f"""
+        regional_response_query = """
                     WITH RegionCategories AS (
                 SELECT DISTINCT region_category
                 FROM response_time
@@ -289,7 +289,7 @@ def punjab_stats_dashboard():
                   AND parent_id = 0 
                   AND response_time IS NOT NULL 
                   AND response_time > 0 
-                  AND date BETWEEN ? AND ?
+                  AND date BETWEEN %s AND %s
                     {district_condition}
                 GROUP BY region_category
             )
@@ -299,16 +299,15 @@ def punjab_stats_dashboard():
             LEFT JOIN FilteredData fd
             ON rc.region_category = fd.region_category;
         """
-        processed_db_cursor.execute(regional_response_query,
-                                    [from_date_str, to_date_str]
-                                    )
+        regional_response_query = regional_response_query.format(district_condition=district_condition)
+        processed_db_cursor.execute(regional_response_query,[from_date_str, to_date_str])
         regional_avg_responses = processed_db_cursor.fetchall()
 
         if view_role == 2 or view_role == 1:
             processed_db_cursor.execute(
                 utils.build_response_time_query(
                     columns_key="avg_only",
-                    additional_conditions=[configs.DATE_RANGE_CONDITION[4:]]
+                    additional_conditions=[" date BETWEEN %s AND %s "]
                 ),
                 [from_date_str, to_date_str]
             )
@@ -316,29 +315,32 @@ def punjab_stats_dashboard():
             processed_db_cursor.execute(
                 utils.build_response_time_query(
                     columns_key="avg_only",
-                    additional_conditions=[configs.DATE_RANGE_CONDITION[4:], district_condition[4:]]
+                    additional_conditions=[" date BETWEEN %s AND %s ", " district_id = %s "]
                 ),
                 [from_date_str, to_date_str]
             )
 
         response_time = processed_db_cursor.fetchall()
 
-        fir_stats_query = f"""
+        fir_stats_query = """
             SELECT sum(murder), sum(dacoity), sum(aerial_firing), sum(rape), sum(minorities), sum(hurt),
                    sum(burglary), sum(kidnapping), sum(child_abuse),sum(robbery_snatching),
                    sum(motorcycle_theft), sum(dacoity_with_murder), sum(car_theft), sum(theft),
                    sum(terrorist_act), sum(other_person),sum(other_property)
             FROM fir_cases
-            WHERE date BETWEEN ? AND ?
+            WHERE date BETWEEN %s AND %s
             {district_condition}
     """
+        fir_stats_query =  fir_stats_query.format(district_condition=district_condition)
         processed_db_cursor.execute(fir_stats_query, [from_date_str, to_date_str])
         fir_stats = processed_db_cursor.fetchone()
 
-        fir_count_query = f"""
-            SELECT sum(fir_count) from fir_data where date BETWEEN ? and ?
+        fir_count_query = """
+            SELECT sum(fir_count) from fir_data where date BETWEEN %s AND %s
             {district_condition}
         """
+        fir_count_query = fir_count_query.format(district_condition=district_condition)
+
         processed_db_cursor.execute(fir_count_query, [from_date_str, to_date_str])
         fir_count = processed_db_cursor.fetchone()[0]
 
@@ -353,62 +355,65 @@ def punjab_stats_dashboard():
          others_person, dacoity, robbery_snatching, theft, motorcycle_theft,
          car_theft, others_property, minorities, burglary, dacoity_with_murder) = category_stats
 
-        category_regional_response_query = f"""        
-            SELECT 
-                CASE 
-                    WHEN level3_case_nature IN ('Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 
-                                              'Child Kidnapping', 'Attempt to Kidnap / Abduct', 
-                                              'Kidnapping for Ransom', 'Child Kidnapping ') 
-                    THEN 'Kidnapping'
-                    WHEN level3_case_nature IN ('Highway/Road/Street Robbery','Any Other Robbery', 'Cattle Robbery',
-                                            'House Robbery', 'Shop Robbery','Patrol Pump Robbery','Bank/Money Exchange/ ATM Robbery','Car Snatching',
-                                            'Other Vehicles Snatching','Snatching/Jhapatta','Motorcycle Snatching','Jewellery Shop Robbery','Robbery with Murder')
-                    THEN 'robbery_snatching'
-                    WHEN level3_case_nature IN ('Mobile Theft','Any Other Theft','Cattle theft',
-                                            'Transformer/ Motor Theft','Pick Pocketing','Purse / Wallet / Luggage Theft',
-                                            'Cycle Theft','Weapon Theft','Other Burglary','Shop Burglary','House Burglary')
-                    THEN 'theft'
-                    WHEN queue = 'minorities-15' THEN 'minorities'
-                    WHEN level3_case_nature IN ('Dacoity with Murder') THEN 'dacoity_with_murder'
-                    WHEN level3_case_nature IN ('Highway/Road/Street Dacoity','House Dacoity','Any Other Dacoity' , 'Shop Dacoity' ,'Cattle Dacoity','Patrol Pump Dacoity','Jewellery Shop Dacoity') THEN 'dacoity'
-                    WHEN level3_case_nature IN ('Sexual Assault/ Harrasment To Women') THEN 'rape'
-                    WHEN level3_case_nature IN ('Firing on Police','Suicidal Attack/ Bomb Blast/ Terrorist Attack') THEN 'terrorist_act'
-                    WHEN level3_case_nature IN ('Rape','Child Abuse / Molestation') THEN 'child_abuse'
-                    WHEN level3_case_nature IN ('Murder','Attempt to Murder') THEN 'murder'
-                    WHEN level3_case_nature IN ('Car Theft') THEN 'car_theft'
-                    WHEN level3_case_nature = 'Aerial Firing' THEN 'aerial_firing'
-                    WHEN level3_case_nature = 'Motorcycle Theft' THEN 'motorcycle_theft'
-                    WHEN level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises' THEN 'other_property'
-                    WHEN level3_case_nature IN ('Prostitution/ Brothel House','Acid Throwing','Hurt / Injuries','Street Fight','Other Assault',
-                      'Physical Threats / Harrasment','Domestic Violence','Criminal Intimidation (Threat with Weapon)') THEN 'other_person'
-                    WHEN level3_case_nature IN ('Assault on Govt. Officials','Other Help') THEN 'hurt'
-                END as category,
-                region_category,
-                AVG(response_time) as avg_response_time
-            FROM 
-                response_time 
-            WHERE 
-                level3_case_nature IN (
-                    'Murder','Robbery with Murder','Dacoity with Murder', 'Attempt to Murder', 'Aerial Firing','Child Abuse / Molestation', 'Motorcycle Theft',
-                    'Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 'Child Kidnapping', 'Attempt to Kidnap / Abduct', 'Kidnapping for Ransom', 'Child Kidnapping ',
-                    'Rape','Sexual Assault/ Harrasment To Women','Highway/Road/Street Robbery','Any Other Robbery', 'Cattle Robbery','House Robbery', 'Shop Robbery',
-                    'Patrol Pump Robbery','Bank/Money Exchange/ ATM Robbery','Car Snatching','Other Vehicles Snatching','Snatching/Jhapatta','Motorcycle Snatching','Jewellery Shop Robbery',
-                    'Highway/Road/Street Dacoity','House Dacoity' ,'Any Other Dacoity' , 'Shop Dacoity' ,'Cattle Dacoity','Patrol Pump Dacoity','Jewellery Shop Dacoity','Car Theft',
-                    'Mobile Theft','Any Other Theft','House Burglary','Shop Burglary','Other Burglary','Cattle theft','Transformer/ Motor Theft','Pick Pocketing','Purse / Wallet / Luggage Theft','Cycle Theft','Weapon Theft',
-                    'Firing on Police','Suicidal Attack/ Bomb Blast/ Terrorist Attack','Hurt / Injuries','Street Fight','Other Assault','Criminal Intimidation (Threat with Weapon)',
-                    'Assault on Govt. Officials','Acid Throwing','Other Help','Prostitution/ Brothel House','Acid Throwing','Hurt / Injuries','Street Fight','Other Assault',
-                    'Physical Threats / Harrasment','Domestic Violence','Criminal Intimidation (Threat with Weapon)','Attempt to Illegal Possession of Land/ Premises'
-                )
-                AND date BETWEEN ? AND ?
-                AND parent_id = 0
-                AND response_time IS NOT NULL 
-                AND response_time > 0
-                {district_condition}
-                AND region_category IS NOT NULL
-            GROUP BY 
-                category, region_category
-            HAVING 
-                category IS NOT NULL"""
+        category_regional_response_query = """
+                    WITH categorized_data AS (
+                        SELECT 
+                            CASE 
+                                WHEN level3_case_nature IN ('Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 
+                                                            'Child Kidnapping', 'Attempt to Kidnap / Abduct', 
+                                                            'Kidnapping for Ransom', 'Child Kidnapping ') THEN 'Kidnapping'
+                                WHEN level3_case_nature IN ('Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery',
+                                                            'House Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                                                            'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery', 'Robbery with Murder') THEN 'robbery_snatching'
+                                WHEN level3_case_nature IN ('Mobile Theft', 'Any Other Theft', 'Cattle theft',
+                                                            'Transformer/ Motor Theft', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft',
+                                                            'Cycle Theft', 'Weapon Theft', 'Other Burglary', 'Shop Burglary', 'House Burglary') THEN 'theft'
+                                WHEN queue = 'minorities-15' THEN 'minorities'
+                                WHEN level3_case_nature IN ('Dacoity with Murder') THEN 'dacoity_with_murder'
+                                WHEN level3_case_nature IN ('Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity') THEN 'dacoity'
+                                WHEN level3_case_nature IN ('Sexual Assault/ Harrasment To Women') THEN 'rape'
+                                WHEN level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack') THEN 'terrorist_act'
+                                WHEN level3_case_nature IN ('Rape', 'Child Abuse / Molestation') THEN 'child_abuse'
+                                WHEN level3_case_nature IN ('Murder', 'Attempt to Murder') THEN 'murder'
+                                WHEN level3_case_nature IN ('Car Theft') THEN 'car_theft'
+                                WHEN level3_case_nature = 'Aerial Firing' THEN 'aerial_firing'
+                                WHEN level3_case_nature = 'Motorcycle Theft' THEN 'motorcycle_theft'
+                                WHEN level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises' THEN 'other_property'
+                                WHEN level3_case_nature IN ('Prostitution/ Brothel House', 'Acid Throwing', 'Hurt / Injuries', 'Street Fight', 'Other Assault',
+                                                            'Physical Threats / Harrasment', 'Domestic Violence', 'Criminal Intimidation (Threat with Weapon)') THEN 'other_person'
+                                WHEN level3_case_nature IN ('Assault on Govt. Officials', 'Other Help') THEN 'hurt'
+                            END AS category,
+                            region_category,
+                            AVG(response_time) AS avg_response_time
+                        FROM 
+                            response_time
+                        WHERE 
+                            level3_case_nature IN (
+                                'Murder', 'Robbery with Murder', 'Dacoity with Murder', 'Attempt to Murder', 'Aerial Firing', 'Child Abuse / Molestation', 'Motorcycle Theft',
+                                'Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 'Child Kidnapping', 'Attempt to Kidnap / Abduct', 'Kidnapping for Ransom', 'Child Kidnapping ',
+                                'Rape', 'Sexual Assault/ Harrasment To Women', 'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery', 'Shop Robbery',
+                                'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching', 'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
+                                'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity', 'Car Theft',
+                                'Mobile Theft', 'Any Other Theft', 'House Burglary', 'Shop Burglary', 'Other Burglary', 'Cattle theft', 'Transformer/ Motor Theft', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 'Cycle Theft', 'Weapon Theft',
+                                'Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack', 'Hurt / Injuries', 'Street Fight', 'Other Assault', 'Criminal Intimidation (Threat with Weapon)',
+                                'Assault on Govt. Officials', 'Acid Throwing', 'Other Help', 'Prostitution/ Brothel House', 'Acid Throwing', 'Hurt / Injuries', 'Street Fight', 'Other Assault',
+                                'Physical Threats / Harrasment', 'Domestic Violence', 'Criminal Intimidation (Threat with Weapon)', 'Attempt to Illegal Possession of Land/ Premises'
+                            )
+                            AND date BETWEEN %s AND %s
+                            AND parent_id = 0
+                            AND response_time IS NOT NULL 
+                            AND response_time > 0
+                            {district_condition}
+                            AND region_category IS NOT NULL
+                        GROUP BY 
+                            category, region_category
+                    )
+                    SELECT *
+                    FROM categorized_data
+                    WHERE category IS NOT NULL;
+        """
+
+        category_regional_response_query = category_regional_response_query.format(district_condition=district_condition)
 
         processed_db_cursor.execute(category_regional_response_query, (from_date_str, to_date_str))
         category_regional_response_times = processed_db_cursor.fetchall()
@@ -418,60 +423,70 @@ def punjab_stats_dashboard():
                 category_regional_response_dict[category] = {}
             category_regional_response_dict[category][region] = f"{int(avg_time // 60)}:{int(avg_time % 60):02d}"
 
-        categorical_avg_responsetime_query = f"""        
+        categorical_avg_responsetime_query = """        
+                    WITH categorized_data AS (
+                        SELECT
+                            CASE 
+                                WHEN level3_case_nature IN ('Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 
+                                                            'Child Kidnapping', 'Attempt to Kidnap / Abduct', 
+                                                            'Kidnapping for Ransom', 'Child Kidnapping ') 
+                                THEN 'Kidnapping'
+                                WHEN level3_case_nature IN ('Highway/Road/Street Robbery','Any Other Robbery', 'Cattle Robbery',
+                                                            'House Robbery', 'Shop Robbery','Patrol Pump Robbery','Bank/Money Exchange/ ATM Robbery','Car Snatching',
+                                                            'Other Vehicles Snatching','Snatching/Jhapatta','Motorcycle Snatching','Jewellery Shop Robbery','Robbery with Murder')
+                                THEN 'robbery_snatching'
+                                WHEN level3_case_nature IN ('Mobile Theft','Any Other Theft','Cattle theft',
+                                                            'Transformer/ Motor Theft','Pick Pocketing','Purse / Wallet / Luggage Theft',
+                                                            'Cycle Theft','Weapon Theft','Other Burglary','Shop Burglary','House Burglary')
+                                THEN 'theft'
+                                WHEN queue = 'minorities-15' THEN 'minorities'
+                                WHEN level3_case_nature IN ('Dacoity with Murder') THEN 'dacoity_with_murder'
+                                WHEN level3_case_nature IN ('Highway/Road/Street Dacoity','House Dacoity','Any Other Dacoity', 'Shop Dacoity', 'Cattle Dacoity','Patrol Pump Dacoity','Jewellery Shop Dacoity') THEN 'dacoity'
+                                WHEN level3_case_nature IN ('Sexual Assault/ Harrasment To Women') THEN 'rape'
+                                WHEN level3_case_nature IN ('Firing on Police','Suicidal Attack/ Bomb Blast/ Terrorist Attack') THEN 'terrorist_act'
+                                WHEN level3_case_nature IN ('Rape','Child Abuse / Molestation') THEN 'child_abuse'
+                                WHEN level3_case_nature IN ('Murder','Attempt to Murder') THEN 'murder'
+                                WHEN level3_case_nature IN ('Car Theft') THEN 'car_theft'
+                                WHEN level3_case_nature = 'Aerial Firing' THEN 'aerial_firing'
+                                WHEN level3_case_nature = 'Motorcycle Theft' THEN 'motorcycle_theft'
+                                WHEN level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises' THEN 'other_property'
+                                WHEN level3_case_nature IN ('Prostitution/ Brothel House','Acid Throwing','Hurt / Injuries','Street Fight','Other Assault',
+                                  'Physical Threats / Harrasment','Domestic Violence','Criminal Intimidation (Threat with Weapon)') THEN 'other_person'
+                                WHEN level3_case_nature IN ('Assault on Govt. Officials','Other Help') THEN 'hurt'
+                            END AS category,
+                            response_time
+                        FROM 
+                            response_time
+                        WHERE 
+                            level3_case_nature IN (
+                                'Murder','Robbery with Murder','Dacoity with Murder', 'Attempt to Murder', 'Aerial Firing','Child Abuse / Molestation', 'Motorcycle Theft',
+                                'Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 'Child Kidnapping', 'Attempt to Kidnap / Abduct', 'Kidnapping for Ransom', 'Child Kidnapping ',
+                                'Rape','Sexual Assault/ Harrasment To Women','Highway/Road/Street Robbery','Any Other Robbery', 'Cattle Robbery','House Robbery', 'Shop Robbery',
+                                'Patrol Pump Robbery','Bank/Money Exchange/ ATM Robbery','Car Snatching','Other Vehicles Snatching','Snatching/Jhapatta','Motorcycle Snatching','Jewellery Shop Robbery',
+                                'Highway/Road/Street Dacoity','House Dacoity' ,'Any Other Dacoity' , 'Shop Dacoity' ,'Cattle Dacoity','Patrol Pump Dacoity','Jewellery Shop Dacoity','Car Theft',
+                                'Mobile Theft','Any Other Theft','House Burglary','Shop Burglary','Other Burglary','Cattle theft','Transformer/ Motor Theft','Pick Pocketing','Purse / Wallet / Luggage Theft','Cycle Theft','Weapon Theft',
+                                'Firing on Police','Suicidal Attack/ Bomb Blast/ Terrorist Attack','Hurt / Injuries','Street Fight','Other Assault','Criminal Intimidation (Threat with Weapon)',
+                                'Assault on Govt. Officials','Acid Throwing','Other Help','Prostitution/ Brothel House','Acid Throwing','Hurt / Injuries','Street Fight','Other Assault',
+                                'Physical Threats / Harrasment','Domestic Violence','Criminal Intimidation (Threat with Weapon)','Attempt to Illegal Possession of Land/ Premises'
+                            )
+                            AND date BETWEEN %s AND %s
+                            AND parent_id = 0
+                            AND response_time IS NOT NULL 
+                            AND response_time > 0
+                            {district_condition}
+                    )
                     SELECT 
-                        CASE 
-                            WHEN level3_case_nature IN ('Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 
-                                                      'Child Kidnapping', 'Attempt to Kidnap / Abduct', 
-                                                      'Kidnapping for Ransom', 'Child Kidnapping ') 
-                            THEN 'Kidnapping'
-                            WHEN level3_case_nature IN ('Highway/Road/Street Robbery','Any Other Robbery', 'Cattle Robbery',
-                                                    'House Robbery', 'Shop Robbery','Patrol Pump Robbery','Bank/Money Exchange/ ATM Robbery','Car Snatching',
-                                                    'Other Vehicles Snatching','Snatching/Jhapatta','Motorcycle Snatching','Jewellery Shop Robbery','Robbery with Murder')
-                            THEN 'robbery_snatching'
-                            WHEN level3_case_nature IN ('Mobile Theft','Any Other Theft','Cattle theft',
-                                                    'Transformer/ Motor Theft','Pick Pocketing','Purse / Wallet / Luggage Theft',
-                                                    'Cycle Theft','Weapon Theft','Other Burglary','Shop Burglary','House Burglary')
-                            THEN 'theft'
-                            WHEN queue = 'minorities-15' THEN 'minorities'
-                            WHEN level3_case_nature IN ('Dacoity with Murder') THEN 'dacoity_with_murder'
-                            WHEN level3_case_nature IN ('Highway/Road/Street Dacoity','House Dacoity','Any Other Dacoity' , 'Shop Dacoity' ,'Cattle Dacoity','Patrol Pump Dacoity','Jewellery Shop Dacoity') THEN 'dacoity'
-                            WHEN level3_case_nature IN ('Sexual Assault/ Harrasment To Women') THEN 'rape'
-                            WHEN level3_case_nature IN ('Firing on Police','Suicidal Attack/ Bomb Blast/ Terrorist Attack') THEN 'terrorist_act'
-                            WHEN level3_case_nature IN ('Rape','Child Abuse / Molestation') THEN 'child_abuse'
-                            WHEN level3_case_nature IN ('Murder','Attempt to Murder') THEN 'murder'
-                            WHEN level3_case_nature IN ('Car Theft') THEN 'car_theft'
-                            WHEN level3_case_nature = 'Aerial Firing' THEN 'aerial_firing'
-                            WHEN level3_case_nature = 'Motorcycle Theft' THEN 'motorcycle_theft'
-                            WHEN level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises' THEN 'other_property'
-                            WHEN level3_case_nature IN ('Prostitution/ Brothel House','Acid Throwing','Hurt / Injuries','Street Fight','Other Assault',
-                              'Physical Threats / Harrasment','Domestic Violence','Criminal Intimidation (Threat with Weapon)') THEN 'other_person'
-                            WHEN level3_case_nature IN ('Assault on Govt. Officials','Other Help') THEN 'hurt'
-                        END as category,
-                        AVG(response_time) as avg_response_time
+                        category,
+                        AVG(response_time) AS avg_response_time
                     FROM 
-                        response_time 
+                        categorized_data
                     WHERE 
-                        level3_case_nature IN (
-                            'Murder','Robbery with Murder','Dacoity with Murder', 'Attempt to Murder', 'Aerial Firing','Child Abuse / Molestation', 'Motorcycle Theft',
-                            'Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 'Child Kidnapping', 'Attempt to Kidnap / Abduct', 'Kidnapping for Ransom', 'Child Kidnapping ',
-                            'Rape','Sexual Assault/ Harrasment To Women','Highway/Road/Street Robbery','Any Other Robbery', 'Cattle Robbery','House Robbery', 'Shop Robbery',
-                            'Patrol Pump Robbery','Bank/Money Exchange/ ATM Robbery','Car Snatching','Other Vehicles Snatching','Snatching/Jhapatta','Motorcycle Snatching','Jewellery Shop Robbery',
-                            'Highway/Road/Street Dacoity','House Dacoity' ,'Any Other Dacoity' , 'Shop Dacoity' ,'Cattle Dacoity','Patrol Pump Dacoity','Jewellery Shop Dacoity','Car Theft',
-                            'Mobile Theft','Any Other Theft','House Burglary','Shop Burglary','Other Burglary','Cattle theft','Transformer/ Motor Theft','Pick Pocketing','Purse / Wallet / Luggage Theft','Cycle Theft','Weapon Theft',
-                            'Firing on Police','Suicidal Attack/ Bomb Blast/ Terrorist Attack','Hurt / Injuries','Street Fight','Other Assault','Criminal Intimidation (Threat with Weapon)',
-                            'Assault on Govt. Officials','Acid Throwing','Other Help','Prostitution/ Brothel House','Acid Throwing','Hurt / Injuries','Street Fight','Other Assault',
-                            'Physical Threats / Harrasment','Domestic Violence','Criminal Intimidation (Threat with Weapon)','Attempt to Illegal Possession of Land/ Premises'
-                        )
-                        AND date BETWEEN ? AND ?
-                        AND parent_id = 0
-                        AND response_time IS NOT NULL 
-                        AND response_time > 0
-                        {district_condition}
+                        category IS NOT NULL
                     GROUP BY 
-                        category
-                    HAVING 
-                        category IS NOT NULL"""
+                        category;"""
+
+        categorical_avg_responsetime_query = categorical_avg_responsetime_query.format(district_condition=district_condition)
+
         processed_db_cursor.execute(categorical_avg_responsetime_query, (from_date_str, to_date_str))
         category_avg_response_times = processed_db_cursor.fetchall()
         category_avg_response_dict = {}
@@ -485,12 +500,14 @@ def punjab_stats_dashboard():
             where_cond = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
 
         ############################### Negative caller Feedback
-        processed_db_cursor.execute(f"""
+        negative_caller_feedback_query = """
                                     SELECT SUM(negative)
                                     FROM dist_feedback_count
                                     Where 1=1
                                     {where_cond}
-                                """)
+                                """
+        negative_caller_feedback_query = negative_caller_feedback_query.format(where_cond=where_cond)
+        processed_db_cursor.execute(negative_caller_feedback_query)
         row = processed_db_cursor.fetchone()
         negative_feedback_count = row[0] if row is not None else 0
 
@@ -663,9 +680,9 @@ def punjab_stats_dashboard():
             'fir_count' : fir_count,
             'total_calls': total_calls,
             'total_cases': total_cases,
-            'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time and response_time[0][0] is not None else 0,
-            'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses and regional_avg_responses[0][1] is not None else 0,
-            'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses and regional_avg_responses[1][1] is not None  else 0,
+            'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time else 0,
+            'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses else 0,
+            'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses else 0,
             'police_encounter': 0,
             'environment_smog': 0,
             'negative_feedbacks' : 0 if view_role == 5 else negative_feedback_count,
@@ -789,20 +806,21 @@ def punjab_more_info():
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
 
-        district_query = f"""
-                SELECT 
-                    district_id , SUM({category}) as count
-                FROM 
-                    punjab_today
-                WHERE 
-                    date between ? and ?
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
-                    {district_condition}
-                GROUP BY
-                    district_id
-                HAVING 
-					count > 0
+        district_query = """
+            SELECT 
+                district_id, SUM({category}) AS count
+            FROM 
+                punjab_today
+            WHERE 
+                date BETWEEN %s AND %s
+                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                {district_condition}
+            GROUP BY
+                district_id
+            HAVING 
+                SUM({category}) > 0
         """
+        district_query = district_query.format(category=category, district_condition=district_condition)
         processed_db_cursor.execute(district_query, (from_date, to_date))
         district_response = processed_db_cursor.fetchall()
 
@@ -816,32 +834,37 @@ def punjab_more_info():
             query_params = [from_date, to_date]
         else:
             categories = configs.CATEGORIES.get(category)
-            where_condition = f"level3_case_nature IN ({','.join(['?'] * len(categories))})"
-            query_params = categories + [from_date, to_date]
+            where_condition = f"level3_case_nature IN ({','.join(['%s'] * len(categories))})"
+            query_params = categories + [from_date, to_date] + categories
 
-        ps_query = f"""
-                    SELECT
-                        district_id,
-                        police_station_id,
-                        police_station,
-                        count(
-                            CASE 
-                                WHEN {where_condition} THEN 'cc'
-                            END
-                        ) as count
-                    FROM 
-                        response_time
-                    WHERE 
-                        date BETWEEN ? AND ?
-                        AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-                        {district_condition}
-                        AND police_station is not Null
-                        AND parent_id = 0
-                    GROUP BY 
-                        police_station_id
-                    HAVING 
-                        count > 0;
+        ps_query = """
+            SELECT
+                district_id,
+                police_station_id,
+                police_station,
+                COUNT(
+                    CASE 
+                        WHEN {where_condition} THEN 'cc'
+                    END
+                ) AS count
+            FROM 
+                response_time
+            WHERE 
+                date BETWEEN %s AND %s
+                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                {district_condition}
+                AND police_station IS NOT NULL
+                AND parent_id = 0
+            GROUP BY 
+                police_station_id, district_id, police_station
+            HAVING 
+                COUNT(
+                    CASE 
+                        WHEN {where_condition} THEN 'cc'
+                    END
+                ) > 0;
         """
+        ps_query = ps_query.format(where_condition=where_condition, district_condition=district_condition)
 
         processed_db_cursor.execute(ps_query, query_params)
         ps_response = processed_db_cursor.fetchall()
@@ -883,17 +906,16 @@ def punjab_more_info():
                     WHERE {condition}
                         AND district_id NOT IN ('0','41','42','43','44','45','46')
                         AND police_station is not Null
-                        AND date BETWEEN ? AND ?
+                        AND date BETWEEN %s AND %s
                         AND parent_id=0
                         {district_condition}
                 """
-
         if category == 'minorities':
             where_condition = "queue = 'minorities-15'"
             query_params = [from_date, to_date]
         else:
             categories = configs.CATEGORIES.get(category)
-            where_condition = f"level3_case_nature IN ({','.join(['?'] * len(categories))})"
+            where_condition = f"level3_case_nature IN ({','.join(['%s'] * len(categories))})"
             query_params = categories + [from_date, to_date]
 
         cases_query = base_query.format(condition=where_condition, district_condition=district_condition)
@@ -939,7 +961,6 @@ def punjab_more_info():
             'message': 'Internal server error',
             'data': None
         }), 500
-
 
 @app.route(configs.DISTRICTWISE_STATS['ENDPOINT'], methods=[configs.DISTRICTWISE_STATS['METHOD']])
 @limiter.limit(configs.LIMITER)
@@ -1013,31 +1034,33 @@ def districtwise_counts():
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
         # Query to get district-wise case counts
-        cases_query = f"""
+        cases_query = """
             SELECT
                 district_id, 
-                count(*) AS total_cases
+                COUNT(*) AS total_cases
             FROM 
                 response_time
             WHERE 
                 district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-                AND (level1_case_nature in ('Crime Against Person','Crime Against Property') 
-                     OR level3_case_nature = 'Aerial Firing' OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
+                AND (
+                    level1_case_nature IN ('Crime Against Person', 'Crime Against Property') 
+                    OR level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises')
+                )
                 AND district_id IS NOT NULL
-                AND date BETWEEN ? AND ?
-                {district_condition} 
+                AND date BETWEEN %s AND %s
+                {district_condition}
                 AND parent_id = 0
             GROUP BY 
-                district_id
+                district_id;
         """
-
+        cases_query = cases_query.format(district_condition=district_condition)
         processed_db_cursor.execute(cases_query, (from_date, to_date))
         cases_summary = processed_db_cursor.fetchall()
 
         # Process and format the response data
         district_stats = {
-            configs.DISTRICTS_DICTIONARY.get(int(row["district_id"])): row["total_cases"]
-            for row in cases_summary
+            configs.DISTRICTS_DICTIONARY.get(int(district_id)): count
+            for district_id, count in cases_summary
         }
 
         response = {
@@ -1128,20 +1151,35 @@ def districtwise_more_info():
 
 
         # Get category-wise statistics
-        category_query = f"""
+        category_query = """
             SELECT 
-                SUM(murder), SUM(dacoity), SUM(aerial_firing), SUM(rape),
-                SUM(kidnapping), SUM(minorities), 
-                SUM(robbery_snatching), SUM(motorcycle_theft), SUM(car_theft),
-                SUM(theft), SUM(child_abuse), SUM(terrorist_act),
-                SUM(other_person), SUM(other_property), SUM(dacoity_with_murder)
-            FROM punjab_today
-            WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-            AND district_id IS NOT NULL
-            AND date BETWEEN ? AND ?
-            {district_condition}
+                SUM(murder), 
+                SUM(dacoity), 
+                SUM(aerial_firing), 
+                SUM(rape),
+                SUM(kidnapping), 
+                SUM(minorities), 
+                SUM(robbery_snatching), 
+                SUM(motorcycle_theft), 
+                SUM(car_theft),
+                SUM(theft), 
+                SUM(child_abuse), 
+                SUM(terrorist_act),
+                SUM(other_person), 
+                SUM(other_property), 
+                SUM(dacoity_with_murder)
+            FROM 
+                punjab_today
+            WHERE 
+                district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                AND district_id IS NOT NULL
+                AND date BETWEEN %s AND %s
+                {district_condition};
         """
+        # Dynamically format the query to include `district_condition`
+        category_query = category_query.format(district_condition=district_condition)
         processed_db_cursor.execute(category_query, (from_date, to_date))
+
         (murder, dacoity, firing, rape_sexual_assault, kidnapping,
          minorities, robbery_snatching, motorcycle_theft, car_theft, theft,
          child_abuse, terrorism, other_person, other_property, dacoity_with_murder) = processed_db_cursor.fetchone()
@@ -1174,17 +1212,22 @@ def districtwise_more_info():
                 ps.police_station, 
                 COALESCE(COUNT(rt.lead_id), 0) AS total_count
             FROM 
-                (SELECT DISTINCT police_circle, police_station, police_station_id 
-                 FROM response_time 
-                 WHERE police_station IS NOT NULL 
-                 {district_condition}
+                (SELECT DISTINCT 
+                    police_circle, 
+                    police_station, 
+                    police_station_id 
+                 FROM 
+                    response_time 
+                 WHERE 
+                    police_station IS NOT NULL 
+                    {district_condition}
                 ) ps
             LEFT JOIN 
                 response_time rt 
             ON 
                 ps.police_station_id = rt.police_station_id
                 AND rt.district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-                AND rt.date BETWEEN ? AND ?
+                AND rt.date BETWEEN %s AND %s
                 {additional_condition}
                 AND (
                     rt.level1_case_nature IN ('Crime Against Person', 'Crime Against Property') 
@@ -1199,6 +1242,8 @@ def districtwise_more_info():
             ORDER BY 
                 ps.police_circle DESC;
         """
+        # Dynamically format the query to include conditions
+        ps_query = ps_query.format(district_condition=district_condition, additional_condition=additional_condition)
 
         processed_db_cursor.execute(ps_query, (from_date, to_date))
         ps_wise_count = processed_db_cursor.fetchall()
@@ -1244,42 +1289,6 @@ def districtwise_more_info():
                     ps_wise_response_dict[police_division][police_circle] = {}
                 ps_wise_response_dict[police_division][police_circle][police_station] = count
 
-        # cases_query = f"""
-        #     SELECT case_number, level3_case_nature, caller_name, caller_number,
-        #            accepted_time, police_station, district_id, time_id,
-        #            description, first_arrival_time, response_time
-        #     FROM response_time
-        #     WHERE date BETWEEN ? AND ?
-        #         {district_condition}
-        #         AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
-        #             OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
-        #         AND district_id NOT IN ('0','41','42','43','44','45','46')
-        #         AND police_station is not Null
-        #         AND parent_id = 0
-        # """
-        # processed_db_cursor.execute(cases_query, (from_date, to_date))
-        # cases = processed_db_cursor.fetchall()
-        #
-        # cases_list = [
-        #     {
-        #         "case_number": case_number,
-        #         "case_nature": level3_case_nature,
-        #         "caller_name": caller_name,
-        #         "assigned_time": created_time,
-        #         "cli": caller_number,
-        #         "police_station": police_station,
-        #         "status": 'CompCa',
-        #         "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)),
-        #         "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
-        #         "description": description,
-        #         "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
-        #             configs.YMD_HMS) if reached_time else None,
-        #         "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else 0
-        #     }
-        #     for (case_number, level3_case_nature, caller_name, caller_number,
-        #          created_time, police_station, district_id, time_id,
-        #          description, reached_time, response_time) in cases
-        # ]
 
         response = {
             'status': True,
@@ -1287,7 +1296,6 @@ def districtwise_more_info():
             'data': {
                 'categorywise_response': categorywise_response,
                 'ps_wise_response': ps_wise_response_dict
-                # 'cases': cases_list
             }
         }
 
@@ -1299,7 +1307,6 @@ def districtwise_more_info():
             'status': False,
             'message': f'Internal server error {traceback.format_exc()}'
         }), 500
-
 
 
 @app.route(configs.PSWISE_CATEGORIES['ENDPOINT'], methods=[configs.PSWISE_CATEGORIES['METHOD']])
@@ -1322,8 +1329,7 @@ def pswise_categories():
     """
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    master_db_connection = db_config.get_db_connection()
-    db_cursor = master_db_connection.cursor()
+
     try:
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
@@ -1348,7 +1354,7 @@ def pswise_categories():
         ps_query = """
             SELECT 
                 COALESCE(SUM(murder), 0) AS murder,
-                COALESCE(SUM(dacoity), 0) AS dacoity,  -- to be removed
+                COALESCE(SUM(dacoity), 0) AS dacoity,
                 COALESCE(SUM(aerial_firing), 0) AS aerial_firing,
                 COALESCE(SUM(rape), 0) AS rape,
                 COALESCE(SUM(kidnapping), 0) AS kidnapping,
@@ -1364,11 +1370,11 @@ def pswise_categories():
                 COALESCE(SUM(burglary), 0) AS burglary,
                 COALESCE(SUM(dacoity_with_murder), 0) AS dacoity_with_murder
             FROM punjab_today
-            WHERE date BETWEEN ? AND ?
-                AND district_id = ?
-                AND police_station = ?
+            WHERE date BETWEEN %s AND %s
+                AND district_id = %s
+                AND police_station = %s
         """
-
+        # Execute the query
         processed_db_cursor.execute(ps_query, (from_date, to_date, district_id, police_station))
         (murder, dacoity, firing, rape_sexual_assault, kidnapping, minorities,
          robbery_snatching, motorcycle_theft, car_theft, theft, child_abuse,
@@ -1403,9 +1409,9 @@ def pswise_categories():
                 accepted_time, police_station, district_id, time_id,
                 description, first_arrival_time, response_time
             FROM response_time
-            WHERE police_station = ?
-                AND district_id = ?
-                AND date BETWEEN ? AND ?
+            WHERE police_station = %s
+                AND district_id = %s
+                AND date BETWEEN %s AND %s
                 AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
                 AND district_id NOT IN ('0','41','42','43','44','45','46')
@@ -1441,9 +1447,9 @@ def pswise_categories():
         generated_cases_query = """
                     select count(*)
                     from response_time
-                    where date between ? and ?
-                    AND district_id = ?
-                    AND police_station = ?
+                    where date between %s and %s
+                    AND district_id = %s
+                    AND police_station = %s
                     AND parent_id = 0
                     AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
@@ -1454,9 +1460,9 @@ def pswise_categories():
         fir_count_query = """
                     select sum(fir_count)
                     from fir_data
-                    where date between ? and ?
-                    AND district_id = ?
-                    AND police_station = ?
+                    where date between %s and %s
+                    AND district_id = %s
+                    AND police_station = %s
         """
         processed_db_cursor.execute(fir_count_query, (from_date, to_date, district_id, police_station))
         fir_count = processed_db_cursor.fetchone()[0]
@@ -1464,9 +1470,9 @@ def pswise_categories():
         ps_responsetime_query = """
                     select AVG(response_time)
                     from response_time
-                    where date between ? and ?
-                    AND district_id = ?
-                    AND police_station = ?
+                    where date between %s and %s
+                    AND district_id = %s
+                    AND police_station = %s
                     AND parent_id = 0
                     AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
@@ -1478,9 +1484,9 @@ def pswise_categories():
         conf_calls_query = """
                     select count(*)
                     from response_time
-                    where date between ? and ?
-                    AND district_id = ?
-                    AND police_station = ?
+                    where date between %s and %s
+                    AND district_id = %s
+                    AND police_station = %s
                     AND field3 IN ('Successful Conference call','FO did not attend the call','Number Powered Off','Out of PS Jurisdiction')
                     AND parent_id = 0
                     AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
@@ -1491,19 +1497,19 @@ def pswise_categories():
 
         conference_call_query = f"""
                                 SELECT 
-                                    SUM(CASE WHEN field3 = 'Successful Conference call' THEN 1 ELSE 0 END) AS `successful_calls`,
-                                    SUM(CASE WHEN field3 IN ('FO did not attend the call','Number Powered Off','Out of PS Jurisdiction') THEN 1 ELSE 0 END) AS `Unsuccessful_calls`
-                                FROM 
+                                    SUM(CASE WHEN field3 = 'Successful Conference call' THEN 1 ELSE 0 END) AS successful_calls,
+                                    SUM(CASE WHEN field3 IN ('FO did not attend the call','Number Powered Off','Out of PS Jurisdiction') THEN 1 ELSE 0 END) AS Unsuccessful_calls
+                                FROM
                                     response_time
                                 WHERE 
                                     field3 IS NOT NULL
-                                    AND date BETWEEN ? AND ?
+                                    AND date BETWEEN %s AND %s
                                     AND district_id is not NULL
                                     AND parent_id = 0
                                     AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                                         OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
-                                    AND district_id = ?
-                                    AND police_station = ?
+                                    AND district_id = %s
+                                    AND police_station = %s
                                 """
         processed_db_cursor.execute(conference_call_query, (from_date, to_date,district_id,police_station))
         (successful_calls, unsuccessful_calls) = processed_db_cursor.fetchone()
@@ -1512,8 +1518,8 @@ def pswise_categories():
                     SELECT latitude, longitude, name, phone_number,
                     status, police_station, district, registration_no
                     FROM police_mv_locations
-                    WHERE district = ?
-                    AND police_station = ?
+                    WHERE district = %s
+                    AND police_station = %s
         """
         processed_db_cursor.execute(vehicles_query, (district, police_station))
         vehicles_location = processed_db_cursor.fetchall()
@@ -1525,37 +1531,21 @@ def pswise_categories():
 
         vehicles_location_data = [dict(zip(column_names, vehicle)) for vehicle in vehicles_location]
 
-        crime_hotspots_query = """
-                            Select district_id , case_nature , hotspots
-                            FROM pred_pol_hotspots
-                            WHERE district_id = %s
-                """
-        db_cursor.execute(crime_hotspots_query, (district_id,))
-        hotspot_results = db_cursor.fetchall()
 
-        # Process each row
-        coordinates = list(
-            chain.from_iterable(
-                data.get("coordinates", [])
-                for row in hotspot_results
-                for data in json.loads(row[2]).values()
-            )
-        )
-
+        # successful response
         response = {
             'status': True,
             'message': 'Police station statistics fetched successfully',
             'data': {
                 'pswise_response': pswise_response,
                 'cases_list': cases_list,
-                'total_cases': generated_case_count,
-                'total_firs': fir_count if fir_count else 0,
-                'response_time': response_time,
-                'conference_calls': conf_calls,
-                'police_mv_locations': vehicles_location_data,
-                'successful_conf_calls': successful_calls,
-                'unsuccessful_conf_calls': unsuccessful_calls,
-                'hotspot_coordinates': coordinates
+                'total_cases' : generated_case_count,
+                'total_firs' : fir_count if fir_count else 0,
+                'response_time' : response_time,
+                'conference_calls' : conf_calls,
+                'police_mv_locations' : vehicles_location_data,
+                'successful_conf_calls':successful_calls,
+                'unsuccessful_conf_calls':unsuccessful_calls
             }
         }
         return jsonify(response), 200
@@ -1600,7 +1590,7 @@ def punjab_case_details():
                 assignedby_remarks , assignedto_remarks,dispatched_time,first_arrival_time,
                 lat,long,responder_lat,responder_long
             FROM response_time
-            WHERE case_number = ?
+            WHERE case_number = %s
         """
 
         processed_db_cursor.execute(case_query, (case_number_str,))
@@ -1653,62 +1643,6 @@ def punjab_case_details():
         }
 
         return jsonify(response), 200
-
-    except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
-        return jsonify({
-            'status': False,
-            'message': f'Internal server error : {e}',
-            'data': None
-        }), 500
-
-
-@app.route(configs.PS_CASE_DETAILS['ENDPOINT'], methods= ["GET"])
-def ps_case_details():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
-
-    fromDate = request.args.get('fromDate')
-    toDate = request.args.get('toDate')
-    police_station = request.args.get('police_station')
-
-    try:
-        ps_query = """
-                SELECT 
-                    case_number , description , response_time , 
-                    responder_id , accepted_time , police_station,district_id,region_category,caller_name,
-                    caller_number,caller_location,level3_case_nature
-                FROM 
-                    response_time
-                WHERE 
-                    police_station = ?
-                    AND date BETWEEN ? AND ?
-        """
-        processed_db_cursor.execute(ps_query, (police_station,fromDate,toDate,))
-        ps_cases = processed_db_cursor.fetchall()
-
-        cases_list = [
-            {
-                "case_number": case_number,
-                "case_nature": level3_case_nature,
-                "caller_name": caller_name,
-                "assigned_time": created_time,
-                "cli": caller_number,
-                "police_station": police_station,
-                "status": 'CompCa',
-                "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)),
-                "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
-                "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
-                    configs.YMD_HMS) if reached_time else None,
-                "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else 0
-            }
-            for
-            case_number, level3_case_nature, caller_name, caller_number, created_time, police_station, district_id, time_id, description, reached_time, response_time
-            in ps_cases
-        ]
-
-        return  cases_list
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -1795,7 +1729,7 @@ def district_category_details():
             WHERE {condition}
                 AND district_id NOT IN ('0','41','42','43','44','45','46')
                 AND police_station is not Null
-                AND date BETWEEN ? AND ?
+                AND date BETWEEN %s AND %s
                 {district_condition}
                 AND parent_id = 0
         """
@@ -1815,7 +1749,7 @@ def district_category_details():
             query_params = [from_date, to_date]
         else:
             categories = configs.CATEGORIES.get(category)
-            where_condition = f"level3_case_nature IN ({','.join(['?'] * len(categories))})"
+            where_condition = f"level3_case_nature IN ({','.join(['%s'] * len(categories))})"
             query_params = categories + [from_date, to_date]
 
         # Get case details
@@ -1859,7 +1793,7 @@ def district_category_details():
                     ON
                         ps.police_station_id = rt.police_station_id
                         AND {condition}
-                        AND rt.date BETWEEN ? AND ?
+                        AND rt.date BETWEEN %s AND %s
                         {additional_condition}
                         AND rt.parent_id = 0
                         AND rt.police_station is NOT NULL
@@ -1900,7 +1834,7 @@ def district_category_details():
 @limiter.limit(configs.LIMITER)
 @require_api_key
 @jwt_required()
-def forcast_predpol():
+def forcast_predictive_policing():
     try:
         log_db_conn, log_db_cursor = get_log_db_connection()
 
@@ -1964,7 +1898,6 @@ def forecast_datewise():
             'data': None
         }), 500
 
-
 @app.route(configs.EMERGENCY_15_INTEGRATION['ENDPOINT'], methods=[configs.EMERGENCY_15_INTEGRATION['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
@@ -2009,7 +1942,7 @@ def emergency_15_integration():
             processed_query += district_condition
 
         params = []
-        processed_query += " AND date BETWEEN ? AND ?"
+        processed_query += " AND date BETWEEN %s AND %s"
         params.extend([from_date, to_date])
 
         processed_db_cursor.execute(processed_query, params)
@@ -2021,18 +1954,21 @@ def emergency_15_integration():
          vccs, vcm, generated_cases) = row
         emergency_15 = (total_calls - vwps - traffic - vccs - vcm) if total_calls else None
 
+        if isinstance(estimated_response_time, Decimal):
+            estimated_response_time = float(estimated_response_time)
+
         if view_role == 2 or view_role == 1:
             processed_db_cursor.execute(
                 utils.build_response_time_query(
                     columns_key="avg_only",
-                    additional_conditions=[configs.DATE_RANGE_CONDITION[4:]]
+                    additional_conditions=[" date Between %s AND %s "]
                 ),
                 [from_date, to_date]
             )
             response_time = processed_db_cursor.fetchall()
 
             regional_avg_response_query = utils.build_avg_regional_response_query(
-                additional_conditions=[configs.DATE_RANGE_CONDITION[4:]])
+                additional_conditions=[" date Between %s AND %s "])
             processed_db_cursor.execute(regional_avg_response_query, (from_date, to_date))
             regional_avg_responses = processed_db_cursor.fetchall()
 
@@ -2040,7 +1976,7 @@ def emergency_15_integration():
             processed_db_cursor.execute(
                 utils.build_response_time_query(
                     columns_key="avg_only",
-                    additional_conditions=[configs.DATE_RANGE_CONDITION[4:], district_condition[4:]]
+                    additional_conditions=[" date Between %s AND %s ", " district_id =  %s "]
                 ),
                 [from_date, to_date]
             )
@@ -2051,31 +1987,35 @@ def emergency_15_integration():
             processed_db_cursor.execute(regional_avg_response_query, (from_date, to_date))
             regional_avg_responses = processed_db_cursor.fetchall()
 
-        conference_call_query = f"""
+        conference_call_query = """
                         SELECT 
-                            SUM(CASE WHEN field3 = 'Successful Conference call' THEN 1 ELSE 0 END) AS `successful_calls`,
-                            SUM(CASE WHEN field3 IN ('FO did not attend the call','Number Powered Off') THEN 1 ELSE 0 END) AS `Unsuccessful_calls`
+                            SUM(CASE WHEN field3 = 'Successful Conference call' THEN 1 ELSE 0 END) AS successful_calls,
+                            SUM(CASE WHEN field3 IN ('FO did not attend the call','Number Powered Off') THEN 1 ELSE 0 END) AS Unsuccessful_calls
                         FROM 
                             response_time
                         WHERE 
                             field3 IS NOT NULL
-                            AND date BETWEEN ? AND ?
+                            AND date BETWEEN %s AND %s
                             AND district_id is not NULL
                             AND parent_id = 0
                             {district_condition}
                         """
+        conference_call_query = conference_call_query.format(district_condition=district_condition)
+
         processed_db_cursor.execute(conference_call_query, (from_date, to_date))
         (successful_calls, unsuccessful_calls) = processed_db_cursor.fetchone()
 
-        fir_query = f"""
+        fir_query = """
                         SELECT 
                             SUM(fir_count)
                         FROM 
                             fir_data
                         WHERE 
-                            date BETWEEN ? AND ?
+                            date BETWEEN %s AND %s
                             {district_condition}
                         """
+        fir_query = fir_query.format(district_condition=district_condition)
+
         processed_db_cursor.execute(fir_query, (from_date, to_date))
         fir_count = processed_db_cursor.fetchone()[0]
 
@@ -2106,7 +2046,7 @@ def emergency_15_integration():
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
 
-        processed_db_cursor.execute(f"""
+        police_mv_stats_query = """
                         WITH statuses AS (
                             SELECT 'Free' AS status
                             UNION ALL
@@ -2139,16 +2079,19 @@ def emergency_15_integration():
                         WHERE 
                             1=1
                             {other_condition}
-        """)
+        """
+        police_mv_stats_query = police_mv_stats_query.format(other_condition=other_condition)
 
+        processed_db_cursor.execute(police_mv_stats_query,)
         vehicle_counts = processed_db_cursor.fetchall()
+
         if not vehicle_counts:
             status_counts = {}
         else:
             status_counts = {row[0]: row[1] for row in vehicle_counts}
 
         ############################################## Police MV locations Data
-        police_mv_locations_query = f"""
+        police_mv_locations_query = """
                             SELECT 
                                 name , police_station , latitude , longitude, 
                                 registration_no, district , unit_type 
@@ -2158,11 +2101,14 @@ def emergency_15_integration():
                             1=1
                             {other_condition}
                 """
+        police_mv_locations_query = police_mv_locations_query.format(other_condition=other_condition)
 
         processed_db_cursor.execute(police_mv_locations_query, )
         records = processed_db_cursor.fetchall()
 
-        mv_data = [dict(row) for row in records]
+        columns = ["name", "police_station", "latitude", "longitude",
+                   "registration_no", "district", "unit_type"]
+        mv_data = [dict(zip(columns, row)) for row in records]
 
         response = {
             'status': True,
@@ -2208,7 +2154,7 @@ def add_remarks():
             "message": remarks,
             "messaged_by": user_name,
             "messaged_to": assigned_to,
-            "cc" : cc if cc else '',
+            "cc" : cc,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         new_remarks_json = json.dumps(new_remarks)
@@ -2216,7 +2162,7 @@ def add_remarks():
         processed_db_conn, processed_db_cursor = get_processed_db_connection()
         log_db_conn, log_db_cursor = get_log_db_connection()
 
-        processed_db_cursor.execute("SELECT remarks, remarks_status, assignedto_remarks , assignedby_remarks FROM response_time WHERE case_number = ?",
+        processed_db_cursor.execute("SELECT remarks, remarks_status, assignedto_remarks , assignedby_remarks FROM response_time WHERE case_number = %s",
                        (case_number,))
         row = processed_db_cursor.fetchone()
 
@@ -2224,10 +2170,10 @@ def add_remarks():
             remarks_field, status_field, assignedto_remarks, assignedby_remarks = row
 
 
-            if not remarks_field and not status_field and not assignedto_remarks and not assignedby_remarks:
+            if all(not field for field in [remarks_field, status_field, assignedto_remarks, assignedby_remarks]):
 
                 processed_db_cursor.execute(
-                    "UPDATE response_time SET remarks = ?,assignedby_remarks = ?, remarks_status = ?, assignedto_remarks = ? WHERE case_number = ?",
+                    "UPDATE response_time SET remarks = %s,assignedby_remarks = %s, remarks_status = %s, assignedto_remarks = %s WHERE case_number = %s",
                     (new_remarks_json,name, 'UnAnswered', assigned_to, case_number)
                 )
 
@@ -2246,92 +2192,6 @@ def add_remarks():
         }), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
-        return jsonify({
-            "success": False,
-            "message": f"An error occurred: {str(e)}"
-        }), 500
-
-
-@app.route(configs.UPDATE_REMARKS['ENDPOINT'], methods=[configs.UPDATE_REMARKS['METHOD']])
-@limiter.limit(configs.LIMITER)
-@require_api_key
-@jwt_required()
-def update_remarks():
-    try:
-        # Retrieve parameters from the request
-        case_number = request.form.get('case_number')
-        view_role = request.form.get('view_role')
-        new_remarks = request.form.get('remarks')
-        user_name = request.form.get('user_name')
-        cc = request.form.get('cc')
-        assigned_to = request.form.get('assigned_to')
-
-        # Validate required fields
-        if not case_number or not user_name or not view_role or not new_remarks:
-            return jsonify({
-                "success": False,
-                "message": "Missing required fields"
-            }), 400
-
-        # Build the new remarks object
-        appended_remarks = {
-            "message": new_remarks,
-            "message_by": user_name,
-            "message_to": assigned_to,
-            "cc" : cc if cc else '',
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-
-        # Connect to the databases
-        processed_db_conn, processed_db_cursor = get_processed_db_connection()
-        log_db_conn, log_db_cursor = get_log_db_connection()
-
-        # Check if the case exists
-        processed_db_cursor.execute(
-            "SELECT remarks FROM response_time WHERE case_number = ?",
-            (case_number,)
-        )
-        row = processed_db_cursor.fetchone()
-
-        if row:
-            existing_remarks_json = row[0]
-            if existing_remarks_json:
-                existing_remarks = json.loads(existing_remarks_json)
-                if isinstance(existing_remarks, list):
-                    existing_remarks.append(appended_remarks)
-                else:
-                    existing_remarks = [existing_remarks, appended_remarks]
-            else:
-                existing_remarks = [appended_remarks]
-
-            updated_remarks_json = json.dumps(existing_remarks)
-
-            # Update the remarks in the database
-            processed_db_cursor.execute(
-                """
-                UPDATE response_time 
-                SET remarks = ?, remarks_status = ?
-                WHERE case_number = ?
-                """,
-                (updated_remarks_json, 'Updated', case_number)
-            )
-
-            response_message = "Remarks updated successfully."
-            processed_db_conn.commit()
-        else:
-            response_message = "No record found for the provided case_number."
-
-        # Close the database connection
-        processed_db_conn.close()
-
-        return jsonify({
-            "success": True,
-            "message": response_message
-        }), 200
-
-    except Exception as e:
-        # Log the error and return a failure response
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
@@ -2387,7 +2247,7 @@ def get_remarks():
         else :
             district_condition = ""
 
-        my_followups = f"""
+        my_followups_query = f"""
                 SELECT case_number, level3_case_nature, caller_name, caller_number,
                        accepted_time AS created_time, police_station, district_id, time_id,
                        description, first_arrival_time AS reached_time, response_time, assignedby_remarks AS assigned_by, remarks_status
@@ -2397,14 +2257,16 @@ def get_remarks():
                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
                   AND police_station IS NOT NULL
                   AND parent_id = 0
-                  AND assignedto_remarks = ?
+                  AND assignedto_remarks = %s
             """
+        my_followups_query = my_followups_query.format(district_condition=district_condition)
+
         fp_cases = []
         if username != 'ig.punjab':
-            processed_db_cursor.execute(my_followups, (username,))
+            processed_db_cursor.execute(my_followups_query, (username,))
             fp_cases = processed_db_cursor.fetchall()
 
-        followups_needed = f"""
+        followups_needed_query = f"""
                 SELECT case_number, level3_case_nature, caller_name, caller_number,
                        accepted_time AS created_time, police_station, district_id, time_id,
                        description, first_arrival_time AS reached_time, response_time, assignedto_remarks, remarks_status
@@ -2415,9 +2277,10 @@ def get_remarks():
                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
                   AND police_station IS NOT NULL
                   AND parent_id = 0
-                  AND  assignedby_remarks = ?
+                  AND  assignedby_remarks = %s
             """
-        processed_db_cursor.execute(followups_needed, (name,))
+        followups_needed_query=followups_needed_query.format(district_condition=district_condition)
+        processed_db_cursor.execute(followups_needed_query, (name,))
         fp_needed_cases = processed_db_cursor.fetchall()
 
         my_followups_list = [
@@ -2496,271 +2359,98 @@ def get_remarks():
         }), 500
 
 
-@app.route(configs.DASHBOARDS_MORE_INFO['ENDPOINT'], methods=[configs.DASHBOARDS_MORE_INFO['METHOD']])  # Changed to POST
+@app.route(configs.UPDATE_REMARKS['ENDPOINT'], methods=[configs.UPDATE_REMARKS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
 @jwt_required()
-def dashboards_more_info():
-    """Get detailed district-wise information including category-wise stats, police station stats, and cases.
-
-    Expected POST body:
-    {
-        "fromDate": "YYYY-MM-DD",  # Optional
-        "toDate": "YYYY-MM-DD",   # Optional
-        "view_role": int,         # User role ID (2 = All data, 3,4 = District-specific data & 5 = PS specific Data)
-        "district":  str          # String of districts
-        "police_station" : str    # String of police_stations
-    }
-    Returns:
-        JSON: Detailed district statistics
-    """
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
-
+def update_remarks():
     try:
-        # Get and validate request body
-        district_str = request.form.get('district')
-        from_date = request.form.get('fromDate')
-        to_date = request.form.get('toDate')
-        view_role = request.form.get('view_role', type=int)
-        police_station_str = request.form.get('police_station')
-        dtype = request.form.get('dtype')
-        subtype = request.form.get('subtype')
+        # Retrieve parameters from the request
+        case_number = request.form.get('case_number')
+        view_role = request.form.get('view_role')
+        new_remarks = request.form.get('remarks')
+        user_name = request.form.get('user_name')
+        cc = request.form.get('cc')
+        assigned_to = request.form.get('assigned_to')
 
-
-        districts = district_str.split(",") if district_str else []
-        police_stations = police_station_str.split(",") if police_station_str else []
-
-        if not all([district_str, from_date, to_date]):
+        # Validate required fields
+        if not case_number or not user_name or not view_role or not new_remarks:
             return jsonify({
-                'status': False,
-                'message': 'Missing required parameters',
-                'data': None
+                "success": False,
+                "message": "Missing required fields"
             }), 400
 
-        fromdate_unix = utils.date_to_unix_day_start_end(from_date)
-        todate_unix = utils.date_to_unix_day_start_end(to_date,is_start=False)
+        # Build the new remarks object
+        appended_remarks = {
+            "message": new_remarks,
+            "message_by": user_name,
+            "message_to": assigned_to,
+            'cc' : cc,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
 
-        district_ids = []
-        if districts:
-            for district in districts:
-                if district in configs.REVERSED_DISTRICTS_DICTIONARY:
-                    district_ids.append(configs.REVERSED_DISTRICTS_DICTIONARY[district])
-                else:
-                    return jsonify({
-                        'status': False,
-                        'message': f"Invalid district name: {district}",
-                        'data': None
-                    }), 400
+        # Connect to the databases
+        processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        log_db_conn, log_db_cursor = get_log_db_connection()
 
-        if view_role == 5 and district_ids:
-            district_condition = (
-                f"district_id IN ({', '.join(map(str, district_ids))}) "
-                f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
-            )
-        elif view_role in [3, 4]:
-            district_condition = f"district_id IN ({', '.join(map(str, district_ids))})"
-        else:
-            district_condition = ""
-
-        filters = []
-        if district_condition:
-            filters.append(district_condition)
-        if configs.COMB_DASHBOARD_COND.get(subtype, "").strip():
-            filters.append(configs.COMB_DASHBOARD_COND[subtype])
-
-        additional_conditions = " AND ".join(filters) if filters else "1=1"
-
-        # Get category-wise statistics
-        dashboard_query = f"""
-            WITH all_case_types AS (
-                SELECT 'murder' AS case_type
-                UNION ALL SELECT 'rape'
-                UNION ALL SELECT 'child_abuse'
-                UNION ALL SELECT 'aerial_firing'
-                UNION ALL SELECT 'kidnapping'
-                UNION ALL SELECT 'robbery_snatching'
-                UNION ALL SELECT 'dacoity_with_murder'
-                UNION ALL SELECT 'dacoity'
-                UNION ALL SELECT 'motorcycle_theft'
-                UNION ALL SELECT 'burglary'
-                UNION ALL SELECT 'car_theft'
-                UNION ALL SELECT 'theft'
-                UNION ALL SELECT 'terrorist_act'
-                UNION ALL SELECT 'other_person'
-                UNION ALL SELECT 'hurt'
-                UNION ALL SELECT 'other_property'
-                UNION ALL SELECT 'other'
-            )
-            SELECT 
-                t.case_type,
-                COALESCE(v.count, 0) AS count
-            FROM all_case_types t
-            LEFT JOIN (
-                SELECT                 
-                    CASE 
-                        WHEN level3_case_nature IN ('Murder','Attempt to Murder') THEN 'murder'
-                        WHEN level3_case_nature IN ('Sexual Assault/ Harrasment To Women') THEN 'rape'
-                        WHEN level3_case_nature IN ('Rape','Child Abuse / Molestation') THEN 'child_abuse'
-                        WHEN level3_case_nature = 'Aerial Firing' THEN 'aerial_firing'
-                        WHEN level3_case_nature IN ('Male Kidnapping/ Abduction','Female Kidnapping/ Abduction', 
-                            'Child Kidnapping', 'Attempt to Kidnap / Abduct', 'Kidnapping for Ransom') THEN 'kidnapping'
-                        WHEN level3_case_nature IN ('Highway/Road/Street Robbery','Any Other Robbery', 'Cattle Robbery',
-                            'House Robbery', 'Shop Robbery','Patrol Pump Robbery','Bank/Money Exchange/ ATM Robbery',
-                            'Car Snatching','Other Vehicles Snatching','Snatching/Jhapatta','Motorcycle Snatching',
-                            'Jewellery Shop Robbery','Robbery with Murder') THEN 'robbery_snatching'
-                        WHEN level3_case_nature = 'Dacoity with Murder' THEN 'dacoity_with_murder'
-                        WHEN level3_case_nature IN ('Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
-                            'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity') THEN 'dacoity'
-                        WHEN level3_case_nature = 'Motorcycle Theft' THEN 'motorcycle_theft'
-                        WHEN level3_case_nature IN ('Other Burglary', 'Shop Burglary', 'House Burglary') THEN 'burglary'
-                        WHEN level3_case_nature = 'Car Theft' THEN 'car_theft'
-                        WHEN level3_case_nature IN ('Mobile Theft','Any Other Theft','Cattle theft','Transformer/ Motor Theft',
-                            'Pick Pocketing','Purse / Wallet / Luggage Theft','Cycle Theft','Weapon Theft',
-                            'Other Vehicles Theft') THEN 'theft'
-                        WHEN level3_case_nature IN ('Firing on Police','Suicidal Attack/ Bomb Blast/ Terrorist Attack') THEN 'terrorist_act'
-                        WHEN level3_case_nature IN ('Prostitution/ Brothel House','Acid Throwing','Hurt / Injuries','Street Fight',
-                            'Other Assault','Physical Threats / Harrasment','Domestic Violence',
-                            'Criminal Intimidation (Threat with Weapon)') THEN 'other_person'
-                        WHEN level2_case_nature = 'Assault / Hurt' THEN 'hurt'
-                        WHEN level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises' THEN 'other_property'
-                        ELSE 'other'
-                    END AS case_type,
-                    COUNT(*) AS count
-                FROM {dtype}
-                WHERE time_id BETWEEN ? AND ?
-                AND ({additional_conditions})
-                GROUP BY case_type
-            ) v ON t.case_type = v.case_type
-            ORDER BY t.case_type;
-        """
-
-        processed_db_cursor.execute(dashboard_query, (fromdate_unix, todate_unix))
-
-        rows = processed_db_cursor.fetchall()
-        case_counts = {row[0]: row[1] for row in rows}
-
-        (firing, burglary, car_theft, child_abuse, dacoity, dacoity_with_murder, hurt, kidnapping,
-         motorcycle_theft, murder, other, other_person, other_property, rape, robbery_snatching, terrorism, theft) = (
-            case_counts.get('aerial_firing', 0),
-            case_counts.get('burglary', 0),
-            case_counts.get('car_theft', 0),
-            case_counts.get('child_abuse', 0),
-            case_counts.get('dacoity', 0),
-            case_counts.get('dacoity_with_murder', 0),
-            case_counts.get('hurt', 0),
-            case_counts.get('kidnapping', 0),
-            case_counts.get('motorcycle_theft', 0),
-            case_counts.get('murder', 0),
-            case_counts.get('other', 0),
-            case_counts.get('other_person', 0),
-            case_counts.get('other_property', 0),
-            case_counts.get('rape', 0),
-            case_counts.get('robbery_snatching', 0),
-            case_counts.get('terrorist_act', 0),
-            case_counts.get('theft', 0),
+        # Check if the case exists
+        processed_db_cursor.execute(
+            "SELECT remarks FROM response_time WHERE case_number = %s ",
+            (case_number,)
         )
+        row = processed_db_cursor.fetchone()
 
-        categorywise_response = {
-            'terrorism': terrorism,
-            'murder': murder,
-            'kidnapping': kidnapping,
-            'dacoity': dacoity,  # To be removed
-            'robbery_snatching': robbery_snatching,
-            'theft': theft,
-            'child_abuse': child_abuse,
-            'motorcycle_theft': motorcycle_theft,
-            'car_theft': car_theft,
-            'Illegal Possession': other_property,
-            'other': other_person,
-            'environment_smog_issues': 0,
-            'firing': firing,
-            'dacoity_with_murder': dacoity_with_murder,
-            'burglary': burglary,
-            'police_encounter': 0
-        }
+        if row:
+            existing_remarks_json = row[0]
+            if existing_remarks_json:
+                existing_remarks = json.loads(existing_remarks_json)
+                if isinstance(existing_remarks, list):
+                    existing_remarks.append(appended_remarks)
+                else:
+                    existing_remarks = [existing_remarks, appended_remarks]
+            else:
+                existing_remarks = [appended_remarks]
 
-        # Get police station-wise statistics
-        ps_query = f"""
-            SELECT police_station, count(*)
-            FROM response_time
-            WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-                AND date BETWEEN ? AND ?
-                {district_condition}
-                AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
-                    OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
-                AND police_station is Not NULL
-                AND parent_id = 0
-            GROUP BY police_station
-        """
-        processed_db_cursor.execute(ps_query, (from_date, to_date))
-        ps_wise_count = processed_db_cursor.fetchall()
+            updated_remarks_json = json.dumps(existing_remarks)
 
-        ps_wise_response_dict = {row[0]: row[1] for row in ps_wise_count}
+            # Update the remarks in the database
+            processed_db_cursor.execute(
+                """
+                UPDATE response_time 
+                SET remarks = %s, remarks_status = %s
+                WHERE case_number = %s
+                """,
+                (updated_remarks_json, 'Updated', case_number)
+            )
 
-        cases_query = f"""
-            SELECT case_number, level3_case_nature, caller_name, caller_number,
-                   accepted_time, police_station, district_id, time_id,
-                   description, first_arrival_time, response_time
-            FROM response_time
-            WHERE date BETWEEN ? AND ?
-                {district_condition}
-                AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
-                    OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
-                AND district_id NOT IN ('0','41','42','43','44','45','46')
-                AND police_station is not Null
-                AND parent_id = 0
-        """
-        processed_db_cursor.execute(cases_query, (from_date, to_date))
-        cases = processed_db_cursor.fetchall()
+            response_message = "Remarks updated successfully."
+            processed_db_conn.commit()
+        else:
+            response_message = "No record found for the provided case_number."
 
-        cases_list = [
-            {
-                "case_number": case_number,
-                "case_nature": level3_case_nature,
-                "caller_name": caller_name,
-                "assigned_time": created_time,
-                "cli": caller_number,
-                "police_station": police_station,
-                "status": 'CompCa',
-                "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)),
-                "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
-                "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
-                    configs.YMD_HMS) if reached_time else None,
-                "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else 0
-            }
-            for (case_number, level3_case_nature, caller_name, caller_number,
-                 created_time, police_station, district_id, time_id,
-                 description, reached_time, response_time) in cases
-        ]
+        # Close the database connection
+        processed_db_conn.close()
 
-        response = {
-            'status': True,
-            'message': 'District details fetched successfully',
-            'data': {
-                'categorywise_response': categorywise_response,
-                'ps_wise_response': ps_wise_response_dict,
-                'cases': cases_list
-            }
-        }
-
-        return jsonify(response), 200
+        return jsonify({
+            "success": True,
+            "message": response_message
+        }), 200
 
     except Exception as e:
+        # Log the error and return a failure response
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
         return jsonify({
-            'status': False,
-            'message': f'Internal server error: {e}',
-            'data': None
+            "success": False,
+            "message": f"An error occurred: {str(e)}"
         }), 500
+
 
 
 @app.route(configs.CM_DIST_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_DIST_RESPONSE_TIME['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
 @jwt_required()
-def cm_district_responsetime():
+def dist_response_time():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
@@ -2802,15 +2492,19 @@ def cm_district_responsetime():
         else:
             district_condition = ""
 
-        processed_db_cursor.execute(f"""SELECT district_id,avg(response_time) FROM response_time 
+        district_query = """SELECT district_id,avg(response_time) FROM response_time 
                         WHERE district_id NOT IN ('0','41','42','43','44','45','46')
                         AND district_id IS NOT NULL 
-                        AND date BETWEEN ? AND ? 
+                        AND date BETWEEN %s AND %s 
                         AND parent_id = 0
                         AND response_time is NOT NULL AND response_time > 0
                         {district_condition}
                         GROUP BY district_id
-                        """, (from_date, to_date))
+                        """
+        district_query = district_query.format(district_condition=district_condition)
+
+        processed_db_cursor.execute(district_query, (from_date, to_date))
+
         dist_results = processed_db_cursor.fetchall()
 
         districts_response_time = {
@@ -2832,7 +2526,6 @@ def cm_district_responsetime():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
-
 
 @app.route(configs.CM_PS_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_PS_RESPONSE_TIME['METHOD']])
 @limiter.limit(configs.LIMITER)
@@ -2870,18 +2563,23 @@ def cm_ps_responsetime():
         else :
             district_condition = ""
 
-        processed_db_cursor.execute(f"""
+        ps_responsetime_query = """
                         SELECT police_station, avg(response_time)
                         FROM response_time
                         WHERE district_id NOT IN ('0','41','42','43','44','45','46')
                         AND district_id IS NOT NULL
-                        AND date BETWEEN ? AND ?
+                        AND date BETWEEN %s AND %s
                         AND parent_id = 0
                         AND response_time IS NOT NULL AND response_time > 0
-                        AND district_id = ?
+                        AND district_id = %s
                         {district_condition}
                         GROUP BY police_station
-                    """, (from_date, to_date, district_id))
+                    """
+        ps_responsetime_query = ps_responsetime_query.format(district_condition=district_condition)
+
+        processed_db_cursor.execute(ps_responsetime_query, (from_date, to_date, district_id))
+
+
         ps_results = processed_db_cursor.fetchall()
 
         ps_response_time = {
@@ -2952,20 +2650,22 @@ def district_fir_stats():
         else:
             district_condition = ""
 
-        fir_stats_query = f"""
+        fir_stats_query = """
                 SELECT 
                     district,
                     SUM(fir_count)
                 FROM 
                     fir_data
                 WHERE 
-                    date BETWEEN ? AND ?
+                    date BETWEEN %s AND %s
                     AND district_id is not NULL
                     AND district_id NOT IN ('0','41','42','43','44','45','46')
                     {district_condition}
                 GROUP BY 
                     district;
                  """
+        fir_stats_query = fir_stats_query.format(district_condition= district_condition)
+
         processed_db_cursor.execute(fir_stats_query, (from_date, to_date))
         district_fir_data = processed_db_cursor.fetchall()
 
@@ -2974,14 +2674,14 @@ def district_fir_stats():
             for district in district_fir_data
         }
 
-        cases_query = f"""
+        cases_query = """
                 SELECT
                     district_id,
                     count(*)
                 FROM
                     response_time
                 WHERE
-                    date BETWEEN ? AND ?
+                    date BETWEEN %s AND %s
                     AND district_id is not Null 
                     AND parent_id = 0
                     AND district_id NOT IN ('0','41','42','43','44','45','46')
@@ -2989,6 +2689,8 @@ def district_fir_stats():
                 GROUP BY 
                     district_id
         """
+
+        cases_query = cases_query.format(district_condition= district_condition)
 
         processed_db_cursor.execute(cases_query,(from_date, to_date))
         cases = processed_db_cursor.fetchall()
@@ -3057,20 +2759,22 @@ def ps_fir_stats():
         else :
             district_condition = ""
 
-        fir_stats_query = f"""
+        fir_stats_query = """
                 SELECT 
                     police_station,
                     SUM(fir_count)
                 FROM 
                     fir_data
                 WHERE 
-                    date BETWEEN ? AND ?
+                    date BETWEEN %s AND %s
                     AND district_id is not NULL
-                    AND district_id = ?
+                    AND district_id = %s
                     {district_condition}
                 GROUP BY 
                     police_station;
                  """
+        fir_stats_query = fir_stats_query.format(district_condition=district_condition)
+
         processed_db_cursor.execute(fir_stats_query,(from_date, to_date,district_id))
         ps_fir_data = processed_db_cursor.fetchall()
 
@@ -3079,21 +2783,23 @@ def ps_fir_stats():
             for ps in ps_fir_data
         }
 
-        cases_query = f"""
+        cases_query = """
                         SELECT
                             police_station,
                             count(*)
                         FROM
                             response_time
                         WHERE
-                            date BETWEEN ? AND ?
-                            AND district_id = ?
+                            date BETWEEN %s AND %s
+                            AND district_id = %s
                             AND parent_id = 0
                             AND district_id NOT IN ('0','41','42','43','44','45','46')
                             {district_condition}
                         GROUP BY 
                             police_station
                 """
+
+        cases_query = cases_query.format(district_condition=district_condition)
 
         processed_db_cursor.execute(cases_query, (from_date, to_date,district_id))
         cases = processed_db_cursor.fetchall()
@@ -3176,15 +2882,15 @@ def conference_call_stats():
         else:
             district_condition = ""
 
-        dist_conf_query = f"""
+        dist_conf_query = """
                 SELECT 
                     district_id,
-                    SUM(CASE WHEN field3 = 'Successful Conference call' THEN 1 ELSE 0 END) AS `successful_calls`,
-                    SUM(CASE WHEN field3 IN ('FO did not attend the call','Number Powered Off') THEN 1 ELSE 0 END) AS `Unsuccessful_calls`
+                    SUM(CASE WHEN field3 = 'Successful Conference call' THEN 1 ELSE 0 END) AS successful_calls,
+                    SUM(CASE WHEN field3 IN ('FO did not attend the call','Number Powered Off') THEN 1 ELSE 0 END) AS Unsuccessful_calls
                 FROM 
                     response_time
                 WHERE 
-                    date BETWEEN ? AND ?
+                    date BETWEEN %s AND %s
                     AND field3 IS NOT NULL
                     AND district_id is not NULL
                     AND parent_id = 0
@@ -3192,6 +2898,9 @@ def conference_call_stats():
                 GROUP BY 
                     district_id;
                  """
+
+        dist_conf_query = dist_conf_query.format(district_condition=district_condition)
+
         processed_db_cursor.execute(dist_conf_query,(from_date, to_date))
         dist_conf_results = processed_db_cursor.fetchall()
 
@@ -3263,17 +2972,19 @@ def response_time_alerts():
         current_date_str = current_date.strftime("%Y-%m-%d")
         previous_date= previous_date.strftime("%Y-%m-%d")
 
-        alerts_count_query = f"""
+        alerts_count_query = """
                     SELECT district_id, COUNT(case_number) AS case_count
                     FROM response_time
-                    Where date between ? AND ?
+                    Where date between %s AND %s
                     AND response_time > 2100 
                     AND parent_id = 0
-                    AND district_id NOT NULL
+                    AND district_id IS NOT NULL
                     AND district_id NOT IN ('0','41','42','43','44','45','46')
                     {district_condition}
                     GROUP BY district_id
         """
+        alerts_count_query = alerts_count_query.format(district_condition=district_condition)
+
         processed_db_cursor.execute(alerts_count_query,(previous_date,current_date_str))
         alerts = processed_db_cursor.fetchall()
 
@@ -3281,17 +2992,20 @@ def response_time_alerts():
         for i in alerts:
             alerts_count.append({configs.DISTRICTS_DICTIONARY[int(i[0])] : i[1]})
 
-        alerts_casenumbers =  f"""
-                    SELECT district_id , group_concat(case_number)
+        alerts_casenumbers =  """
+                    SELECT district_id, string_agg(case_number::text, ',') AS case_numbers
                     FROM response_time
-                    WHERE date BETWEEN ? AND ?
+                    WHERE date BETWEEN %s AND %s
                       AND response_time > 2100
                       AND parent_id = 0
                       AND district_id IS NOT NULL
                       AND district_id NOT IN ('0','41','42','43','44','45','46')
-                    {district_condition}
-                    GROUP BY district_id
+                      {district_condition}
+                    GROUP BY district_id;
         """
+
+        alerts_casenumbers = alerts_casenumbers.format(district_condition=district_condition)
+
         processed_db_cursor.execute(alerts_casenumbers, (previous_date, current_date_str))
         alerts = processed_db_cursor.fetchall()
 
@@ -3384,7 +3098,7 @@ def police_vehicle_locations():
             "busy" : "Busy"
         }
         if vehicle_status.lower() == 'total':
-            query = f""" SELECT 
+            query = """ SELECT 
                             name , police_station , latitude , longitude, 
                             registration_no, district , unit_type 
                         FROM 
@@ -3396,19 +3110,22 @@ def police_vehicle_locations():
             params = ()
 
         else:
-            query = f""" SELECT 
+            query = """ SELECT 
                             name , police_station , latitude , longitude, 
                             registration_no, district , unit_type 
                         FROM 
                             police_mv_locations 
                         WHERE 
-                            status = ?
+                            status = %s
                             {district_condition}
                     """
             params = (status_dict[vehicle_status],)
 
-        processed_db_cursor.execute(query, params)
-        records = processed_db_cursor.fetchall()
+        query = query.format(district_condition=district_condition)
+
+        with processed_db_conn.cursor(cursor_factory=RealDictCursor) as processed_db_cursor:
+            processed_db_cursor.execute(query, params)
+            records = processed_db_cursor.fetchall()
 
         data = [dict(row) for row in records]
 
@@ -3863,14 +3580,9 @@ def crime_trends():
                 }), 400
 
         if time_period == 'week':
-            time_grouping = """
-            date(
-                date,
-                '-' || strftime('%w', date) || ' days'
-            )
-            """  # Weekly
+            time_grouping = "TO_CHAR(DATE_TRUNC('week', date::DATE), 'YYYY-MM-DD')"  # Weekly format: '2025-01-16'
         else:
-            time_grouping = "strftime('%Y-%m', date)"  # Monthly
+            time_grouping = "TO_CHAR(date::DATE, 'YYYY-MM')"
 
         categories = selected_category.split(',') if selected_category else []
 
@@ -3898,25 +3610,25 @@ def crime_trends():
             )
 
         query = f"""
-        SELECT 
-            {time_grouping} AS time_period,
-            ({columns_to_sum}) AS total_crimes,
-            ROUND(
-                (
-                    ({columns_to_sum}) - 
-                    LAG({columns_to_sum}) OVER (
-                        ORDER BY {time_grouping} ASC
-                    )
-                ) * 100.0 / 
-                NULLIF(
-                    LAG({columns_to_sum}) OVER (
-                        ORDER BY {time_grouping} ASC
-                    ), 0
-                ), 2
-            ) AS percentage_change
-        FROM crime_trends
-        WHERE 1=1
-        """
+                SELECT 
+                    {time_grouping} AS time_period,
+                    ({columns_to_sum}) AS total_crimes,
+                    ROUND(
+                        (
+                            ({columns_to_sum}) - 
+                            LAG({columns_to_sum}) OVER (
+                                ORDER BY {time_grouping} ASC
+                            )
+                        ) * 100.0 / 
+                        NULLIF(
+                            LAG({columns_to_sum}) OVER (
+                                ORDER BY {time_grouping} ASC
+                            ), 0
+                        ), 2
+                    ) AS percentage_change
+                FROM crime_trends
+                WHERE 1=1
+                """
 
         if district_str:
             district_id = configs.REVERSED_DISTRICTS_DICTIONARY.get(district_str)
@@ -3926,12 +3638,12 @@ def crime_trends():
             query += f" AND police_station = '{police_station_str}'"
 
         if year:
-            query += f" AND strftime('%Y', date) = '{year}'"
+            query += f" AND EXTRACT(YEAR FROM date::DATE) = {year}"
 
         query += f"""
-        GROUP BY {time_grouping}
-        ORDER BY {time_grouping} ASC;
-        """
+                GROUP BY {time_grouping}
+                ORDER BY {time_grouping} ASC;
+                """
 
         processed_db_cursor.execute(query)
         data = processed_db_cursor.fetchall()
@@ -3977,12 +3689,12 @@ def crime_trends():
             fir_query += f" AND police_station = '{police_station_str}'"
 
         if year:
-            fir_query += f" AND strftime('%Y', date) = '{year}'"
+            fir_query += f" AND EXTRACT(YEAR FROM date::DATE) = {year}"
 
         fir_query += f"""
-        GROUP BY {time_grouping}
-        ORDER BY {time_grouping} ASC;
-        """
+                GROUP BY {time_grouping}
+                ORDER BY {time_grouping} ASC;
+                """
 
         processed_db_cursor.execute(fir_query)
         fir_data = processed_db_cursor.fetchall()
@@ -4386,13 +4098,13 @@ def crime_trend_cases():
                 accepted_time, police_station, district_id, time_id,
                 description, first_arrival_time, response_time
             FROM response_time
-            WHERE district_id = ?
+            WHERE district_id = %s
              {category_condition}
-            AND date BETWEEN ? AND ?
+            AND date BETWEEN %s AND %s
         """
 
         if police_station and police_station != 'null':
-            query_cases += " AND police_station = ?"
+            query_cases += " AND police_station = %s"
 
         params = [configs.REVERSED_DISTRICTS_DICTIONARY[district_str], start_date, end_date]
         if police_station and police_station != 'null':
@@ -4436,6 +4148,5 @@ def crime_trend_cases():
             "message": f"An error occurred: {str(e)}"
         }), 500
 
-
 if __name__ == '__main__':
-    app.run(host=configs.HOST, port=configs.PORT, debug=False) #configs.DEBUG_
+    app.run(host=configs.HOST, port=5035, debug=True) #configs.DEBUG_
