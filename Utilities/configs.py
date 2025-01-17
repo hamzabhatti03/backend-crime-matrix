@@ -38,8 +38,16 @@ FIR_DB = '../DatabaseManager/leads_in_fir_14112024.db'
 PROCESSED_STATS_TEST_DB = '../DatabaseManager/processed1.db'
 
 """PostgreSQL DATABASES"""
+# POSTGRES_PROCESSED_STATS_MAIN = {
+#     'dbname': 'dev_processed_15',
+#     'user': 'postgres',
+#     'password': 'psca@officialmai1',
+#     'host': '10.20.170.151',
+#     'port': 5432  # Default PostgreSQL port
+# }
+
 POSTGRES_PROCESSED_STATS_MAIN = {
-    'dbname': 'dev_processed_15',
+    'dbname': 'stage_processed_15',
     'user': 'postgres',
     'password': 'psca@officialmai1',
     'host': '10.20.170.151',

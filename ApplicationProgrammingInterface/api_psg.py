@@ -4149,4 +4149,4 @@ def crime_trend_cases():
         }), 500
 
 if __name__ == '__main__':
-    app.run(host=configs.HOST, port=5035, debug=True) #configs.DEBUG_
+    app.run(host=configs.HOST, port=5010, debug=True) #configs.DEBUG_

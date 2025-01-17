@@ -1756,6 +1756,6 @@ def main(start_date, end_date, start):
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('17-01-25', '%d-%m-%y')
+    start_date = datetime.strptime('16-01-25', '%d-%m-%y')
     end_date = datetime.strptime('17-01-25', '%d-%m-%y')
     main(start_date, end_date, True)
