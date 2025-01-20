@@ -4146,5 +4146,109 @@ def crime_trend_cases():
             "message": f"An error occurred: {str(e)}"
         }), 500
 
+
+@app.route(configs.NEGATIVE_FEEDBACK_CASES['ENDPOINT'], methods=[configs.NEGATIVE_FEEDBACK_CASES['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@jwt_required()
+def negative_feedback_cases():
+    log_db_conn, log_db_cursor = get_log_db_connection()
+    mysql_connection = db_config.get_db_connection()
+    mysql_cursor = mysql_connection.cursor()
+    try:
+        district_str = request.form.get('district')
+        from_date = request.form.get('fromDate')
+        to_date = request.form.get('toDate')
+        view_role = request.form.get('view_role', type=int)
+        police_station_str = request.form.get('police_station')
+
+        districts = district_str.split(",") if district_str else []
+        police_stations = police_station_str.split(",") if police_station_str else []
+
+        if view_role not in [1, 2, 3, 4, 5]:
+            return jsonify({
+                'status': False,
+                'message': 'Invalid view role. Use 2 or 3.',
+                'data': None
+            }), 400
+
+        district_ids = []
+        if districts:
+            for district in districts:
+                if district in configs.REVERSED_DISTRICTS_DICTIONARY:
+                    district_ids.append(configs.REVERSED_DISTRICTS_DICTIONARY[district])
+                else:
+                    return jsonify({
+                        'status': False,
+                        'message': f"Invalid district name: {district}",
+                        'data': None
+                    }), 400
+
+        district_condition = ""
+        if (view_role == 3 or view_role == 4) and district_ids:
+            district_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
+        elif view_role == 5 and district_ids:
+            district_condition = (
+                f"AND district_id IN ({', '.join(map(str, district_ids))}) "
+                f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+
+        from_date_epoch = utils.date_to_unix_day_start_end(from_date,True)
+        to_date_epoch = utils.date_to_unix_day_start_end(to_date,False)
+
+        query = f"""
+                SELECT  case_number, level3_case_nature, caller_name, call_id,
+                accepted_time, police_station, district_id, time_id,
+                cro_comments, first_arrival_time, caller_location , caller_feedback
+                from 15_preprocessed 
+                where time_id BETWEEN %s AND %s 
+                    AND case_status = 'closed' 
+                    AND parent_id = 0 
+                    AND caller_feedback IS NOT NULL 
+                    AND district <> '' 
+                    AND caller_feedback = 'Negative'
+                    {district_condition}
+        """
+        mysql_cursor.execute(query, (from_date_epoch, to_date_epoch))
+        cases = mysql_cursor.fetchall()
+
+        cases_list = [
+            {
+                "case_number": case_number.decode() if isinstance(case_number, bytes) else case_number,
+                "case_nature": level3_case_nature.decode() if isinstance(level3_case_nature,
+                                                                         bytes) else level3_case_nature,
+                "caller_name": caller_name.decode() if isinstance(caller_name, bytes) else caller_name,
+                "assigned_time": created_time.decode() if isinstance(created_time, bytes) else created_time,
+                "cli": caller_number.decode() if isinstance(caller_number, bytes) else caller_number,
+                "police_station": police_station.decode() if isinstance(police_station, bytes) else police_station,
+                "status": 'closed',
+                "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)),
+                "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
+                "description": description.decode() if isinstance(description, bytes) else description,
+                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+                    configs.YMD_HMS) if reached_time else None,
+                "address": address.decode() if isinstance(address, bytes) else address,
+                "caller_feedback": caller_feedback.decode() if isinstance(caller_feedback, bytes) else caller_feedback
+            }
+            for (case_number, level3_case_nature, caller_name, caller_number,
+                 created_time, police_station, district_id, time_id,
+                 description, reached_time, address, caller_feedback) in cases
+        ]
+
+        response = {
+            "success": True,
+            "data": cases_list,
+            "message": "Cases for Negative Feedbacks fetched Successfully"
+        }
+        return jsonify(response), 200
+
+
+    except Exception as e:
+        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+
 if __name__ == '__main__':
-    app.run(host=configs.HOST, port=configs.PORT, debug=True) #configs.DEBUG_
+    app.run(host=configs.HOST, port=configs.PORT, debug=False) #configs.DEBUG_
