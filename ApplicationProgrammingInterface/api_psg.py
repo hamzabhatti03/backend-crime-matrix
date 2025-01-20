@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from predictive_api import yesterday_forecast_db as yesterday_forecast
 from predictive_api import forecast_date
 from predictive_api import get_category_data
+from itertools import chain
 
 from decimal import Decimal
 from psycopg2.extras import RealDictCursor
@@ -1329,6 +1330,8 @@ def pswise_categories():
     """
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    master_db_connection = db_config.get_db_connection()
+    db_cursor = master_db_connection.cursor()
 
     try:
         from_date = request.form.get('fromDate')
@@ -1531,6 +1534,22 @@ def pswise_categories():
 
         vehicles_location_data = [dict(zip(column_names, vehicle)) for vehicle in vehicles_location]
 
+        crime_hotspots_query = """
+                                            Select district_id , case_nature , hotspots
+                                            FROM pred_pol_hotspots
+                                            WHERE district_id = %s
+                                """
+        db_cursor.execute(crime_hotspots_query, (district_id,))
+        hotspot_results = db_cursor.fetchall()
+
+        # Process each row
+        coordinates = list(
+            chain.from_iterable(
+                data.get("coordinates", [])
+                for row in hotspot_results
+                for data in json.loads(row[2]).values()
+            )
+        )
 
         # successful response
         response = {
@@ -1539,13 +1558,14 @@ def pswise_categories():
             'data': {
                 'pswise_response': pswise_response,
                 'cases_list': cases_list,
-                'total_cases' : generated_case_count,
-                'total_firs' : fir_count if fir_count else 0,
-                'response_time' : response_time,
-                'conference_calls' : conf_calls,
-                'police_mv_locations' : vehicles_location_data,
-                'successful_conf_calls':successful_calls,
-                'unsuccessful_conf_calls':unsuccessful_calls
+                'total_cases': generated_case_count,
+                'total_firs': fir_count if fir_count else 0,
+                'response_time': response_time,
+                'conference_calls': conf_calls,
+                'police_mv_locations': vehicles_location_data,
+                'successful_conf_calls': successful_calls,
+                'unsuccessful_conf_calls': unsuccessful_calls,
+                'hotspot_coordinates': coordinates
             }
         }
         return jsonify(response), 200
@@ -3650,7 +3670,7 @@ def crime_trends():
 
         crime_time_periods = [row[0] for row in data]
         total_crimes = [row[1] for row in data]
-        crime_pct_changes = [row[2] for row in data]
+        crime_pct_changes = [float(row[2]) if row[2] is not None else None for row in data]
 
         result_crime_trends = []
         for period, total, change in zip(crime_time_periods, total_crimes, crime_pct_changes):
@@ -3701,7 +3721,7 @@ def crime_trends():
 
         fir_time_periods = [row[0] for row in fir_data]
         total_firs = [row[1] for row in fir_data]
-        fir_pct_changes = [row[2] for row in fir_data]
+        fir_pct_changes = [float(row[2]) if row[2] is not None else None for row in fir_data]
 
         fir_trends = []
         for period, total, change in zip(fir_time_periods, total_firs, fir_pct_changes):
@@ -3747,13 +3767,13 @@ def caller_feedback():
         if view_role in [3, 4]:
             district_condition = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
 
-        processed_db_cursor.execute("""
-                    SELECT accepted , dispatched , feedback , reopen ,closed , caller_feedback
-                    FROM feedback_stats
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                """)
-        (accepted , dispatched , feedback , reopen ,closed , feedback_caller) = processed_db_cursor.fetchone()
+        # processed_db_cursor.execute("""
+        #             SELECT accepted , dispatched , feedback , reopen ,closed , caller_feedback
+        #             FROM feedback_stats
+        #             ORDER BY created_at DESC
+        #             LIMIT 1
+        #         """)
+        # (accepted , dispatched , feedback , reopen ,closed , feedback_caller) = processed_db_cursor.fetchone()
 
         processed_db_cursor.execute(f"""
                             SELECT district, positive, negative, not_responding
@@ -3764,7 +3784,10 @@ def caller_feedback():
 
         district_feedback_stats = processed_db_cursor.fetchall()
 
-        existing_stats = {row['district']: dict(row) for row in district_feedback_stats}
+        # existing_stats = {row['district']: dict(row) for row in district_feedback_stats}
+
+        existing_stats = {row[0]: {"district": row[0], "positive": row[1], "negative": row[2], "not_responding": row[3]}
+                          for row in district_feedback_stats}
 
         dist_stats = []
         for district in districts:
@@ -3788,14 +3811,14 @@ def caller_feedback():
 
         response = {"status": "success",
                     "data": {
-                        'feedback_stats' : {
-                            'accepted' : accepted,
-                            'dispatched' : dispatched,
-                            'feedback' : feedback,
-                            'reopen' : reopen,
-                            'closed' : closed,
-                            'caller_feedback' : feedback_caller,
-                        },
+                        # 'feedback_stats' : {
+                        #     'accepted' : accepted,
+                        #     'dispatched' : dispatched,
+                        #     'feedback' : feedback,
+                        #     'reopen' : reopen,
+                        #     'closed' : closed,
+                        #     'caller_feedback' : feedback_caller,
+                        # },
                         'district_feedack' : dist_stats,
                         'total' : {
                             'total_positive' : total_positive,
@@ -4149,4 +4172,4 @@ def crime_trend_cases():
         }), 500
 
 if __name__ == '__main__':
-    app.run(host=configs.HOST, port=5035, debug=True) #configs.DEBUG_
+    app.run(host=configs.HOST, port=5005, debug=True) #configs.DEBUG_
