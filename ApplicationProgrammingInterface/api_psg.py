@@ -16,7 +16,6 @@ from predictive_api import yesterday_forecast_db as yesterday_forecast
 from predictive_api import forecast_date
 from predictive_api import get_category_data
 from itertools import chain
-
 from decimal import Decimal
 from psycopg2.extras import RealDictCursor
 
@@ -1535,10 +1534,10 @@ def pswise_categories():
         vehicles_location_data = [dict(zip(column_names, vehicle)) for vehicle in vehicles_location]
 
         crime_hotspots_query = """
-                                            Select district_id , case_nature , hotspots
-                                            FROM pred_pol_hotspots
-                                            WHERE district_id = %s
-                                """
+                                    Select district_id , case_nature , hotspots
+                                    FROM pred_pol_hotspots
+                                    WHERE district_id = %s
+                        """
         db_cursor.execute(crime_hotspots_query, (district_id,))
         hotspot_results = db_cursor.fetchall()
 
@@ -1551,6 +1550,7 @@ def pswise_categories():
             )
         )
 
+
         # successful response
         response = {
             'status': True,
@@ -1558,14 +1558,14 @@ def pswise_categories():
             'data': {
                 'pswise_response': pswise_response,
                 'cases_list': cases_list,
-                'total_cases': generated_case_count,
-                'total_firs': fir_count if fir_count else 0,
-                'response_time': response_time,
-                'conference_calls': conf_calls,
-                'police_mv_locations': vehicles_location_data,
-                'successful_conf_calls': successful_calls,
-                'unsuccessful_conf_calls': unsuccessful_calls,
-                'hotspot_coordinates': coordinates
+                'total_cases' : generated_case_count,
+                'total_firs' : fir_count if fir_count else 0,
+                'response_time' : response_time,
+                'conference_calls' : conf_calls,
+                'police_mv_locations' : vehicles_location_data,
+                'successful_conf_calls':successful_calls,
+                'unsuccessful_conf_calls':unsuccessful_calls,
+                'hotspot_coordinates' : coordinates
             }
         }
         return jsonify(response), 200
@@ -3059,6 +3059,13 @@ def response_time_alerts():
 
         crime_occurence = []
         for i in re_occurrences_cases:
+            # Assuming i is a tuple, convert it to a list first
+            i = list(i)
+
+            i[0] = i[0].decode('utf-8') if isinstance(i[0], bytearray) else i[0]
+            i[1] = i[1].decode('utf-8') if isinstance(i[1], bytes) else i[1]
+
+            # Continue with your processing
             crime_occurence.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1].split(",")})
 
         response = {
@@ -3732,11 +3739,11 @@ def crime_trends():
             })
 
         response = {
-            "data" : {
-                'crime_trends' : result_crime_trends,
-                'fir_trends' : fir_trends
+            "data": {
+                'crime_trends': result_crime_trends,
+                'fir_trends': fir_trends
             },
-            "status" : "success",
+            "status": "success",
             "message": "Crime and FIR trends fetched successfully"
         }
 

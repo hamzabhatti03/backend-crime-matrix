@@ -38,6 +38,8 @@ def yesterday_forecast_db(ps, district):
 
         results_for_actual_dict = {}
         for category, count in results_for_actual:
+            if isinstance(category, bytes):
+                category = category.decode('utf-8')  # Decode using UTF-8
             results_for_actual_dict[category] = count
 
         conn.close()
@@ -361,23 +363,31 @@ def forecast_date(ps, district, start_date, end_date):
 
         # Process each row
         for row in rows:
-            date = row['date']  # Assuming 'date' is the column name in the table
+            # Decode bytearray fields to strings
+            date = row['date'].decode('utf-8')  # Convert 'date' to string
+
             if date not in predictions_by_date:
                 predictions_by_date[date] = {}
 
-            for i, category in enumerate(columns):
-                column_name = list(row.keys())[i + 3]  # Get the actual column name
-                category_data = row[column_name]
+            for category in columns:
+                # Get category data
+                category_data = row.get(category, None)
                 if category_data:
-                    parsed_data = json.loads(category_data)
-                    # If data is a single item, wrap it in a list for uniformity
+                    # Decode binary data to string
+                    category_data_str = category_data.decode('utf-8')
+
+                    # Parse JSON data
+                    parsed_data = json.loads(category_data_str)
+
+                    # Ensure parsed data is a list for uniformity
                     if isinstance(parsed_data, dict):
                         parsed_data = [parsed_data]
 
-                    # Check if the message is empty
-                    count = len(parsed_data) if parsed_data and parsed_data[0].get("message", "") != "" else 0
+                    # Count non-empty messages
+                    count = len([item for item in parsed_data if item.get("message", "").strip() != ""])
                     predictions_by_date[date][category] = count
                 else:
+                    # Default to 0 if no data is present
                     predictions_by_date[date][category] = 0
 
     except mysql.connector.Error as err:
