@@ -1554,6 +1554,8 @@ def pswise_categories():
                             FROM response_time
                             WHERE district_id = %s
                             AND police_station = %s
+                            AND reached_lat is NOT NULL
+                            AND reached_long is NOT NULL
                                 """
 
         processed_db_cursor.execute(crime_hotspots_query, (district_id,police_station))
@@ -1569,7 +1571,7 @@ def pswise_categories():
             reached_long = result[4]
 
             # Append the coordinates as a list to the coordinates list
-            coordinates.append([reached_lat, reached_long])
+            coordinates.append([float(reached_lat), float(reached_long)])
 
         # successful response
         response = {
