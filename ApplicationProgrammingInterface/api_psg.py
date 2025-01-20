@@ -145,8 +145,7 @@ def login():
         else :
             return jsonify({
                 'status': False,
-                'message': 'Invalid user_name or Password',
-                'data': None
+                'message': 'Incorrect Password OR user_name'
             }), 400
 
 
@@ -168,8 +167,7 @@ def login():
         utils.log_to_database(db_conn, db_cursor, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
-            'message': f'Internal server error {e}',
-            'data': None
+            'message': f'Internal server error {e}'
         }),400
 
 
@@ -1977,35 +1975,6 @@ def emergency_15_integration():
         if isinstance(estimated_response_time, Decimal):
             estimated_response_time = float(estimated_response_time)
 
-        if view_role == 2 or view_role == 1:
-            processed_db_cursor.execute(
-                utils.build_response_time_query(
-                    columns_key="avg_only",
-                    additional_conditions=[" date Between %s AND %s "]
-                ),
-                [from_date, to_date]
-            )
-            response_time = processed_db_cursor.fetchall()
-
-            regional_avg_response_query = utils.build_avg_regional_response_query(
-                additional_conditions=[" date Between %s AND %s "])
-            processed_db_cursor.execute(regional_avg_response_query, (from_date, to_date))
-            regional_avg_responses = processed_db_cursor.fetchall()
-
-        else:
-            processed_db_cursor.execute(
-                utils.build_response_time_query(
-                    columns_key="avg_only",
-                    additional_conditions=[" date Between %s AND %s ", " district_id =  %s "]
-                ),
-                [from_date, to_date]
-            )
-            response_time = processed_db_cursor.fetchall()
-
-            regional_avg_response_query = utils.build_avg_regional_response_query(
-                additional_conditions=[configs.DATE_RANGE_CONDITION[4:], district_condition[4:]])
-            processed_db_cursor.execute(regional_avg_response_query, (from_date, to_date))
-            regional_avg_responses = processed_db_cursor.fetchall()
 
         conference_call_query = """
                         SELECT 
@@ -2047,10 +2016,6 @@ def emergency_15_integration():
             'total_generated_cases': generated_cases,
             'vccs-15_count': vccs,
             'vcm-15_count': vcm,
-            'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time else 0,
-            'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses else 0,
-            'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if len(
-                regional_avg_responses) > 1 else 0,
             'successful_conference_calls': successful_calls,
             'unsuccessful_conference_calls': unsuccessful_calls,
             'fir_count': fir_count
@@ -2232,8 +2197,11 @@ def get_remarks():
         to_date = request.form.get('toDate')
         view_role = request.form.get('view_role', type=int)
         police_station_str = request.form.get('police_station')
-        username = request.form.get('username').lower()
+        username = request.form.get('username')
         name = request.form.get('name')
+
+        if username:
+            username = username.lower()
 
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
