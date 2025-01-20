@@ -1531,23 +1531,45 @@ def pswise_categories():
 
         vehicles_location_data = [dict(zip(column_names, vehicle)) for vehicle in vehicles_location]
 
+        # crime_hotspots_query = """
+        #                             Select district_id , case_nature , hotspots
+        #                             FROM pred_pol_hotspots
+        #                             WHERE district_id = %s
+        #                 """
+        #
+        # db_cursor.execute(crime_hotspots_query, (district_id,))
+        # hotspot_results = db_cursor.fetchall()
+        #
+        # # Process each row
+        # coordinates = list(
+        #     chain.from_iterable(
+        #         data.get("coordinates", [])
+        #         for row in hotspot_results
+        #         for data in json.loads(row[2]).values()
+        #     )
+        # )
+
         crime_hotspots_query = """
-                                    Select district_id , case_nature , hotspots
-                                    FROM pred_pol_hotspots
-                                    WHERE district_id = %s
-                        """
-        db_cursor.execute(crime_hotspots_query, (district_id,))
-        hotspot_results = db_cursor.fetchall()
+                            Select district_id ,police_station, level2_case_nature , reached_lat, reached_long
+                            FROM response_time
+                            WHERE district_id = %s
+                            AND police_station = %s
+                                """
 
-        # Process each row
-        coordinates = list(
-            chain.from_iterable(
-                data.get("coordinates", [])
-                for row in hotspot_results
-                for data in json.loads(row[2]).values()
-            )
-        )
+        processed_db_cursor.execute(crime_hotspots_query, (district_id,police_station))
+        hotspot_results = processed_db_cursor.fetchall()
 
+        # Initialize an empty list to store the coordinates
+        coordinates = []
+
+        # Loop through the fetched results
+        for result in hotspot_results:
+            # Extract the latitude and longitude values from the result
+            reached_lat = result[3]
+            reached_long = result[4]
+
+            # Append the coordinates as a list to the coordinates list
+            coordinates.append([reached_lat, reached_long])
 
         # successful response
         response = {

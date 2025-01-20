@@ -249,6 +249,8 @@ def response_time(primary_conn, processed_conn, start_timestamp, end_timestamp):
             l.field3,
             l.lat,
             l.long,
+            d.reached_lat,
+            d.reached_long,
             NULL AS remarks,
             NULL AS assignedby_remarks,
             NULL AS remarks_status,
@@ -279,7 +281,7 @@ def response_time(primary_conn, processed_conn, start_timestamp, end_timestamp):
             dispatched_time, start_time, police_station_id, police_station, police_circle,
             queue, district_id, region_category, created_time, tab, completed_time, caller_name, caller_number,
             job_status, caller_location, complete_by, level1_case_nature, level2_case_nature,
-            level3_case_nature, responder_lat, responder_long, field3, lat, long,
+            level3_case_nature, responder_lat, responder_long, field3, lat, long, reached_lat, reached_long,
             remarks, assignedby_remarks, remarks_status, assignedto_remarks
         ) VALUES (
             {placeholders}
@@ -294,7 +296,7 @@ def response_time(primary_conn, processed_conn, start_timestamp, end_timestamp):
             start_time = EXCLUDED.start_time,
             completed_time = EXCLUDED.completed_time;
         """).format(
-            placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(40))
+            placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(42))
         )
 
         for row in rows:
@@ -311,8 +313,8 @@ def response_time(primary_conn, processed_conn, start_timestamp, end_timestamp):
                 else:
                     processed_row.append(col)
 
-            if len(processed_row) != 40:
-                raise ValueError(f"Expected 40 values, got {len(processed_row)}: {processed_row}")
+            if len(processed_row) != 42:
+                raise ValueError(f"Expected 42 values, got {len(processed_row)}: {processed_row}")
 
             try:
                 processed_cursor.execute(insert_query, processed_row)
@@ -1183,10 +1185,10 @@ def crime_trends_processing(db_conn):
                     'vehicle_snatching': 0,
                     'car_snatching': 0,
                     'motorcycle_snatching': 0,
-                    'murder':0,
-                    'kidnapping' : 0,
-                    'sexual_assault' : 0,
-                    'firing' : 0,
+                    'murder': 0,
+                    'kidnapping': 0,
+                    'sexual_assault': 0,
+                    'firing': 0,
                     'other': 0
                 }
             results[(date, district_id, police_station)][case_type] += count
@@ -1234,10 +1236,10 @@ def insert_crime_trends(db_connection, results):
             'vehicle_snatching': 0,
             'car_snatching': 0,
             'motorcycle_snatching': 0,
-            'murder' : 0,
-            'kidnapping' : 0,
-            'sexual_assault' : 0,
-            'firing' : 0,
+            'murder': 0,
+            'kidnapping': 0,
+            'sexual_assault': 0,
+            'firing': 0,
         }
 
         for (date, district_id, police_station), result in results.items():
@@ -1254,7 +1256,7 @@ def insert_crime_trends(db_connection, results):
                 row['burglary'], row['robbery_snatching'], row['dacoity'],
                 row['motorcycle_theft'], row['car_theft'], row['vehicle_theft'],
                 row['vehicle_snatching'], row['car_snatching'], row['motorcycle_snatching'],
-                row['murder'],row['kidnapping'],row['sexual_assault'],row['firing']
+                row['murder'], row['kidnapping'], row['sexual_assault'], row['firing']
             ))
 
         db_connection.commit()
@@ -1326,10 +1328,10 @@ def fir_trends_processing(db_conn):
                     'vehicle_snatching': 0,
                     'car_snatching': 0,
                     'motorcycle_snatching': 0,
-                    'murder' : 0,
-                    'kidnapping' : 0,
-                    'sexual_assault' : 0,
-                    'firing' : 0,
+                    'murder': 0,
+                    'kidnapping': 0,
+                    'sexual_assault': 0,
+                    'firing': 0,
                     'other': 0
                 }
             results[(date, district_id, police_station)][case_type] += count
@@ -1377,10 +1379,10 @@ def insert_fir_trends(db_connection, results):
             'vehicle_snatching': 0,
             'car_snatching': 0,
             'motorcycle_snatching': 0,
-            'murder' : 0,
-            'kidnapping' : 0,
-            'sexual_assault' : 0,
-            'firing' : 0,
+            'murder': 0,
+            'kidnapping': 0,
+            'sexual_assault': 0,
+            'firing': 0,
         }
 
         for (date, district_id, police_station), result in results.items():
@@ -1399,7 +1401,7 @@ def insert_fir_trends(db_connection, results):
                 row['burglary'], row['robbery_snatching'], row['dacoity'],
                 row['motorcycle_theft'], row['car_theft'], row['vehicle_theft'],
                 row['vehicle_snatching'], row['car_snatching'], row['motorcycle_snatching'],
-                row['murder'],row['kidnapping'],row['sexual_assault'],row['firing']
+                row['murder'], row['kidnapping'], row['sexual_assault'], row['firing']
             ))
 
         db_connection.commit()
@@ -1484,6 +1486,8 @@ def main(start_date, end_date, start):
                                 field3 TEXT,
                                 lat TEXT,
                                 long TEXT,
+                                reached_lat TEXT,
+                                reached_long TEXT,
                                 remarks TEXT,
                                 assignedby_remarks TEXT,
                                 remarks_status TEXT,
