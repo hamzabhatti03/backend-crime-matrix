@@ -315,7 +315,7 @@ def punjab_stats_dashboard():
             processed_db_cursor.execute(
                 utils.build_response_time_query(
                     columns_key="avg_only",
-                    additional_conditions=[" date BETWEEN %s AND %s ", " district_id = %s "]
+                    additional_conditions=[" date BETWEEN %s AND %s ", f" {district_condition[4:]} "]
                 ),
                 [from_date_str, to_date_str]
             )
