@@ -139,7 +139,7 @@ def fetch_and_store_dist_feedback_count():
         conn.commit()
         conn.close()
 
-        print("District feedback count successfully updated.")
+        # print("District feedback count successfully updated.")
 
     except requests.RequestException as e:
         print(f"Error fetching district feedback count: {e}")
@@ -153,14 +153,13 @@ def main():
     """Main function to initialize database and fetch data iteratively."""
     initialize_database()
 
-    while True:
-        print("Fetching and storing data...")
-        fetch_and_store_feedback_data()
-        fetch_and_store_dist_feedback_count()
+    print("Fetching and storing data for feedback...")
+    fetch_and_store_feedback_data()
+    fetch_and_store_dist_feedback_count()
 
-        print("Data updated. Waiting for the next iteration...")
-        # time.sleep(180)
+    # print("Data updated. Waiting for the next iteration...")
+    # time.sleep(180)
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
