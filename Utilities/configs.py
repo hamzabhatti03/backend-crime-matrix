@@ -39,7 +39,7 @@ PROCESSED_STATS_TEST_DB = '../DatabaseManager/processed1.db'
 
 """PostgreSQL DATABASES"""
 POSTGRES_PROCESSED_STATS_MAIN = {
-    'dbname': 'stage_processed_15',
+    'dbname': 'test_0624',
     'user': 'postgres',
     'password': 'psca@officialmai1',
     'host': '10.20.170.151',
