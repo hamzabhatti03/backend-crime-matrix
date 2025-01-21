@@ -4220,7 +4220,7 @@ def negative_feedback_cases():
         to_date_epoch = utils.date_to_unix_day_start_end(to_date,False)
 
         query = f"""
-                SELECT  case_number, level3_case_nature, caller_name, call_id,
+                SELECT  case_number, level3_case_nature, caller_name, cli,
                 accepted_time, police_station, district_id, time_id,
                 cro_comments, first_arrival_time, caller_location , caller_feedback
                 from 15_preprocessed
