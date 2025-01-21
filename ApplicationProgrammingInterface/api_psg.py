@@ -1267,7 +1267,10 @@ def districtwise_more_info():
             elif district_str == 'Gujranwala':
                 police_division = configs.GUJRANWALA_DIVISION_MAPPING[police_circle]
             elif district_str == 'Faisalabad':
-                police_division = configs.FAISALABAD_DIVISION_MAPPING[police_circle]
+                if police_circle in configs.FAISALABAD_DIVISION_MAPPING:
+                    police_division = configs.FAISALABAD_DIVISION_MAPPING[police_circle]
+                else:
+                    continue
             else:
                 # Use a generic division
                 police_division = GENERIC_DIVISION_NAME
@@ -2281,7 +2284,7 @@ def get_remarks():
         followups_needed_query = f"""
                 SELECT case_number, level3_case_nature, caller_name, caller_number,
                        accepted_time AS created_time, police_station, district_id, time_id,
-                       description, first_arrival_time AS reached_time, response_time, assignedto_remarks, remarks_status
+                       description, first_arrival_time AS reached_time, response_time, assignedto_remarks, remarks_status,remarks
                 FROM response_time
                 WHERE (level1_case_nature IN ('Crime Against Person', 'Crime Against Property') OR 
                     level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises'))
@@ -2320,6 +2323,8 @@ def get_remarks():
                  description, reached_time, response_time, assigned_by, remarks_status) in (fp_cases or [])
         ]
 
+        current_time = datetime.now()
+
         followups_neeeded_list = [
             {
                 "case_number": case_number,
@@ -2338,11 +2343,17 @@ def get_remarks():
                 "assignedto": utils.split_name(assigned_to),
                 "priority_flag": 1 if time_id and (datetime.now() - datetime.fromtimestamp(
                     int(time_id))).days < 3 and remarks_status == 'UnAnswered' else 0,
-                "status_flag": 1 if remarks_status != 'UnAnswered' else 0
+                "status_flag": 1 if remarks_status != 'UnAnswered' else 0,
+                "is_notify": (
+                            1
+                            if (last_timestamp := utils.get_last_timestamp(remarks)) and
+                               (current_time - datetime.strptime(last_timestamp, configs.YMD_HMS)).total_seconds() < 60
+                            else 0
+)
             }
             for (case_number, level3_case_nature, caller_name, caller_number,
                  created_time, police_station, district_id, time_id,
-                 description, reached_time, response_time, assigned_to, remarks_status) in (fp_needed_cases or [])
+                 description, reached_time, response_time, assigned_to, remarks_status,remarks) in (fp_needed_cases or [])
         ]
 
         if my_followups_list or followups_neeeded_list:
@@ -4102,6 +4113,8 @@ def crime_trend_cases():
         category = request.form.get('category')
         police_station = request.form.get('police_station')
 
+        police_stations = police_station.split(",") if police_station else []
+
         if len(date) == 7:  # Monthly format "YYYY-MM"
             start_date, end_date = utils.get_month_range(date)
         elif len(date) == 10:  # Weekly format "YYYY-MM-DD"
@@ -4125,7 +4138,7 @@ def crime_trend_cases():
         """
 
         if police_station and police_station != 'null':
-            query_cases += " AND police_station = %s"
+            query_cases += f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
 
         params = [configs.REVERSED_DISTRICTS_DICTIONARY[district_str], start_date, end_date]
         if police_station and police_station != 'null':
