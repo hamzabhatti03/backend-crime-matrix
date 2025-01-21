@@ -6,6 +6,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from Utilities import utils, configs, validate
 from Utilities import db_config
+from math import radians, sin, cos, sqrt, atan2
 from flask_jwt_extended import (JWTManager, create_access_token, jwt_required)
 import json
 import hashlib
@@ -19,6 +20,37 @@ from itertools import chain
 from decimal import Decimal
 from psycopg2.extras import RealDictCursor
 
+def haversine(lat1, lon1, lat2, lon2):
+    """Calculate the great-circle distance between two points on the Earth."""
+    R = 6371  # Radius of Earth in kilometers
+
+    # Convert degrees to radians
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+    return R * c
+
+def filter_lat_longs(lat_longs, max_distance_km=5):
+    """Filter out points where the distance to the next point exceeds max_distance_km."""
+    if not lat_longs:
+        return []  # Return an empty list if input is empty
+
+    filtered = [lat_longs[0]]  # Always include the first point
+
+    for i in range(1, len(lat_longs)):
+        prev = filtered[-1]
+        curr = lat_longs[i]
+        distance = haversine(prev[0], prev[1], curr[0], curr[1])
+
+        if distance <= max_distance_km:
+            filtered.append(curr)
+
+    return filtered
 
 load_dotenv()
 
@@ -1587,7 +1619,7 @@ def pswise_categories():
                 'police_mv_locations' : vehicles_location_data,
                 'successful_conf_calls':successful_calls,
                 'unsuccessful_conf_calls':unsuccessful_calls,
-                'hotspot_coordinates' : coordinates
+                'hotspot_coordinates' : filter_lat_longs(coordinates, max_distance_km=5)
             }
         }
         return jsonify(response), 200

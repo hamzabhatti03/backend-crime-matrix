@@ -1757,6 +1757,8 @@ def main(start_date, end_date, start):
             insert_fir_trends(processed_conn, results)
 
             fir_data.main(current_date)
+            fb_data.main()
+            ps_vec_locs.main()
 
             current_date += timedelta(days=configs.DELTA_DAYS)
     except Exception as e:
@@ -1766,6 +1768,4 @@ def main(start_date, end_date, start):
 if __name__ == '__main__':
     start_date = datetime.strptime('01-12-24', '%d-%m-%y')
     end_date = datetime.strptime('15-01-25', '%d-%m-%y')
-    # fb_data.main()
-    # ps_vec_locs.main()
     main(start_date, end_date, True)
