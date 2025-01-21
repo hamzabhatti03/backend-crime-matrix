@@ -12,6 +12,7 @@ import sqlite3
 from dotenv import load_dotenv
 import psycopg2
 import traceback
+import json
 
 load_dotenv()
 
@@ -777,3 +778,14 @@ def get_month_range(date_str):
     next_month = start_of_month.replace(day=28) + timedelta(days=4)
     end_of_month = next_month - timedelta(days=next_month.day)
     return start_of_month.strftime("%Y-%m-%d"), end_of_month.strftime("%Y-%m-%d")
+
+def get_last_timestamp(remarks):
+    try:
+        # Safely evaluate the string as a Python object
+        dictionaries = json.loads(remarks)
+        if isinstance(dictionaries, list) and dictionaries:
+            last_dict = dictionaries[-1]
+            return last_dict.get('timestamp', None)
+        return None
+    except (ValueError, SyntaxError):
+        return None
