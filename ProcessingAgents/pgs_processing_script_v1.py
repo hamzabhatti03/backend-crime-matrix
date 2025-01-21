@@ -6,7 +6,9 @@ import time
 import traceback
 from decimal import Decimal
 from Utilities import configs, utils, db_config
-
+from ProcessingAgents import police_vehicle_locations_pgs as ps_vec_locs
+from ProcessingAgents import scrape_feedbacks_pgs as fb_data
+from ProcessingAgents import fir_scraper_pgs as fir_data
 # PostgreSQL connection for master database and logs
 db_conn = db_config.get_db_connection()
 log_db_cursor = db_conn.cursor()
@@ -1754,12 +1756,16 @@ def main(start_date, end_date, start):
             results = fir_trends_processing(db_conn)
             insert_fir_trends(processed_conn, results)
 
+            fir_data.main(current_date)
+
             current_date += timedelta(days=configs.DELTA_DAYS)
     except Exception as e:
         utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('17-01-25', '%d-%m-%y')
-    end_date = datetime.strptime('17-01-25', '%d-%m-%y')
+    start_date = datetime.strptime('01-12-24', '%d-%m-%y')
+    end_date = datetime.strptime('15-01-25', '%d-%m-%y')
+    # fb_data.main()
+    # ps_vec_locs.main()
     main(start_date, end_date, True)
