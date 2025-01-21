@@ -2945,6 +2945,8 @@ def response_time_alerts():
         view_role = request.form.get('view_role',type=int)
         district_str = request.form.get('district')
         police_station_str = request.form.get('police_station')
+        from_date = request.form.get('fromDate')
+        to_date = request.form.get('toDate')
 
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
@@ -2978,11 +2980,6 @@ def response_time_alerts():
         else:
             district_condition = ""
 
-        current_date = datetime.now()
-        previous_date = current_date - timedelta(days=3)
-
-        current_date_str = current_date.strftime("%Y-%m-%d")
-        previous_date= previous_date.strftime("%Y-%m-%d")
 
         alerts_count_query = """
                     SELECT district_id, COUNT(case_number) AS case_count
@@ -2997,7 +2994,7 @@ def response_time_alerts():
         """
         alerts_count_query = alerts_count_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(alerts_count_query,(previous_date,current_date_str))
+        processed_db_cursor.execute(alerts_count_query,(from_date,to_date))
         alerts = processed_db_cursor.fetchall()
 
         alerts_count = []
@@ -3018,7 +3015,7 @@ def response_time_alerts():
 
         alerts_casenumbers = alerts_casenumbers.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(alerts_casenumbers, (previous_date, current_date_str))
+        processed_db_cursor.execute(alerts_casenumbers, (from_date,to_date))
         alerts = processed_db_cursor.fetchall()
 
         alerts_cases = []
@@ -3039,6 +3036,10 @@ def response_time_alerts():
         db_conn = db_config.get_db_connection()
         db_cursor = db_conn.cursor()
 
+        current_date = datetime.now()
+
+        current_date_str = current_date.strftime("%Y-%m-%d")
+
         db_cursor.execute(f"""
                     SELECT district, group_concat(case_number) 
                     FROM pred_pol_crimes_hotspot 
@@ -3051,13 +3052,11 @@ def response_time_alerts():
 
         crime_occurence = []
         for i in re_occurrences_cases:
-            # Assuming i is a tuple, convert it to a list first
             i = list(i)
 
             i[0] = i[0].decode('utf-8') if isinstance(i[0], bytearray) else i[0]
             i[1] = i[1].decode('utf-8') if isinstance(i[1], bytes) else i[1]
 
-            # Continue with your processing
             crime_occurence.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1].split(",")})
 
         response = {
@@ -4224,7 +4223,7 @@ def negative_feedback_cases():
                 SELECT  case_number, level3_case_nature, caller_name, call_id,
                 accepted_time, police_station, district_id, time_id,
                 cro_comments, first_arrival_time, caller_location , caller_feedback
-                from 15_preprocessed 
+                from 15_preprocessed
                 where time_id BETWEEN %s AND %s 
                     AND case_status = 'closed' 
                     AND parent_id = 0 
