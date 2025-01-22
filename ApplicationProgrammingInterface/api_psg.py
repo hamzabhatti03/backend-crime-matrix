@@ -2347,7 +2347,7 @@ def get_remarks():
                 "is_notify": (
                             1
                             if (last_timestamp := utils.get_last_timestamp(remarks)) and
-                               (current_time - datetime.strptime(last_timestamp, configs.YMD_HMS)).total_seconds() < 60
+                               (current_time - datetime.strptime(last_timestamp, configs.YMD_HMS)).total_seconds() < 30
                             else 0
 )
             }
@@ -3576,6 +3576,8 @@ def crime_trends():
         time_period = request.form.get('time_period')  # 'week' or 'month'
         user_name = request.form.get('user_name')
 
+        police_stations = police_station_str.split(",") if police_station_str else []
+
         if not user_name:
             return jsonify({
                 'status': False,
@@ -3656,7 +3658,7 @@ def crime_trends():
                         ), 2
                     ) AS percentage_change
                 FROM crime_trends
-                WHERE 1=1
+                WHERE date > '2024-06-01'
                 """
 
         if district_str:
@@ -3664,7 +3666,7 @@ def crime_trends():
             query += f" AND district_id = {district_id}"
 
         if police_station_str and police_station_str != 'null':
-            query += f" AND police_station = '{police_station_str}'"
+            query += f" AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
 
         if year:
             query += f" AND EXTRACT(YEAR FROM date::DATE) = {year}"
@@ -4141,8 +4143,6 @@ def crime_trend_cases():
             query_cases += f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
 
         params = [configs.REVERSED_DISTRICTS_DICTIONARY[district_str], start_date, end_date]
-        if police_station and police_station != 'null':
-            params.append(police_station)
 
         processed_db_cursor.execute(query_cases, params)
         cases = processed_db_cursor.fetchall()
