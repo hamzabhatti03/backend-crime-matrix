@@ -2,6 +2,7 @@
 import os
 import mysql.connector
 from dotenv import load_dotenv
+import psycopg2
 
 # Load environment variables from .env file
 load_dotenv()
@@ -93,3 +94,18 @@ def get_blood_db_connection():
     except mysql.connector.Error as err:
         print(f"Error: {err}")
         return None
+
+
+def get_chat_db_connection():
+    try:
+        conn = psycopg2.connect(
+            dbname=os.getenv('CHAT_DB'),
+            user=os.getenv('USER_CHAT'),
+            password=os.getenv('PASSWORD_CHAT'),
+            host=os.getenv('HOST_CHAT'),
+            port=os.getenv('PORT_CHAT')
+        )
+        return conn
+    except Exception as e:
+        print(e)
+        raise
