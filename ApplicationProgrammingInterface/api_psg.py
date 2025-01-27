@@ -19,6 +19,8 @@ from predictive_api import get_category_data
 from itertools import chain
 from decimal import Decimal
 from psycopg2.extras import RealDictCursor
+import time
+
 
 def haversine(lat1, lon1, lat2, lon2):
     """Calculate the great-circle distance between two points on the Earth."""
@@ -35,7 +37,8 @@ def haversine(lat1, lon1, lat2, lon2):
 
     return R * c
 
-def filter_lat_longs(lat_longs, max_distance_km=5):
+
+def filter_lat_longs(lat_longs, max_distance_km=3):
     """Filter out points where the distance to the next point exceeds max_distance_km."""
     if not lat_longs:
         return []  # Return an empty list if input is empty
@@ -52,18 +55,18 @@ def filter_lat_longs(lat_longs, max_distance_km=5):
 
     return filtered
 
+
 load_dotenv()
 
 app = Flask(__name__)
 
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET")
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(seconds=129600)           # 36 Hours
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(seconds=129600)  # 36 Hours
 
 jwt = JWTManager(app)
 
 cache = Cache(config=configs.CACHE_CONFIGS)
 cache.init_app(app)
-
 
 """REQUEST RATE LIMITER"""
 limiter = Limiter(
@@ -71,6 +74,7 @@ limiter = Limiter(
     app=app,
     default_limits=configs.DEFAULT_LIMITER
 )
+
 
 def get_log_db_connection():
     if 'log_db_conn' not in g:
@@ -104,6 +108,7 @@ def set_security_headers(response):
     response.headers['Content-Security-Policy'] = "default-src 'self'"
     return response
 
+
 @app.errorhandler(configs.BAD_REQUEST_ERROR)
 def handle_400_error(e):
     return utils.handle_400_error(e)
@@ -115,6 +120,7 @@ def require_api_key(func):
         if not api_key or api_key != os.getenv("API_KEY"):
             return jsonify({"message": "Invalid or missing API key"}), 401
         return func(*args, **kwargs)
+
     wrapper.__name__ = func.__name__
     return wrapper
 
@@ -125,6 +131,7 @@ def require_login_key(func):
         if not api_key or api_key != os.getenv("LOGIN_ACCESS_KEY"):
             return jsonify({"message": "Invalid or missing Login Access key"}), 401
         return func(*args, **kwargs)
+
     wrapper.__name__ = func.__name__
     return wrapper
 
@@ -138,7 +145,9 @@ def unauthorized_response(callback):
 def expired_token_callback(jwt_header, jwt_payload):
     return jsonify({"msg": "JWT Token has expired"}), 401
 
+
 """PUNJAB EMERGENCY-i APIs"""
+
 
 @app.route(configs.LOGIN['ENDPOINT'], methods=[configs.LOGIN['METHOD']])
 @require_api_key
@@ -149,7 +158,6 @@ def login():
     try:
         username = request.form.get('username')
         password = request.form.get('password')
-
 
         if not (username or password):
             return jsonify({
@@ -174,24 +182,23 @@ def login():
                                 WHERE user_name_emergency = %s
                             """, (access_token, username))
             db_conn.commit()
-        else :
+        else:
             return jsonify({
                 'status': False,
                 'message': 'Incorrect Password OR user_name'
             }), 400
 
-
         return jsonify({
-            'data' : {
-                'username' : user[3],
-                'id' : user[0],
-                'name':user[1] +' '+ user[2],
-                'role' : user[10],
-                'districts' : user[7].decode('utf-8') if isinstance(user[7],bytes) else user[7],
-                'police_stations':user[9].decode('utf-8') if isinstance(user[9],bytes) else user[9]
+            'data': {
+                'username': user[3],
+                'id': user[0],
+                'name': user[1] + ' ' + user[2],
+                'role': user[10],
+                'districts': user[7].decode('utf-8') if isinstance(user[7], bytes) else user[7],
+                'police_stations': user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
             },
             'token': access_token,
-            'message' : "Successfully created Access token",
+            'message': "Successfully created Access token",
             'status': True
         }), 200
 
@@ -200,7 +207,7 @@ def login():
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}'
-        }),400
+        }), 400
 
 
 @app.route(configs.DASHBOARD_PUNJAB['ENDPOINT'], methods=[configs.DASHBOARD_PUNJAB['METHOD']])
@@ -223,8 +230,11 @@ def punjab_stats_dashboard():
         JSON: Dashboard statistics with standardized response format
     """
 
+    start_time = time.time()
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    print(f"Execution time after db connection: {time.time() - start_time} seconds")
+    start_time = time.time()
     try:
         # Get parameters from request body
         from_date_str = request.form.get('fromDate')
@@ -286,6 +296,8 @@ def punjab_stats_dashboard():
         category_query = category_query.format(district_condition=district_condition)
         processed_db_cursor.execute(category_query, [from_date_str, to_date_str])
         category_stats = processed_db_cursor.fetchone()
+        print(f"Execution time after punjab_today query execution: {time.time() - start_time} seconds")
+        start_time = time.time()
 
         calls_cases_query = """
             SELECT 
@@ -303,7 +315,8 @@ def punjab_stats_dashboard():
 
         processed_db_cursor.execute(calls_cases_query, [from_date_str, to_date_str])
         total_calls, total_cases = processed_db_cursor.fetchone()
-
+        print(f"Execution time after processed_data query: {time.time() - start_time} seconds")
+        start_time = time.time()
         regional_response_query = """
                     WITH RegionCategories AS (
                 SELECT DISTINCT region_category
@@ -330,9 +343,10 @@ def punjab_stats_dashboard():
             ON rc.region_category = fd.region_category;
         """
         regional_response_query = regional_response_query.format(district_condition=district_condition)
-        processed_db_cursor.execute(regional_response_query,[from_date_str, to_date_str])
+        processed_db_cursor.execute(regional_response_query, [from_date_str, to_date_str])
         regional_avg_responses = processed_db_cursor.fetchall()
-
+        print(f"Execution time after regional response time query: {time.time() - start_time} seconds")
+        start_time = time.time()
         if view_role == 2 or view_role == 1:
             processed_db_cursor.execute(
                 utils.build_response_time_query(
@@ -351,7 +365,8 @@ def punjab_stats_dashboard():
             )
 
         response_time = processed_db_cursor.fetchall()
-
+        print(f"Execution time after response time query: {time.time() - start_time} seconds")
+        start_time = time.time()
         fir_stats_query = """
             SELECT sum(murder), sum(dacoity), sum(aerial_firing), sum(rape), sum(minorities), sum(hurt),
                    sum(burglary), sum(kidnapping), sum(child_abuse),sum(robbery_snatching),
@@ -361,7 +376,7 @@ def punjab_stats_dashboard():
             WHERE date BETWEEN %s AND %s
             {district_condition}
     """
-        fir_stats_query =  fir_stats_query.format(district_condition=district_condition)
+        fir_stats_query = fir_stats_query.format(district_condition=district_condition)
         processed_db_cursor.execute(fir_stats_query, [from_date_str, to_date_str])
         fir_stats = processed_db_cursor.fetchone()
 
@@ -373,7 +388,8 @@ def punjab_stats_dashboard():
 
         processed_db_cursor.execute(fir_count_query, [from_date_str, to_date_str])
         fir_count = processed_db_cursor.fetchone()[0]
-
+        print(f"Execution time after fir extraction query: {time.time() - start_time} seconds")
+        start_time = time.time()
 
         # Map the data and calculate the dashboard data
         (murder_fir, dacoity_fir, firing_fir, women_harrasment_fir, minorities_fir,
@@ -443,10 +459,13 @@ def punjab_stats_dashboard():
                     WHERE category IS NOT NULL;
         """
 
-        category_regional_response_query = category_regional_response_query.format(district_condition=district_condition)
+        category_regional_response_query = category_regional_response_query.format(
+            district_condition=district_condition)
 
         processed_db_cursor.execute(category_regional_response_query, (from_date_str, to_date_str))
         category_regional_response_times = processed_db_cursor.fetchall()
+        print(f"Execution time after category wise regional response query: {time.time() - start_time} seconds")
+        start_time = time.time()
         category_regional_response_dict = {}
         for category, region, avg_time in category_regional_response_times:
             if category not in category_regional_response_dict:
@@ -515,10 +534,13 @@ def punjab_stats_dashboard():
                     GROUP BY 
                         category;"""
 
-        categorical_avg_responsetime_query = categorical_avg_responsetime_query.format(district_condition=district_condition)
+        categorical_avg_responsetime_query = categorical_avg_responsetime_query.format(
+            district_condition=district_condition)
 
         processed_db_cursor.execute(categorical_avg_responsetime_query, (from_date_str, to_date_str))
         category_avg_response_times = processed_db_cursor.fetchall()
+        print(f"Execution time after category wise avg response time query: {time.time() - start_time} seconds")
+        start_time = time.time()
         category_avg_response_dict = {}
         for category, avg_time in category_avg_response_times:
             if category not in category_avg_response_dict:
@@ -526,7 +548,7 @@ def punjab_stats_dashboard():
             category_avg_response_dict[category] = f"{int(avg_time // 60)}:{int(avg_time % 60):02d}"
 
         where_cond = ""
-        if view_role in [3,4]:
+        if view_role in [3, 4]:
             where_cond = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
 
         ############################### Negative caller Feedback
@@ -541,7 +563,6 @@ def punjab_stats_dashboard():
         row = processed_db_cursor.fetchone()
         negative_feedback_count = row[0] if row is not None else 0
 
-
         ############################## Escalated Cases Count (VWPS , VCCS , VCM)
 
         from_date_obj = datetime.strptime(from_date_str, '%Y-%m-%d')
@@ -549,7 +570,6 @@ def punjab_stats_dashboard():
 
         current_date_str = from_date_obj.strftime('%Y-%m-%d 00:00:00')
         to_date_str = to_date_obj.strftime('%Y-%m-%d 23:59:59')
-
 
         if view_role == 5 and district_ids:
             additional_cond = (
@@ -560,7 +580,6 @@ def punjab_stats_dashboard():
             additional_cond = f"AND district_id IN ({', '.join(map(str, district_ids))})"
         else:
             additional_cond = ""
-
 
         vwps_conn = db_config.get_vwps_db_connection()
         vwps_cursor = vwps_conn.cursor()
@@ -579,7 +598,7 @@ def punjab_stats_dashboard():
                             AND created_at BETWEEN %s AND %s
                             {additional_cond}
         """
-        vwps_cursor.execute(vwps_escalated_query,(current_date_str,to_date_str))
+        vwps_cursor.execute(vwps_escalated_query, (current_date_str, to_date_str))
         row = vwps_cursor.fetchone()
         vwps_escalated = row[0] if row is not None else 0
 
@@ -707,7 +726,7 @@ def punjab_stats_dashboard():
                                                                                       'rural': '00:00'}),
                                'avg_response_time': category_avg_response_dict.get('other_property',
                                                                                    '00:00')},
-            'fir_count' : fir_count,
+            'fir_count': fir_count,
             'total_calls': total_calls,
             'total_cases': total_cases,
             'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time else 0,
@@ -715,11 +734,11 @@ def punjab_stats_dashboard():
             'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses else 0,
             'police_encounter': 0,
             'environment_smog': 0,
-            'negative_feedbacks' : 0 if view_role == 5 else negative_feedback_count,
-            'escalated_cases' : escalated_case_count,
-            'vwps_escalated' : vwps_escalated,
-            'vcm_escalated' : vcm_escalated,
-            'vccs_escalated' : vccs_escalated
+            'negative_feedbacks': 0 if view_role == 5 else negative_feedback_count,
+            'escalated_cases': escalated_case_count,
+            'vwps_escalated': vwps_escalated,
+            'vcm_escalated': vcm_escalated,
+            'vccs_escalated': vccs_escalated
         }
 
         response = {
@@ -727,6 +746,7 @@ def punjab_stats_dashboard():
             'message': 'Dashboard data fetched successfully',
             'data': dashboard_data
         }
+        print(f"Execution time after other processing: {time.time() - start_time} seconds")
 
         return jsonify(response), 200
 
@@ -992,6 +1012,7 @@ def punjab_more_info():
             'data': None
         }), 500
 
+
 @app.route(configs.DISTRICTWISE_STATS['ENDPOINT'], methods=[configs.DISTRICTWISE_STATS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
@@ -1167,7 +1188,7 @@ def districtwise_more_info():
                 f"AND district_id IN ({', '.join(map(str, district_ids))}) "
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
-        else :
+        else:
             district_condition = f"AND district_id = {configs.REVERSED_DISTRICTS_DICTIONARY.get(district_str)}"
 
         # For PS Query
@@ -1176,9 +1197,8 @@ def districtwise_more_info():
                 f"AND rt.district_id IN ({', '.join(map(str, district_ids))}) "
                 f"AND rt.police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
-        else :
+        else:
             additional_condition = f"AND rt.district_id = {configs.REVERSED_DISTRICTS_DICTIONARY.get(district_str)}"
-
 
         # Get category-wise statistics
         category_query = """
@@ -1229,11 +1249,10 @@ def districtwise_more_info():
             'other': other_person,
             'environment_smog_issues': 0,
             'firing': firing,
-            'sexual_assault' : rape_sexual_assault,
+            'sexual_assault': rape_sexual_assault,
             'dacoity_with_murder': dacoity_with_murder,
             'police_encounter': 0
         }
-
 
         # Get police station-wise statistics
         ps_query = f"""
@@ -1321,7 +1340,6 @@ def districtwise_more_info():
                 if police_circle not in ps_wise_response_dict[police_division]:
                     ps_wise_response_dict[police_division][police_circle] = {}
                 ps_wise_response_dict[police_division][police_circle][police_station] = count
-
 
         response = {
             'status': True,
@@ -1422,7 +1440,7 @@ def pswise_categories():
             'Illegal_possession': other_property,
             'kidnapping': kidnapping,
             'minorities': minorities,
-            'other':other_person,
+            'other': other_person,
             'dacoity': dacoity,  # to be removed
             'robbery_snatching': robbery_snatching,
             'theft': theft,
@@ -1432,7 +1450,7 @@ def pswise_categories():
             'burglary': burglary,
             'firing': firing,
             'police_encounter': 0,
-            'women_harrassment':rape_sexual_assault,
+            'women_harrassment': rape_sexual_assault,
             'dacoity_with_murder': dacoity_with_murder,
             'environmental_smog_issues': 0
         }
@@ -1489,7 +1507,7 @@ def pswise_categories():
                     AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
         """
-        processed_db_cursor.execute(generated_cases_query, (from_date, to_date, district_id,police_station))
+        processed_db_cursor.execute(generated_cases_query, (from_date, to_date, district_id, police_station))
         generated_case_count = processed_db_cursor.fetchone()[0]
 
         fir_count_query = """
@@ -1514,7 +1532,8 @@ def pswise_categories():
         """
         processed_db_cursor.execute(ps_responsetime_query, (from_date, to_date, district_id, police_station))
         ps_response_time = processed_db_cursor.fetchone()[0]
-        response_time = f"{int(ps_response_time // 60)}:{int(ps_response_time % 60):02d}" if ps_response_time is not None and round(ps_response_time, 2) else 0
+        response_time = f"{int(ps_response_time // 60)}:{int(ps_response_time % 60):02d}" if ps_response_time is not None and round(
+            ps_response_time, 2) else 0
 
         conf_calls_query = """
                     select count(*)
@@ -1546,7 +1565,7 @@ def pswise_categories():
                                     AND district_id = %s
                                     AND police_station = %s
                                 """
-        processed_db_cursor.execute(conference_call_query, (from_date, to_date,district_id,police_station))
+        processed_db_cursor.execute(conference_call_query, (from_date, to_date, district_id, police_station))
         (successful_calls, unsuccessful_calls) = processed_db_cursor.fetchone()
 
         vehicles_query = """
@@ -1593,7 +1612,7 @@ def pswise_categories():
                             AND reached_long is NOT NULL
                                 """
 
-        processed_db_cursor.execute(crime_hotspots_query, (district_id,police_station))
+        processed_db_cursor.execute(crime_hotspots_query, (district_id, police_station))
         hotspot_results = processed_db_cursor.fetchall()
 
         # Initialize an empty list to store the coordinates
@@ -1615,14 +1634,14 @@ def pswise_categories():
             'data': {
                 'pswise_response': pswise_response,
                 'cases_list': cases_list,
-                'total_cases' : generated_case_count,
-                'total_firs' : fir_count if fir_count else 0,
-                'response_time' : response_time,
-                'conference_calls' : conf_calls,
-                'police_mv_locations' : vehicles_location_data,
-                'successful_conf_calls':successful_calls,
-                'unsuccessful_conf_calls':unsuccessful_calls,
-                'hotspot_coordinates' : filter_lat_longs(coordinates, max_distance_km=5)
+                'total_cases': generated_case_count,
+                'total_firs': fir_count if fir_count else 0,
+                'response_time': response_time,
+                'conference_calls': conf_calls,
+                'police_mv_locations': vehicles_location_data,
+                'successful_conf_calls': successful_calls,
+                'unsuccessful_conf_calls': unsuccessful_calls,
+                'hotspot_coordinates': filter_lat_longs(coordinates, max_distance_km=5)
             }
         }
         return jsonify(response), 200
@@ -1636,7 +1655,8 @@ def pswise_categories():
         }), 500
 
 
-@app.route(configs.PUNJABTODAY_CASE_DETAILS['ENDPOINT'], methods=[configs.PUNJABTODAY_CASE_DETAILS['METHOD']])  # Changed to POST
+@app.route(configs.PUNJABTODAY_CASE_DETAILS['ENDPOINT'],
+           methods=[configs.PUNJABTODAY_CASE_DETAILS['METHOD']])  # Changed to POST
 @limiter.limit(configs.LIMITER)
 @require_api_key
 @jwt_required()
@@ -1684,8 +1704,8 @@ def punjab_case_details():
         (case_number, description, response_time, responder_id,
          accepted_time, police_station, district_id, region_category,
          caller_name, caller_number, caller_location,
-         level3_case_nature,remarks,assignedby_remarks,assignedto_remarks,
-         dispatched_time,firstarrival_time,lat,long,responder_lat,responder_long) = case_details
+         level3_case_nature, remarks, assignedby_remarks, assignedto_remarks,
+         dispatched_time, firstarrival_time, lat, long, responder_lat, responder_long) = case_details
 
         # cases response
         case_response = {
@@ -1701,15 +1721,17 @@ def punjab_case_details():
             'caller_number': caller_number,
             'caller_location': caller_location,
             'level3_case_nature': level3_case_nature,
-            'remarks' : remarks,
-            'assigned_by'  : assignedby_remarks,
-            'assigned_to' : assignedto_remarks,
-            'dispatched_time' : datetime.fromtimestamp(int(dispatched_time)).strftime("%d %b %Y %H:%M:%S") if dispatched_time is not None else 'N/A',
-            'first_arrival_time':datetime.fromtimestamp(int(firstarrival_time)).strftime("%d %b %Y %H:%M:%S") if firstarrival_time is not None else 'N/A',
-            'lat':lat,
-            'long' : long,
-            'responder_lat' : responder_lat,
-            'responder_long' : responder_long
+            'remarks': remarks,
+            'assigned_by': assignedby_remarks,
+            'assigned_to': assignedto_remarks,
+            'dispatched_time': datetime.fromtimestamp(int(dispatched_time)).strftime(
+                "%d %b %Y %H:%M:%S") if dispatched_time is not None else 'N/A',
+            'first_arrival_time': datetime.fromtimestamp(int(firstarrival_time)).strftime(
+                "%d %b %Y %H:%M:%S") if firstarrival_time is not None else 'N/A',
+            'lat': lat,
+            'long': long,
+            'responder_lat': responder_lat,
+            'responder_long': responder_long
         }
 
         # successful response
@@ -1794,7 +1816,7 @@ def district_category_details():
                 f"AND district_id IN ({', '.join(map(str, district_ids))}) "
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
-        else :
+        else:
             district_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
         # query conditions based on category
         base_query = """
@@ -1817,9 +1839,8 @@ def district_category_details():
                 f"AND rt.district_id IN ({', '.join(map(str, district_ids))}) "
                 f"AND rt.police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
-        else :
+        else:
             additional_condition = f"AND rt.district_id = {configs.REVERSED_DISTRICTS_DICTIONARY.get(district_str)}"
-
 
         if category == 'minorities':
             where_condition = "queue = 'minorities-15'"
@@ -1830,7 +1851,7 @@ def district_category_details():
             query_params = categories + [from_date, to_date]
 
         # Get case details
-        cases_query = base_query.format(condition=where_condition,district_condition=district_condition)
+        cases_query = base_query.format(condition=where_condition, district_condition=district_condition)
         processed_db_cursor.execute(cases_query, query_params)
         cases = processed_db_cursor.fetchall()
 
@@ -1878,7 +1899,8 @@ def district_category_details():
                         ps.police_station_id, ps.police_station;
 """
 
-        ps_query = counts_query.format(condition=where_condition,district_condition=district_condition,additional_condition=additional_condition)
+        ps_query = counts_query.format(condition=where_condition, district_condition=district_condition,
+                                       additional_condition=additional_condition)
         processed_db_cursor.execute(ps_query, query_params)
         counts = processed_db_cursor.fetchall()
 
@@ -1917,8 +1939,8 @@ def forcast_predictive_policing():
 
         ps = request.form.get('police_station')
         district = request.form.get('district')
-        forecast = yesterday_forecast(ps,district)
-        dashboard_data = get_category_data(ps,district)
+        forecast = yesterday_forecast(ps, district)
+        dashboard_data = get_category_data(ps, district)
 
         data = {**forecast, **dashboard_data}
 
@@ -1974,6 +1996,7 @@ def forecast_datewise():
             'message': f'Internal server error : {e}',
             'data': None
         }), 500
+
 
 @app.route(configs.EMERGENCY_15_INTEGRATION['ENDPOINT'], methods=[configs.EMERGENCY_15_INTEGRATION['METHOD']])
 @limiter.limit(configs.LIMITER)
@@ -2033,7 +2056,6 @@ def emergency_15_integration():
 
         if isinstance(estimated_response_time, Decimal):
             estimated_response_time = float(estimated_response_time)
-
 
         conference_call_query = """
                         SELECT 
@@ -2126,7 +2148,7 @@ def emergency_15_integration():
         """
         police_mv_stats_query = police_mv_stats_query.format(other_condition=other_condition)
 
-        processed_db_cursor.execute(police_mv_stats_query,)
+        processed_db_cursor.execute(police_mv_stats_query, )
         vehicle_counts = processed_db_cursor.fetchall()
 
         if not vehicle_counts:
@@ -2198,7 +2220,7 @@ def add_remarks():
             "message": remarks,
             "messaged_by": user_name,
             "messaged_to": assigned_to,
-            "cc" : cc,
+            "cc": cc,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         new_remarks_json = json.dumps(new_remarks)
@@ -2206,19 +2228,19 @@ def add_remarks():
         processed_db_conn, processed_db_cursor = get_processed_db_connection()
         log_db_conn, log_db_cursor = get_log_db_connection()
 
-        processed_db_cursor.execute("SELECT remarks, remarks_status, assignedto_remarks , assignedby_remarks FROM response_time WHERE case_number = %s",
-                       (case_number,))
+        processed_db_cursor.execute(
+            "SELECT remarks, remarks_status, assignedto_remarks , assignedby_remarks FROM response_time WHERE case_number = %s",
+            (case_number,))
         row = processed_db_cursor.fetchone()
 
         if row:
             remarks_field, status_field, assignedto_remarks, assignedby_remarks = row
 
-
             if all(not field for field in [remarks_field, status_field, assignedto_remarks, assignedby_remarks]):
 
                 processed_db_cursor.execute(
                     "UPDATE response_time SET remarks = %s,assignedby_remarks = %s, remarks_status = %s, assignedto_remarks = %s WHERE case_number = %s",
-                    (new_remarks_json,name, 'UnAnswered', assigned_to, case_number)
+                    (new_remarks_json, name, 'UnAnswered', assigned_to, case_number)
                 )
 
                 response_message = "Remarks added successfully."
@@ -2265,7 +2287,7 @@ def get_remarks():
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
 
-        if not all([from_date, to_date , username]):
+        if not all([from_date, to_date, username]):
             return jsonify({
                 'status': False,
                 'message': 'Missing required parameters',
@@ -2289,9 +2311,9 @@ def get_remarks():
                 f"AND district_id IN ({', '.join(map(str, district_ids))}) "
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
-        elif view_role in [3,4]:
+        elif view_role in [3, 4]:
             district_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
-        else :
+        else:
             district_condition = ""
 
         my_followups_query = f"""
@@ -2326,7 +2348,7 @@ def get_remarks():
                   AND parent_id = 0
                   AND  assignedby_remarks = %s
             """
-        followups_needed_query=followups_needed_query.format(district_condition=district_condition)
+        followups_needed_query = followups_needed_query.format(district_condition=district_condition)
         processed_db_cursor.execute(followups_needed_query, (name,))
         fp_needed_cases = processed_db_cursor.fetchall()
 
@@ -2377,15 +2399,16 @@ def get_remarks():
                     int(time_id))).days < 3 and remarks_status == 'UnAnswered' else 0,
                 "status_flag": 1 if remarks_status != 'UnAnswered' else 0,
                 "is_notify": (
-                            1
-                            if (last_timestamp := utils.get_last_timestamp(remarks)) and
-                               (current_time - datetime.strptime(last_timestamp, configs.YMD_HMS)).total_seconds() < 30
-                            else 0
-)
+                    1
+                    if (last_timestamp := utils.get_last_timestamp(remarks)) and
+                       (current_time - datetime.strptime(last_timestamp, configs.YMD_HMS)).total_seconds() < 30
+                    else 0
+                )
             }
             for (case_number, level3_case_nature, caller_name, caller_number,
                  created_time, police_station, district_id, time_id,
-                 description, reached_time, response_time, assigned_to, remarks_status,remarks) in (fp_needed_cases or [])
+                 description, reached_time, response_time, assigned_to, remarks_status, remarks) in
+            (fp_needed_cases or [])
         ]
 
         if my_followups_list or followups_neeeded_list:
@@ -2440,7 +2463,7 @@ def update_remarks():
             "message": new_remarks,
             "message_by": user_name,
             "message_to": assigned_to,
-            'cc' : cc,
+            'cc': cc,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -2498,7 +2521,6 @@ def update_remarks():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
-
 
 
 @app.route(configs.CM_DIST_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_DIST_RESPONSE_TIME['METHOD']])
@@ -2573,7 +2595,7 @@ def dist_response_time():
             "data": districts_response_time
         }
 
-        return jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -2581,6 +2603,7 @@ def dist_response_time():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+
 
 @app.route(configs.CM_PS_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_PS_RESPONSE_TIME['METHOD']])
 @limiter.limit(configs.LIMITER)
@@ -2609,13 +2632,12 @@ def cm_ps_responsetime():
         if district_str:
             district_id = configs.REVERSED_DISTRICTS_DICTIONARY[district_str]
 
-
         if view_role == 5 and district_id:
             district_condition = (
                 f"  AND district_id IN ({district_id}) "
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
-        else :
+        else:
             district_condition = ""
 
         ps_responsetime_query = """
@@ -2633,7 +2655,6 @@ def cm_ps_responsetime():
         ps_responsetime_query = ps_responsetime_query.format(district_condition=district_condition)
 
         processed_db_cursor.execute(ps_responsetime_query, (from_date, to_date, district_id))
-
 
         ps_results = processed_db_cursor.fetchall()
 
@@ -2719,7 +2740,7 @@ def district_fir_stats():
                 GROUP BY 
                     district;
                  """
-        fir_stats_query = fir_stats_query.format(district_condition= district_condition)
+        fir_stats_query = fir_stats_query.format(district_condition=district_condition)
 
         processed_db_cursor.execute(fir_stats_query, (from_date, to_date))
         district_fir_data = processed_db_cursor.fetchall()
@@ -2745,9 +2766,9 @@ def district_fir_stats():
                     district_id
         """
 
-        cases_query = cases_query.format(district_condition= district_condition)
+        cases_query = cases_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(cases_query,(from_date, to_date))
+        processed_db_cursor.execute(cases_query, (from_date, to_date))
         cases = processed_db_cursor.fetchall()
 
         cases_response = {
@@ -2767,7 +2788,7 @@ def district_fir_stats():
             "message": "District-wise FIRs Registered and Not Registered fetched successfully",
             "data": {
                 'fir_registered': registered_fir_response,
-                'fir_unregistered' : unregistered_fir
+                'fir_unregistered': unregistered_fir
             }
         }
 
@@ -2796,7 +2817,6 @@ def ps_fir_stats():
         view_role = request.form.get('view_role', type=int)
         police_station_str = request.form.get('police_station')
 
-
         if not all([district_str, from_date, to_date]):
             return jsonify({
                 'status': False,
@@ -2811,7 +2831,7 @@ def ps_fir_stats():
 
         if view_role == 5:
             district_condition = f" AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
-        else :
+        else:
             district_condition = ""
 
         fir_stats_query = """
@@ -2830,7 +2850,7 @@ def ps_fir_stats():
                  """
         fir_stats_query = fir_stats_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(fir_stats_query,(from_date, to_date,district_id))
+        processed_db_cursor.execute(fir_stats_query, (from_date, to_date, district_id))
         ps_fir_data = processed_db_cursor.fetchall()
 
         ps_fir_response = {
@@ -2856,7 +2876,7 @@ def ps_fir_stats():
 
         cases_query = cases_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(cases_query, (from_date, to_date,district_id))
+        processed_db_cursor.execute(cases_query, (from_date, to_date, district_id))
         cases = processed_db_cursor.fetchall()
 
         cases_response = {
@@ -2876,11 +2896,11 @@ def ps_fir_stats():
             "message": "Ps-wise Fir registered and Unregistered Data fetched successfully",
             "data": {
                 'fir_registered': ps_fir_response,
-                'fir_unregistered' : unregistered_fir
+                'fir_unregistered': unregistered_fir
             }
         }
 
-        return jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -2956,7 +2976,7 @@ def conference_call_stats():
 
         dist_conf_query = dist_conf_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(dist_conf_query,(from_date, to_date))
+        processed_db_cursor.execute(dist_conf_query, (from_date, to_date))
         dist_conf_results = processed_db_cursor.fetchall()
 
         district_response = {
@@ -2967,7 +2987,7 @@ def conference_call_stats():
             for district in dist_conf_results
         }
 
-        return jsonify(district_response),200
+        return jsonify(district_response), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -2985,7 +3005,7 @@ def response_time_alerts():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
-        view_role = request.form.get('view_role',type=int)
+        view_role = request.form.get('view_role', type=int)
         district_str = request.form.get('district')
         police_station_str = request.form.get('police_station')
         from_date = request.form.get('fromDate')
@@ -3023,7 +3043,6 @@ def response_time_alerts():
         else:
             district_condition = ""
 
-
         alerts_count_query = """
                     SELECT district_id, COUNT(case_number) AS case_count
                     FROM response_time
@@ -3037,14 +3056,14 @@ def response_time_alerts():
         """
         alerts_count_query = alerts_count_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(alerts_count_query,(from_date,to_date))
+        processed_db_cursor.execute(alerts_count_query, (from_date, to_date))
         alerts = processed_db_cursor.fetchall()
 
         alerts_count = []
         for i in alerts:
-            alerts_count.append({configs.DISTRICTS_DICTIONARY[int(i[0])] : i[1]})
+            alerts_count.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1]})
 
-        alerts_casenumbers =  """
+        alerts_casenumbers = """
                     SELECT district_id, string_agg(case_number::text, ',') AS case_numbers
                     FROM response_time
                     WHERE date BETWEEN %s AND %s
@@ -3058,7 +3077,7 @@ def response_time_alerts():
 
         alerts_casenumbers = alerts_casenumbers.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(alerts_casenumbers, (from_date,to_date))
+        processed_db_cursor.execute(alerts_casenumbers, (from_date, to_date))
         alerts = processed_db_cursor.fetchall()
 
         alerts_cases = []
@@ -3075,7 +3094,6 @@ def response_time_alerts():
         else:
             additional_condition = ""
 
-
         db_conn = db_config.get_db_connection()
         db_cursor = db_conn.cursor()
 
@@ -3090,7 +3108,7 @@ def response_time_alerts():
                     AND date = %s
                     {additional_condition}
                     Group By district
-        """,(current_date.strftime('%d-%m-%Y'),))
+        """, (current_date.strftime('%d-%m-%Y'),))
         re_occurrences_cases = db_cursor.fetchall()
 
         crime_occurence = []
@@ -3106,12 +3124,12 @@ def response_time_alerts():
             "status": True,
             "message": "Response Time fetched successfully",
             "data": {
-                "counts" : alerts_count,
-                "cases" : alerts_cases,
-                "crime_reoccurences" : crime_occurence
+                "counts": alerts_count,
+                "cases": alerts_cases,
+                "crime_reoccurences": crime_occurence
             }
         }
-        return  jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -3154,9 +3172,9 @@ def police_vehicle_locations():
             )
 
         status_dict = {
-            'online' : "Free",
-            'offline' : "Idle",
-            "busy" : "Busy"
+            'online': "Free",
+            'offline': "Idle",
+            "busy": "Busy"
         }
         if vehicle_status.lower() == 'total':
             query = """ SELECT 
@@ -3192,7 +3210,8 @@ def police_vehicle_locations():
 
         processed_db_conn.close()
 
-        return jsonify({"status": "success", "data": data,"message": "Police Vehicles Data fetched successfully",}), 200
+        return jsonify(
+            {"status": "success", "data": data, "message": "Police Vehicles Data fetched successfully", }), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -3349,7 +3368,7 @@ def vccs_stats():
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
 
-        if not all([district_str, police_station_str,from_date,to_date]):
+        if not all([district_str, police_station_str, from_date, to_date]):
             return jsonify({
                 'status': False,
                 'message': 'Missing required parameters',
@@ -3402,7 +3421,8 @@ def vccs_stats():
                                 AND district_id IS NOT NULL
                     {district_condition}
                 """
-        db_cursor.execute(vccs_query, (current_date_str, to_date_str,current_date_str,to_date_str,current_date_str,to_date_str))
+        db_cursor.execute(vccs_query,
+                          (current_date_str, to_date_str, current_date_str, to_date_str, current_date_str, to_date_str))
         values = db_cursor.fetchone()
 
         (received_vccs_cases, under_inquiry_vccs_cases, escalated_vccs_cases,
@@ -3410,7 +3430,6 @@ def vccs_stats():
             str(val).encode('utf-8').decode('utf-8') if isinstance(val, Decimal) else val
             for val in values
         ]
-
 
         cases_query = f"""
                     SELECT pucar_case_number, level3_case_nature, pucar_caller_name, pucar_cli,
@@ -3440,19 +3459,19 @@ def vccs_stats():
 
         response = {"status": "success",
                     "data": {
-                        'stats':{
-                        'recieved_cases': received_vccs_cases,
-                        'under_inquiry_cases':under_inquiry_vccs_cases,
-                        'escalated_cases' :escalated_vccs_cases,
-                        'fir_registered':fir_registered_vccs_cases,
-                        'vwps_challan_count':challan_submitted_vccs_cases,
-                        'resolved_cases' : resolved_vccs_cases
+                        'stats': {
+                            'recieved_cases': received_vccs_cases,
+                            'under_inquiry_cases': under_inquiry_vccs_cases,
+                            'escalated_cases': escalated_vccs_cases,
+                            'fir_registered': fir_registered_vccs_cases,
+                            'vwps_challan_count': challan_submitted_vccs_cases,
+                            'resolved_cases': resolved_vccs_cases
                         },
-                        'cases':cases_list,
+                        'cases': cases_list,
                     },
-                    "message": "VCCS STATS AND CASES fetched successfully",}
+                    "message": "VCCS STATS AND CASES fetched successfully", }
 
-        return jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -3480,7 +3499,7 @@ def vcm_stats():
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
 
-        if not all([district_str, police_station_str,from_date,to_date]):
+        if not all([district_str, police_station_str, from_date, to_date]):
             return jsonify({
                 'status': False,
                 'message': 'Missing required parameters',
@@ -3540,7 +3559,6 @@ def vcm_stats():
             for val in values
         ]
 
-
         cases_query = f"""
                     SELECT pucar_case_number, level3_case_nature, pucar_caller_name, pucar_cli,
                         pucar_police_station, final_status_remarks, pucar_cro_comments, pucar_district, created_at
@@ -3569,20 +3587,20 @@ def vcm_stats():
 
         response = {"status": "success",
                     "data": {
-                        'stats':{
-                        'recieved_cases': received_vcm_cases if received_vcm_cases else 0,
-                        'under_inquiry_cases':int(under_inquiry_vcm_cases if under_inquiry_vcm_cases else 0 ) +
-                                              int(escalated_vcm_cases if escalated_vcm_cases else 0),
-                        'escalated_cases' :escalated_vcm_cases if escalated_vcm_cases else 0,
-                        'fir_registered':fir_registered_vcm_cases if fir_registered_vcm_cases else 0,
-                        'vwps_challan_count':challan_submitted_vcm_cases if challan_submitted_vcm_cases else 0 ,
-                        'resolved_cases' : resolved_vcm_cases if resolved_vcm_cases else 0
+                        'stats': {
+                            'recieved_cases': received_vcm_cases if received_vcm_cases else 0,
+                            'under_inquiry_cases': int(under_inquiry_vcm_cases if under_inquiry_vcm_cases else 0) +
+                                                   int(escalated_vcm_cases if escalated_vcm_cases else 0),
+                            'escalated_cases': escalated_vcm_cases if escalated_vcm_cases else 0,
+                            'fir_registered': fir_registered_vcm_cases if fir_registered_vcm_cases else 0,
+                            'vwps_challan_count': challan_submitted_vcm_cases if challan_submitted_vcm_cases else 0,
+                            'resolved_cases': resolved_vcm_cases if resolved_vcm_cases else 0
                         },
-                        'cases':cases_list,
+                        'cases': cases_list,
                     },
-                    "message": "VCM STATS AND CASES fetched successfully",}
+                    "message": "VCM STATS AND CASES fetched successfully", }
 
-        return jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -3862,11 +3880,11 @@ def caller_feedback():
                         #     'closed' : closed,
                         #     'caller_feedback' : feedback_caller,
                         # },
-                        'district_feedack' : dist_stats,
-                        'total' : {
-                            'total_positive' : total_positive,
-                            'total_negative' : total_negative,
-                            'total_not_responding' : total_not_responding
+                        'district_feedack': dist_stats,
+                        'total': {
+                            'total_positive': total_positive,
+                            'total_negative': total_negative,
+                            'total_not_responding': total_not_responding
                         }
                     },
                     "message": "Caller Feedback fetched successfully"}
@@ -4039,7 +4057,7 @@ def escalated_cases():
         category = request.form.get('category')
         from_date_str = request.form.get('fromDate')
         to_date_str = request.form.get('toDate')
-        view_role = request.form.get('view_role',type=int)
+        view_role = request.form.get('view_role', type=int)
         district_str = request.form.get('district')
         police_station_str = request.form.get('police_station')
 
@@ -4124,7 +4142,7 @@ def escalated_cases():
             "data": result_dicts,
             "message": "Escalated Cases fetched successfully"
         }
-        return jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -4141,7 +4159,7 @@ def escalated_cases():
 def crime_trend_cases():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    try :
+    try:
         district_str = request.form.get('district')
         date = request.form.get('date')
         category = request.form.get('category')
@@ -4201,11 +4219,11 @@ def crime_trend_cases():
         ]
 
         response = {
-            "success" : True,
-            "data" : cases_list,
-            "message" : "Cases for Crime Trends fetched Successfuly"
+            "success": True,
+            "data": cases_list,
+            "message": "Cases for Crime Trends fetched Successfuly"
         }
-        return jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -4261,8 +4279,8 @@ def negative_feedback_cases():
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
 
-        from_date_epoch = utils.date_to_unix_day_start_end(from_date,True)
-        to_date_epoch = utils.date_to_unix_day_start_end(to_date,False)
+        from_date_epoch = utils.date_to_unix_day_start_end(from_date, True)
+        to_date_epoch = utils.date_to_unix_day_start_end(to_date, False)
 
         query = f"""
                 SELECT  case_number, level3_case_nature, caller_name, cli,
@@ -4318,5 +4336,188 @@ def negative_feedback_cases():
             'message': f'Internal server error {e}'
         }), 400
 
+
+def get_filtered_users(view_role, district, police_station):
+    try:
+        connection = db_config.get_db_connection()
+        cursor = connection.cursor()
+
+        # Base query to filter users by district or police station using FIND_IN_SET
+        query = """
+               SELECT user_id_emergency, first_name_emergency,last_name_emergency, user_name_emergency,view_role_emergency FROM `15_stats_users`
+               WHERE
+                   (FIND_IN_SET(%s, assigned_district_emergency) > 0 AND FIND_IN_SET(%s, assigned_ps_emergency) > 0)
+               """
+        params = (district, police_station)
+
+        # Execute base query
+        cursor.execute(query, params)
+        users = cursor.fetchall()
+
+        # Apply role-based filtering using tuple indices
+        filtered_users = []
+        for user in users:
+            try:
+                user_role = int(user[4])
+                if user_role == "":
+                    continue
+            except (ValueError, TypeError):
+                user_role = None
+
+            # Role-based filtering
+            if view_role == 2:
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+            elif view_role == 3 and user_role not in (2, 3):
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+            elif view_role == 4 and user_role not in (2, 3, 4):
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+            elif view_role == 5 and user_role not in (2, 3, 4) and "sdpo" not in user[3]:
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+
+        return filtered_users
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return []
+    finally:
+        if connection:
+            connection.close()
+
+
+@app.route('/get_remarks_user', methods=['POST'])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@jwt_required()
+def get_users():
+    try:
+        # Extract input parameters from form data
+        user_name = request.form.get('user_name')
+        view_role = int(request.form.get('view_role'))
+        district = request.form.get('district')
+        police_station = request.form.get('police_station')
+
+        if not all([user_name, view_role, district, police_station]):
+            return jsonify({"error": "Missing required fields."}), 400
+
+        # Get filtered users
+        filtered_users = get_filtered_users(view_role, district, police_station)
+
+        return jsonify(filtered_users), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def get_chat_users(view_role, district, police_station):
+    try:
+        connection = db_config.get_db_connection()
+        cursor = connection.cursor()
+
+        # Base query to filter users by district or police station using FIND_IN_SET
+        query = """
+               SELECT user_id_emergency, first_name_emergency,last_name_emergency, user_name_emergency,view_role_emergency FROM `15_stats_users`
+               WHERE
+                   (FIND_IN_SET(%s, assigned_district_emergency) > 0 OR FIND_IN_SET(%s, assigned_ps_emergency) > 0)
+               """
+        params = (district, police_station)
+
+        # Execute base query
+        cursor.execute(query, params)
+        users = cursor.fetchall()
+
+        # Apply role-based filtering using tuple indices
+        filtered_users = []
+        for user in users:
+            try:
+                user_role = int(user[4])
+                if user_role == "":
+                    continue
+            except (ValueError, TypeError):
+                user_role = None
+
+            # Role-based filtering
+            if view_role == 2:
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+            elif view_role == 3 and user_role not in (2, 3):
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+            elif view_role == 4 and user_role not in (2, 3, 4):
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+            elif view_role == 5 and user_role not in (2, 3, 4) and "sdpo" not in user[3]:
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+
+        return filtered_users
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return []
+    finally:
+        if connection:
+            connection.close()
+
+
+@app.route('/get_chat_user', methods=['POST'])
+# @limiter.limit(configs.LIMITER)
+# @require_api_key
+# @jwt_required()
+def get_chat_user():
+    try:
+        # Extract input parameters from form data
+        user_name = request.form.get('user_name')
+        view_role = int(request.form.get('view_role'))
+        district = request.form.get('district')
+        police_station = request.form.get('police_station')
+
+        if not all([user_name, view_role, district, police_station]):
+            return jsonify({"error": "Missing required fields."}), 400
+
+        # Get filtered users
+        filtered_users = get_chat_users(view_role, district, police_station)
+
+        return jsonify(filtered_users), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
-    app.run(host=configs.HOST, port=configs.PORT, debug=False) #configs.DEBUG_
+    app.run(host=configs.HOST, port=configs.PORT, debug=False)  # configs.DEBUG_
