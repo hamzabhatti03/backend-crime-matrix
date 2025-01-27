@@ -353,6 +353,8 @@ BLOOD_DONATION = {'ENDPOINT': '/blood_donation', 'METHOD': 'POST'}
 ESCALATED_CASES = {'ENDPOINT': '/escalated_cases', 'METHOD': 'POST'}
 CRIME_TREND_CASES = {'ENDPOINT': '/crime_trend_cases', 'METHOD': 'POST'}
 NEGATIVE_FEEDBACK_CASES = {'ENDPOINT': '/negative_feedback_cases', 'METHOD': 'POST'}
+ADD_MESSAGE = {'ENDPOINT': '/add_message', 'METHOD': 'POST'}
+CHAT_HISTORY = {'ENDPOINT': '/chat_history', 'METHOD': 'POST'}
 
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
 

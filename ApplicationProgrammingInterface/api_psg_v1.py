@@ -1,5 +1,5 @@
 from certifi.core import where
-from flask import Flask, jsonify, request, abort, g
+from flask import Flask, jsonify, request, abort, g,render_template
 from flask_caching import Cache
 from datetime import datetime, timedelta
 from flask_limiter import Limiter
@@ -7,7 +7,7 @@ from flask_limiter.util import get_remote_address
 from Utilities import utils, configs, validate
 from Utilities import db_config
 from math import radians, sin, cos, sqrt, atan2
-from flask_jwt_extended import (JWTManager, create_access_token, jwt_required)
+from flask_jwt_extended import (JWTManager, create_access_token, jwt_required, get_jwt_identity)
 import json
 import hashlib
 import traceback
@@ -19,6 +19,9 @@ from predictive_api import get_category_data
 from itertools import chain
 from decimal import Decimal
 from psycopg2.extras import RealDictCursor
+from flask_socketio import SocketIO, emit, join_room, leave_room
+from asgiref.wsgi import WsgiToAsgi
+import psycopg2
 
 def haversine(lat1, lon1, lat2, lon2):
     """Calculate the great-circle distance between two points on the Earth."""
@@ -52,9 +55,11 @@ def filter_lat_longs(lat_longs, max_distance_km=5):
 
     return filtered
 
+
 load_dotenv()
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET")
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(seconds=129600)           # 36 Hours
@@ -146,6 +151,8 @@ def expired_token_callback(jwt_header, jwt_payload):
 @limiter.limit(configs.LIMITER)
 def login():
     db_conn, db_cursor = get_log_db_connection()
+    chat_db_conn = db_config.get_chat_db_connection()
+    chat_cursor = chat_db_conn.cursor()
     try:
         username = request.form.get('username')
         password = request.form.get('password')
@@ -163,10 +170,37 @@ def login():
         db_cursor.execute("SELECT * FROM `15_stats_users` WHERE `user_name_emergency` = %s", (username,))
         user = db_cursor.fetchone()
 
-        access_token = None
+        # try:
+        #     chat_db_conn.autocommit = False
+        #
+        #     chat_cursor.execute("""
+        #         INSERT INTO user_status (user_id, is_online, last_seen, personal_room)
+        #         VALUES (%s, %s, NOW(), %s)
+        #     """, (user[0], True, f"user_{user[0]}"))
+        #
+        #     chat_db_conn.commit()
+        #
+        # # except psycopg2.errors.UniqueViolation as e:
+        # #     try:
+        # #         chat_db_conn.rollback()
+        # #
+        # #         chat_cursor.execute("""
+        # #             UPDATE user_status
+        # #             SET is_online = %s, last_seen = NOW()
+        # #             WHERE user_id = %s
+        # #         """, (True, user[0]))
+        # #
+        # #         chat_db_conn.commit()
+        # #
+        # #     except Exception as e:
+        # #         chat_db_conn.rollback()
+        # #         print(f"Error updating user status: {e}")
+        #
+        # finally:
+        #     chat_db_conn.close()
 
         if user and user[4] == hashed_pass:
-            access_token = create_access_token(identity=username)
+            access_token = create_access_token(identity=f"user_{user[0]}")
 
             db_cursor.execute("""
                                 UPDATE 15_stats_users
@@ -179,7 +213,6 @@ def login():
                 'status': False,
                 'message': 'Incorrect Password OR user_name'
             }), 400
-
 
         return jsonify({
             'data' : {
@@ -3591,6 +3624,8 @@ def vcm_stats():
             "message": f"An error occurred: {str(e)}"
         }), 500
 
+
+
 @app.route(configs.CRIME_TRENDS['ENDPOINT'], methods=[configs.CRIME_TRENDS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
@@ -4317,5 +4352,180 @@ def negative_feedback_cases():
             'message': f'Internal server error {e}'
         }), 400
 
+@app.route(configs.ADD_MESSAGE['ENDPOINT'], methods=[configs.ADD_MESSAGE['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@jwt_required()
+def add_message():
+    db_conn = db_config.get_chat_db_connection()
+    db_cursor = db_conn.cursor()
+    log_db_conn, log_db_cursor = get_log_db_connection()
+    try :
+        view_role = request.form.get('view_role')
+        message = request.form.get('message')
+        username = request.form.get('user_name')
+        message_to = request.form.get('assigned_to')
+
+        if not all ([view_role,message,username,message_to]):
+            return jsonify({
+            'status': False,
+            'message': f'cannot send empty message'
+        }), 400
+
+        query = """
+            INSERT INTO chat_message ("username", "message", "to")
+            VALUES (%s, %s, %s)
+                """
+        db_cursor.execute(query, (username, message, message_to))
+        db_conn.commit()
+
+        return jsonify({
+            'status': True,
+            'message': 'Message sent successfully'
+        }), 200
+
+    except Exception as e:
+        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+
+
+@socketio.on('connect')
+def handle_connect():
+    user_id = request.form.get('user_id')  # Pass user ID during connection
+    if not user_id:
+        return False  # Reject the connection if no user ID is provided
+
+    # Log user connection
+    print(f"User {user_id} connected.")
+    emit('connect_ack', {'message': f'User {user_id} connected successfully!'})
+
+
+@socketio.on('join_chat')
+def join_chat(data):
+    try:
+        user_1_id = data['user_1_id'].split('@')[0]
+        user_2_id = data['user_2_id'].split('@')[0]
+
+        # Generate a unique room name
+        room_name = f"{min(user_1_id, user_2_id)}_{max(user_1_id, user_2_id)}"
+
+        # Save the room to the database if it doesn’t exist
+        conn = db_config.get_chat_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM chat_rooms WHERE room_name = %s", (room_name,))
+        room = cursor.fetchone()
+
+        if not room:
+            cursor.execute(
+                """
+                INSERT INTO chat_rooms (room_name, user_1, user_2)
+                VALUES (%s, %s, %s)
+                """,
+                (room_name, user_1_id, user_2_id)
+            )
+            conn.commit()
+        # Join the Socket.IO room
+        join_room(room_name)
+
+        # Acknowledge the client
+        emit('join_ack', {'room_name': room_name}, to=room_name)
+    except Exception as e:
+        print(traceback.format_exc(e))
+
+@socketio.on('send_message')
+def handle_message(data):
+    print(data)
+
+    if 'sender_id' not in data or 'message' not in data:
+        return
+    sender_id = data['sender_id'].split('@')[0]
+    recipient_id = data['recipient_id'].split('@')[0]
+    message = data['message']
+    room_name = data['room_name']
+
+    # Save the message to the database
+    conn = db_config.get_chat_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO chat_messages (room_name, sender_id, message, timestamp)
+        VALUES (%s, %s, %s, NOW())
+        """,
+        (room_name, sender_id, message)
+    )
+    conn.commit()
+
+    # Emit the message to the room
+    emit('receive_message', {
+        'sender_id': sender_id,
+        'message': message,
+        'timestamp': datetime.now().isoformat()
+    }, to=room_name)
+
+    recipient_room = f"user_{recipient_id}"
+    emit('new_message_notification', {
+        'sender_id': sender_id,
+        'message_preview': message[:30],  # Limit preview length
+        'timestamp': datetime.now().isoformat()
+    }, to=recipient_room)
+
+
+@app.route(configs.CHAT_HISTORY['ENDPOINT'], methods=[configs.CHAT_HISTORY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@jwt_required()
+def fetch_chat_history():
+    log_db_conn, log_db_cursor = get_log_db_connection()
+    try:
+        user_1_id = request.form.get('user_1')
+        user_2_id = request.form.get('user_2')
+
+        # Generate the room name
+
+        room_name = f"{min(user_1_id, user_2_id)}_{max(user_1_id, user_2_id)}"
+
+        # current_user_id = get_jwt_identity()
+        # if current_user_id not in (user_1_id, user_2_id):
+        #     return jsonify({'status': False, 'message': 'Unauthorized'}), 403
+
+        # Fetch messages from the database
+        conn = db_config.get_chat_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT sender_id, message, timestamp
+            FROM chat_messages
+            WHERE room_name = %s
+            ORDER BY timestamp ASC
+            """,
+            (room_name,)
+        )
+        messages = cursor.fetchall()
+
+        # Format the messages
+        formatted_messages = [
+            {'sender_id': row[0], 'message': row[1], 'timestamp': datetime.strftime(row[2], '%Y-%m-%d %H:%M:%S')}
+            for row in messages
+        ]
+
+        return jsonify({'status': True,
+                        'data': formatted_messages,
+                        'message': 'chat messages fetched successfully'
+                        }), 200
+
+    except Exception as e:
+        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+
 if __name__ == '__main__':
-    app.run(host=configs.HOST, port=configs.PORT, debug=False) #configs.DEBUG_
+    app.run(host=configs.HOST, port=configs.PORT, debug=True) #configs.DEBUG_
+    # socketio.run(app, host='0.0.0.0', port=5010)

@@ -11,3 +11,10 @@ ApplicationProgrammingInterface/new_prediction_fetch_time_range.py
 Utilities/__pycache__
 ApplicationProgrammingInterface/__pycache__
 ProcessingAgents/__pycache__
+
+app.py
+app_copy.py
+app_v1.py
+app_v2.py
+static/*
+templates/*
