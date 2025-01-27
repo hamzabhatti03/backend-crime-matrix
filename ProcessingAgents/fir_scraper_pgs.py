@@ -74,18 +74,16 @@ def store_data_to_db(data, district_id, date, max_retries=5, retry_delay=5):
 
 def fetch_and_store_all_data(start_date):
     """Fetches and stores FIR data for all districts and dates in the range."""
-    current_date = datetime.strptime(start_date, "%Y-%m-%d")
-    date_str = current_date.strftime("%Y-%m-%d")
+    # current_date = datetime.strptime(start_date, "%Y-%m-%d")
+    date_str = start_date.strftime("%Y-%m-%d")
     for district_id, district_name in configs.DISTRICTS_MAPPING:
         print(f"Fetching data for district {district_name} on {date_str}...")
         data = fetch_fir_data(district_id, date_str)
         store_data_to_db(data, district_id, date_str)
-    print("Waiting for 25 seconds before fetching data for the next date...")
 
 
 def main(start_date):
     initialize_database()
     fetch_and_store_all_data(start_date)
 
-
-main("2025-01-06")
+# main("2025-01-17")

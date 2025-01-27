@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 """"MAIN SERVER CONFIGURATIONS"""
-PORT = 5005
+PORT = 5010
 DEBUG_ = True
 HOST = '0.0.0.0'
 ONE_TIME_RUN = True
@@ -39,7 +39,7 @@ PROCESSED_STATS_TEST_DB = '../DatabaseManager/processed1.db'
 
 """PostgreSQL DATABASES"""
 POSTGRES_PROCESSED_STATS_MAIN = {
-    'dbname': 'dev_processed_15',
+    'dbname': 'test_0624',
     'user': 'postgres',
     'password': 'psca@officialmai1',
     'host': '10.20.170.151',
@@ -352,6 +352,9 @@ CALLER_FEEDBACK = {'ENDPOINT': '/caller_feedback', 'METHOD': 'POST'}
 BLOOD_DONATION = {'ENDPOINT': '/blood_donation', 'METHOD': 'POST'}
 ESCALATED_CASES = {'ENDPOINT': '/escalated_cases', 'METHOD': 'POST'}
 CRIME_TREND_CASES = {'ENDPOINT': '/crime_trend_cases', 'METHOD': 'POST'}
+NEGATIVE_FEEDBACK_CASES = {'ENDPOINT': '/negative_feedback_cases', 'METHOD': 'POST'}
+ADD_MESSAGE = {'ENDPOINT': '/add_message', 'METHOD': 'POST'}
+CHAT_HISTORY = {'ENDPOINT': '/chat_history', 'METHOD': 'POST'}
 
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
 
