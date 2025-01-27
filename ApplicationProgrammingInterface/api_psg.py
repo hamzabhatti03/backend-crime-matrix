@@ -628,6 +628,50 @@ def punjab_stats_dashboard():
 
         escalated_case_count = vwps_escalated + vccs_escalated + vcm_escalated
 
+        alerts_count_query = """
+                            SELECT district_id, COUNT(case_number) AS case_count
+                            FROM response_time
+                            Where date between %s AND %s
+                            AND response_time > 2100 
+                            AND parent_id = 0
+                            AND district_id IS NOT NULL
+                            AND district_id NOT IN ('0','41','42','43','44','45','46')
+                            {district_condition}
+                            GROUP BY district_id
+                """
+        alerts_count_query = alerts_count_query.format(district_condition=district_condition)
+
+        processed_db_cursor.execute(alerts_count_query, (from_date_str, to_date_str))
+        alerts = processed_db_cursor.fetchall()
+
+        alerts_count = []
+        for i in alerts:
+            alerts_count.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1]})
+
+        if view_role == 5 and district_ids:
+            additional_condition = (
+                f"  AND district IN ({', '.join(map(str, district_ids))}) "
+                f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        elif view_role in [3, 4]:
+            additional_condition = f" AND district IN ({', '.join(map(str, district_ids))})"
+        else:
+            additional_condition = ""
+
+        db_conn = db_config.get_db_connection()
+        db_cursor = db_conn.cursor()
+
+        current_date = datetime.now()
+
+        db_cursor.execute(f"""
+                    SELECT count(*)
+                    FROM pred_pol_crimes_hotspot 
+                    WHERE case_number IS NOT null
+                    AND date = %s
+                    {additional_condition}
+        """, (current_date.strftime('%d-%m-%Y'),))
+        re_occurrences_count = db_cursor.fetchone()
+
         dashboard_data = {
             'terrorist_act': {'count': terrorism, 'fir': terrorism_fir,
                               'fake/other': 0,
@@ -738,7 +782,9 @@ def punjab_stats_dashboard():
             'escalated_cases': escalated_case_count,
             'vwps_escalated': vwps_escalated,
             'vcm_escalated': vcm_escalated,
-            'vccs_escalated': vccs_escalated
+            'vccs_escalated': vccs_escalated,
+            'responsetime_alerts' : alerts_count,
+            'crime_reoccurrence_count' : re_occurrences_count
         }
 
         response = {

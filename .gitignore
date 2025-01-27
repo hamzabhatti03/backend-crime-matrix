@@ -18,3 +18,5 @@ app_v1.py
 app_v2.py
 static/*
 templates/*
+
+api_psg_v1.py
