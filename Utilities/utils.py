@@ -831,7 +831,7 @@ def get_last_timestamp(remarks):
 def parse_remarks(remarks):
     # Load the JSON string into a Python object
     if remarks is None:
-        return []
+        return ''
     try:
         data = json.loads(remarks)
     except json.JSONDecodeError:

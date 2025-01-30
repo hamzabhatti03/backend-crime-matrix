@@ -2341,17 +2341,14 @@ def add_remarks():
                 "message": "Missing required fields"
             }), 400
 
-        cc_list = [user.strip() for user in cc.split(',')] if cc else []
-
         new_remarks = {
             "message": remarks,
             "messaged_by": user_name,
             "messaged_to": assigned_to,
-            "cc": cc_list,
+            "cc": cc,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "name": name
         }
-
         new_remarks_json = json.dumps(new_remarks)
 
         processed_db_cursor.execute(
