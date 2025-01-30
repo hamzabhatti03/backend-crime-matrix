@@ -1758,6 +1758,9 @@ def pswise_categories():
 
 
 def parse_remarks(remarks):
+    # Handle the case where remarks is None
+    if remarks is None:
+        return ''
     # Load the JSON string into a Python object
     try:
         data = json.loads(remarks)
@@ -1774,6 +1777,7 @@ def parse_remarks(remarks):
     # Handle any other unexpected types
     else:
         return []
+
 
 @app.route(configs.PUNJABTODAY_CASE_DETAILS['ENDPOINT'],
            methods=[configs.PUNJABTODAY_CASE_DETAILS['METHOD']])  # Changed to POST
@@ -1841,7 +1845,7 @@ def punjab_case_details():
             'caller_number': caller_number,
             'caller_location': caller_location,
             'level3_case_nature': level3_case_nature,
-            'remarks':  parse_remarks(remarks),
+            'remarks': parse_remarks(remarks),
             'assigned_by': assignedby_remarks,
             'assigned_to': assignedto_remarks,
             'dispatched_time': datetime.fromtimestamp(int(dispatched_time)).strftime(
