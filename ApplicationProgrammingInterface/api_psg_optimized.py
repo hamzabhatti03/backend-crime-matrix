@@ -2364,7 +2364,8 @@ def add_remarks():
             "messaged_by": user_name,
             "messaged_to": assigned_to,
             "cc": cc,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "name": name
         }
         new_remarks_json = json.dumps(new_remarks)
 
@@ -2615,6 +2616,7 @@ def update_remarks():
         user_name = request.form.get('user_name')
         cc = request.form.get('cc')
         assigned_to = request.form.get('assigned_to')
+        name = request.form.get('name')
 
         # Validate required fields
         if not case_number or not user_name or not view_role or not new_remarks:
@@ -2629,7 +2631,8 @@ def update_remarks():
             "message_by": user_name,
             "message_to": assigned_to,
             'cc': cc,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "name": name
         }
 
         # Check if the case exists
