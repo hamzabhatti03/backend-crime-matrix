@@ -547,6 +547,24 @@ def log_to_database(log_conn, log_cursor, level, message):
     except mysql.connector.Error as err:
         print(f"Database Error: {err}")
 
+def log_to_database_updated(log_conn, level, message):
+    query = """
+        INSERT INTO 15_stats_log (status, time_date, description, Host_IP_address)
+        VALUES (%s, %s, %s, %s)
+    """
+    data = (level, get_current_time(), message, SYS_IP)
+
+    try:
+        # Execute the INSERT query in a single command
+        log_conn.execute(query, data)
+
+        # Print the error to the console
+        print("ERROR:", message)
+
+        # Commit the transaction
+        log_conn.commit()
+    except Exception as err:
+        print(f"Database Error: {err}")
 
 def get_current_time():
     return datetime.now().strftime(configs.YMD_HMS)
@@ -786,6 +804,8 @@ def get_last_timestamp(remarks):
         if isinstance(dictionaries, list) and dictionaries:
             last_dict = dictionaries[-1]
             return last_dict.get('timestamp', None)
+        elif isinstance(dictionaries, dict) and dictionaries:
+            return dictionaries.get('timestamp', None)
         return None
     except (ValueError, SyntaxError):
         return None
