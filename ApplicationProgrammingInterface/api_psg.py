@@ -3014,6 +3014,7 @@ def conference_call_stats():
                     date BETWEEN %s AND %s
                     AND field3 IS NOT NULL
                     AND district_id is not NULL
+                    AND district_id NOT IN ('0','41','42','43','44','45','46')
                     AND parent_id = 0
                     {district_condition}
                 GROUP BY 

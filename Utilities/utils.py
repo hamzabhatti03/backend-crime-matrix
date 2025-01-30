@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 import psycopg2
 import traceback
 import json
+import firebase_admin
+from firebase_admin import messaging
 
 load_dotenv()
 
@@ -717,6 +719,21 @@ def get_processed_db_connection(database=configs.POSTGRES_PROCESSED_STATS_MAIN):
         raise
 
 
+def get_new_processed_db_connection():
+    try:
+        conn = psycopg2.connect(
+            dbname=os.getenv('PROCESSED_DB_NAME'),
+            user=os.getenv('PROCESSED_DB_USER'),
+            password=os.getenv('PROCESSED_DB_PASSWORD'),
+            host=os.getenv('PROCESSED_DB_HOST'),
+            port=os.getenv('PROCESSED_DB_PORT')
+        )
+        return conn
+    except Exception as e:
+        print(e)
+        raise
+
+
 def log_error_to_db_and_console(db_conn, log_db_cursor, error_message):
     # Capture the error message
     error_message = traceback.format_exc()
@@ -789,3 +806,37 @@ def get_last_timestamp(remarks):
         return None
     except (ValueError, SyntaxError):
         return None
+
+
+def send_fcm_notification(user_ids, title, body, data=None):
+    try:
+        processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        tokens = []
+        for user_id in user_ids:
+            processed_db_cursor.execute(
+                "SELECT fcm_token FROM user_fcm_tokens WHERE user_name = %s",
+                (user_id.strip(),)
+            )
+            tokens.extend([row[0] for row in processed_db_cursor.fetchall()])
+        processed_db_conn.close()
+
+        if not tokens:
+            return
+
+        # Send multicast message to all tokens
+        message = messaging.MulticastMessage(
+            tokens=tokens,
+            notification=messaging.Notification(title=title, body=body),
+            data=data
+        )
+        response = messaging.send_each_for_multicast(message)
+
+        # Handle failed tokens
+        if response.failure_count > 0:
+            for idx, resp in enumerate(response.responses):
+                if resp.exception:
+                    token = tokens[idx]
+
+    except Exception as e:
+        print(e)
+        raise
