@@ -2361,8 +2361,8 @@ def add_remarks():
 
         new_remarks = {
             "message": remarks,
-            "message_by": user_name,
-            "message_to": assigned_to,
+            "messaged_by": user_name,
+            "messaged_to": assigned_to,
             "cc": cc,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
