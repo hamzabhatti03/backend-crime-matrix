@@ -3154,6 +3154,7 @@ def conference_call_stats():
                     date BETWEEN %s AND %s
                     AND field3 IS NOT NULL
                     AND district_id is not NULL
+                    AND district_id NOT IN ('0','41','42','43','44','45','46')
                     AND parent_id = 0
                     {district_condition}
                 GROUP BY 
@@ -3165,13 +3166,20 @@ def conference_call_stats():
         processed_db_cursor.execute(dist_conf_query, (from_date, to_date))
         dist_conf_results = processed_db_cursor.fetchall()
 
+        # district_response = {
+        #     configs.DISTRICTS_DICTIONARY[int(district[0])]: {
+        #         'successful': district[1],
+        #         'unsuccessful': district[2]
+        #     }
+        #     for district in dist_conf_results
+        #     if int(district[0]) in configs.DISTRICTS_DICTIONARY
+        # }
         district_response = {
             configs.DISTRICTS_DICTIONARY[int(district[0])]: {
                 'successful': district[1],
                 'unsuccessful': district[2]
             }
             for district in dist_conf_results
-            if int(district[0]) in configs.DISTRICTS_DICTIONARY
         }
 
         return jsonify(district_response), 200
