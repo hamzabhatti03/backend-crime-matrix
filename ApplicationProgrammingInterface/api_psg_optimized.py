@@ -3422,6 +3422,7 @@ def police_vehicle_locations():
 @jwt_required()
 def vwps_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
     db_conn = db_config.get_vwps_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -3521,6 +3522,46 @@ def vwps_stats():
                  police_station, final_status_remarks, description, district, created_at) in cases
         ]
 
+        crime_hotspots_query = f"""
+                        SELECT district_id,
+                               police_station,
+                               level2_case_nature,
+                               reached_lat,
+                               reached_long
+                        FROM response_time
+                        WHERE reached_lat IS NOT NULL
+                          AND reached_long IS NOT NULL
+                          AND level3_case_nature IN (
+                                'Murder', 'Attempt to Murder', 'Sexual Assault/ Harassment To Women',
+                                'Rape', 'Child Abuse / Molestation', 'Aerial Firing', 'Male Kidnapping/ Abduction',
+                                'Female Kidnapping/ Abduction', 'Child Kidnapping', 'Attempt to Kidnap / Abduct',
+                                'Kidnapping for Ransom', 'Child Kidnapping', 'Highway/Road/Street Robbery', 
+                                'Any Other Robbery', 'Cattle Robbery', 'House Robbery', 'Shop Robbery', 
+                                'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                                'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 
+                                'Jewellery Shop Robbery', 'Robbery with Murder', 'Firing on Police',
+                                'Suicidal Attack/ Bomb Blast/ Terrorist Attack', 'Other Burglary', 'Shop Burglary',
+                                'House Burglary', 'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity',
+                                'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity','Missing Person reported'
+                            )
+                            {district_condition}
+                                        """
+
+        processed_db_cursor.execute(crime_hotspots_query, )
+        hotspot_results = processed_db_cursor.fetchall()
+
+        # Initialize an empty list to store the coordinates
+        coordinates = []
+
+        # Loop through the fetched results
+        for result in hotspot_results:
+            # Extract the latitude and longitude values from the result
+            reached_lat = result[3]
+            reached_long = result[4]
+
+            # Append the coordinates as a list to the coordinates list
+            coordinates.append([float(reached_lat), float(reached_long)])
+
         response = {"status": "success",
                     "data": {
                         'stats': {
@@ -3532,6 +3573,7 @@ def vwps_stats():
                             'resolved_cases': resolved_vwps_cases
                         },
                         'cases': cases_list,
+                        'hotspot_coordinates': filter_lat_longs(coordinates, max_distance_km=5)
                     },
                     "message": "VWPS STATS AND CASES fetched successfully", }
 
@@ -3554,6 +3596,7 @@ def vwps_stats():
 @jwt_required()
 def vccs_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
     db_conn = db_config.get_vccs_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -3655,6 +3698,43 @@ def vccs_stats():
                  police_station, final_status_remarks, description, district, created_at) in cases
         ]
 
+        crime_hotspots_query = f"""
+                                Select district_id ,police_station, level2_case_nature , reached_lat, reached_long
+                                FROM response_time
+                                WHERE reached_lat is NOT NULL
+                                AND reached_long is NOT NULL
+                                AND level3_case_nature IN (
+                                'Murder', 'Attempt to Murder', 'Sexual Assault/ Harassment To Women',
+                                'Rape', 'Child Abuse / Molestation', 'Aerial Firing', 'Male Kidnapping/ Abduction',
+                                'Female Kidnapping/ Abduction', 'Child Kidnapping', 'Attempt to Kidnap / Abduct',
+                                'Kidnapping for Ransom', 'Child Kidnapping', 'Highway/Road/Street Robbery', 
+                                'Any Other Robbery', 'Cattle Robbery', 'House Robbery', 'Shop Robbery', 
+                                'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                                'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 
+                                'Jewellery Shop Robbery', 'Robbery with Murder', 'Firing on Police',
+                                'Suicidal Attack/ Bomb Blast/ Terrorist Attack', 'Other Burglary', 'Shop Burglary',
+                                'House Burglary', 'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity',
+                                'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity','Missing Person reported'
+                            )
+                                {district_condition}
+                                                """
+
+        processed_db_cursor.execute(crime_hotspots_query, )
+        hotspot_results = processed_db_cursor.fetchall()
+
+        # Initialize an empty list to store the coordinates
+        coordinates = []
+
+        # Loop through the fetched results
+        for result in hotspot_results:
+            # Extract the latitude and longitude values from the result
+            reached_lat = result[3]
+            reached_long = result[4]
+
+            # Append the coordinates as a list to the coordinates list
+            coordinates.append([float(reached_lat), float(reached_long)])
+
+
         response = {"status": "success",
                     "data": {
                         'stats': {
@@ -3666,6 +3746,7 @@ def vccs_stats():
                             'resolved_cases': resolved_vccs_cases
                         },
                         'cases': cases_list,
+                        'hotspot_coordinates': filter_lat_longs(coordinates, max_distance_km=5)
                     },
                     "message": "VCCS STATS AND CASES fetched successfully", }
 
