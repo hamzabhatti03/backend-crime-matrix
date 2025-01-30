@@ -1757,24 +1757,6 @@ def pswise_categories():
         postgresql_pool.putconn(processed_db_conn)
 
 
-def parse_remarks(remarks):
-    # Load the JSON string into a Python object
-    try:
-        data = json.loads(remarks)
-    except json.JSONDecodeError:
-        # Handle the case where the JSON string is invalid
-        return []
-
-    # If the data is a dictionary (single object), wrap it in a list
-    if isinstance(data, dict):
-        return [data]
-    # If the data is already a list, return it as is
-    elif isinstance(data, list):
-        return data
-    # Handle any other unexpected types
-    else:
-        return []
-
 @app.route(configs.PUNJABTODAY_CASE_DETAILS['ENDPOINT'],
            methods=[configs.PUNJABTODAY_CASE_DETAILS['METHOD']])  # Changed to POST
 @limiter.limit(configs.LIMITER)
@@ -1841,7 +1823,7 @@ def punjab_case_details():
             'caller_number': caller_number,
             'caller_location': caller_location,
             'level3_case_nature': level3_case_nature,
-            'remarks':  parse_remarks(remarks),
+            'remarks':  utils.parse_remarks(remarks),
             'assigned_by': assignedby_remarks,
             'assigned_to': assignedto_remarks,
             'dispatched_time': datetime.fromtimestamp(int(dispatched_time)).strftime(
@@ -2359,14 +2341,17 @@ def add_remarks():
                 "message": "Missing required fields"
             }), 400
 
+        cc_list = [user.strip() for user in cc.split(',')] if cc else []
+
         new_remarks = {
             "message": remarks,
             "messaged_by": user_name,
             "messaged_to": assigned_to,
-            "cc": cc,
+            "cc": cc_list,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "name": name
         }
+
         new_remarks_json = json.dumps(new_remarks)
 
         processed_db_cursor.execute(

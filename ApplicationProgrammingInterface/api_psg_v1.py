@@ -59,7 +59,7 @@ def filter_lat_longs(lat_longs, max_distance_km=5):
 load_dotenv()
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
+# socketio = SocketIO(app, cors_allowed_origins="*")
 
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET")
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(seconds=129600)           # 36 Hours
@@ -258,6 +258,7 @@ def punjab_stats_dashboard():
 
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
+
     try:
         # Get parameters from request body
         from_date_str = request.form.get('fromDate')
@@ -301,6 +302,18 @@ def punjab_stats_dashboard():
             district_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
         else:
             district_condition = ""
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date_str, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date_str, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
+
 
         category_query = """
             SELECT 
@@ -363,7 +376,7 @@ def punjab_stats_dashboard():
             ON rc.region_category = fd.region_category;
         """
         regional_response_query = regional_response_query.format(district_condition=district_condition)
-        processed_db_cursor.execute(regional_response_query,[from_date_str, to_date_str])
+        processed_db_cursor.execute(regional_response_query, [from_date_str, to_date_str])
         regional_avg_responses = processed_db_cursor.fetchall()
 
         if view_role == 2 or view_role == 1:
@@ -384,7 +397,6 @@ def punjab_stats_dashboard():
             )
 
         response_time = processed_db_cursor.fetchall()
-
         fir_stats_query = """
             SELECT sum(murder), sum(dacoity), sum(aerial_firing), sum(rape), sum(minorities), sum(hurt),
                    sum(burglary), sum(kidnapping), sum(child_abuse),sum(robbery_snatching),
@@ -394,7 +406,7 @@ def punjab_stats_dashboard():
             WHERE date BETWEEN %s AND %s
             {district_condition}
     """
-        fir_stats_query =  fir_stats_query.format(district_condition=district_condition)
+        fir_stats_query = fir_stats_query.format(district_condition=district_condition)
         processed_db_cursor.execute(fir_stats_query, [from_date_str, to_date_str])
         fir_stats = processed_db_cursor.fetchone()
 
@@ -406,7 +418,6 @@ def punjab_stats_dashboard():
 
         processed_db_cursor.execute(fir_count_query, [from_date_str, to_date_str])
         fir_count = processed_db_cursor.fetchone()[0]
-
 
         # Map the data and calculate the dashboard data
         (murder_fir, dacoity_fir, firing_fir, women_harrasment_fir, minorities_fir,
@@ -476,10 +487,12 @@ def punjab_stats_dashboard():
                     WHERE category IS NOT NULL;
         """
 
-        category_regional_response_query = category_regional_response_query.format(district_condition=district_condition)
+        category_regional_response_query = category_regional_response_query.format(
+            district_condition=district_condition)
 
         processed_db_cursor.execute(category_regional_response_query, (from_date_str, to_date_str))
         category_regional_response_times = processed_db_cursor.fetchall()
+
         category_regional_response_dict = {}
         for category, region, avg_time in category_regional_response_times:
             if category not in category_regional_response_dict:
@@ -548,7 +561,8 @@ def punjab_stats_dashboard():
                     GROUP BY 
                         category;"""
 
-        categorical_avg_responsetime_query = categorical_avg_responsetime_query.format(district_condition=district_condition)
+        categorical_avg_responsetime_query = categorical_avg_responsetime_query.format(
+            district_condition=district_condition)
 
         processed_db_cursor.execute(categorical_avg_responsetime_query, (from_date_str, to_date_str))
         category_avg_response_times = processed_db_cursor.fetchall()
@@ -559,7 +573,7 @@ def punjab_stats_dashboard():
             category_avg_response_dict[category] = f"{int(avg_time // 60)}:{int(avg_time % 60):02d}"
 
         where_cond = ""
-        if view_role in [3,4]:
+        if view_role in [3, 4]:
             where_cond = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
 
         ############################### Negative caller Feedback
@@ -574,7 +588,6 @@ def punjab_stats_dashboard():
         row = processed_db_cursor.fetchone()
         negative_feedback_count = row[0] if row is not None else 0
 
-
         ############################## Escalated Cases Count (VWPS , VCCS , VCM)
 
         from_date_obj = datetime.strptime(from_date_str, '%Y-%m-%d')
@@ -582,7 +595,6 @@ def punjab_stats_dashboard():
 
         current_date_str = from_date_obj.strftime('%Y-%m-%d 00:00:00')
         to_date_str = to_date_obj.strftime('%Y-%m-%d 23:59:59')
-
 
         if view_role == 5 and district_ids:
             additional_cond = (
@@ -593,7 +605,6 @@ def punjab_stats_dashboard():
             additional_cond = f"AND district_id IN ({', '.join(map(str, district_ids))})"
         else:
             additional_cond = ""
-
 
         vwps_conn = db_config.get_vwps_db_connection()
         vwps_cursor = vwps_conn.cursor()
@@ -612,7 +623,7 @@ def punjab_stats_dashboard():
                             AND created_at BETWEEN %s AND %s
                             {additional_cond}
         """
-        vwps_cursor.execute(vwps_escalated_query,(current_date_str,to_date_str))
+        vwps_cursor.execute(vwps_escalated_query, (current_date_str, to_date_str))
         row = vwps_cursor.fetchone()
         vwps_escalated = row[0] if row is not None else 0
 
@@ -641,6 +652,50 @@ def punjab_stats_dashboard():
         vcm_escalated = row[0] if row is not None else 0
 
         escalated_case_count = vwps_escalated + vccs_escalated + vcm_escalated
+
+        alerts_count_query = """
+                            SELECT district_id, COUNT(case_number) AS case_count
+                            FROM response_time
+                            Where date between %s AND %s
+                            AND response_time > 2100 
+                            AND parent_id = 0
+                            AND district_id IS NOT NULL
+                            AND district_id NOT IN ('0','41','42','43','44','45','46')
+                            {district_condition}
+                            GROUP BY district_id
+                """
+        alerts_count_query = alerts_count_query.format(district_condition=district_condition)
+
+        processed_db_cursor.execute(alerts_count_query, (from_date_str, to_date_str))
+        alerts = processed_db_cursor.fetchall()
+
+        alerts_count = []
+        for i in alerts:
+            alerts_count.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1]})
+
+        if view_role == 5 and district_ids:
+            additional_condition = (
+                f"  AND district IN ({', '.join(map(str, district_ids))}) "
+                f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        elif view_role in [3, 4]:
+            additional_condition = f" AND district IN ({', '.join(map(str, district_ids))})"
+        else:
+            additional_condition = ""
+
+        db_conn = db_config.get_db_connection()
+        db_cursor = db_conn.cursor()
+
+        current_date = datetime.now()
+
+        db_cursor.execute(f"""
+                    SELECT count(*)
+                    FROM pred_pol_crimes_hotspot 
+                    WHERE case_number IS NOT null
+                    AND date = %s
+                    {additional_condition}
+        """, (current_date.strftime('%d-%m-%Y'),))
+        re_occurrences_count = db_cursor.fetchone()
 
         dashboard_data = {
             'terrorist_act': {'count': terrorism, 'fir': terrorism_fir,
@@ -740,7 +795,7 @@ def punjab_stats_dashboard():
                                                                                       'rural': '00:00'}),
                                'avg_response_time': category_avg_response_dict.get('other_property',
                                                                                    '00:00')},
-            'fir_count' : fir_count,
+            'fir_count': fir_count,
             'total_calls': total_calls,
             'total_cases': total_cases,
             'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time else 0,
@@ -748,11 +803,13 @@ def punjab_stats_dashboard():
             'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses else 0,
             'police_encounter': 0,
             'environment_smog': 0,
-            'negative_feedbacks' : 0 if view_role == 5 else negative_feedback_count,
-            'escalated_cases' : escalated_case_count,
-            'vwps_escalated' : vwps_escalated,
-            'vcm_escalated' : vcm_escalated,
-            'vccs_escalated' : vccs_escalated
+            'negative_feedbacks': 0 if view_role == 5 else negative_feedback_count,
+            'escalated_cases': escalated_case_count,
+            'vwps_escalated': vwps_escalated,
+            'vcm_escalated': vcm_escalated,
+            'vccs_escalated': vccs_escalated,
+            'responsetime_alerts' : alerts_count,
+            'crime_reoccurrence_count' : re_occurrences_count
         }
 
         response = {
@@ -868,6 +925,18 @@ def punjab_more_info():
                 f"AND district_id IN ({', '.join(map(str, district_ids))}) "
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
+
 
         district_query = """
             SELECT 
@@ -1096,6 +1165,18 @@ def districtwise_counts():
                 f"AND district_id IN ({', '.join(map(str, district_ids))}) "
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
+
         # Query to get district-wise case counts
         cases_query = """
             SELECT
@@ -1211,6 +1292,17 @@ def districtwise_more_info():
             )
         else :
             additional_condition = f"AND rt.district_id = {configs.REVERSED_DISTRICTS_DICTIONARY.get(district_str)}"
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
 
 
         # Get category-wise statistics
@@ -1403,6 +1495,17 @@ def pswise_categories():
         to_date = request.form.get('toDate')
         police_station = request.form.get('police_station')
         district = request.form.get('district')
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
 
         if not all([from_date, to_date, police_station, district]):
             return jsonify({
@@ -1829,6 +1932,20 @@ def district_category_details():
             )
         else :
             district_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
+
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
+
+
         # query conditions based on category
         base_query = """
             SELECT 
@@ -2020,7 +2137,7 @@ def emergency_15_integration():
         view_role = request.form.get('view_role', type=int)
         police_station_str = request.form.get('police_station')
 
-        processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        processed_db_conn, processed_db_cursor = None , None
         log_db_conn, log_db_cursor = get_log_db_connection()
 
         districts = district_str.split(",") if district_str else []
@@ -2036,6 +2153,18 @@ def emergency_15_integration():
                         'status': False,
                         'message': f"Invalid district name: {district}",
                     }), 400
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
+
 
         #################################################### EMERGENCY 15 STATS
         processed_query = utils.build_processed_data_query(configs.PROCESSED_COLUMNS)
@@ -2580,6 +2709,18 @@ def dist_response_time():
         else:
             district_condition = ""
 
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
+
+
         district_query = """SELECT district_id,avg(response_time) FROM response_time 
                         WHERE district_id NOT IN ('0','41','42','43','44','45','46')
                         AND district_id IS NOT NULL 
@@ -2650,6 +2791,17 @@ def cm_ps_responsetime():
             )
         else :
             district_condition = ""
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
 
         ps_responsetime_query = """
                         SELECT police_station, avg(response_time)
@@ -2738,6 +2890,18 @@ def district_fir_stats():
         else:
             district_condition = ""
 
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
+
         fir_stats_query = """
                 SELECT 
                     district,
@@ -2820,7 +2984,7 @@ def district_fir_stats():
 @jwt_required()
 def ps_fir_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    processed_db_conn, processed_db_cursor = None,None
 
     try:
         district_str = request.form.get('district')
@@ -2846,6 +3010,17 @@ def ps_fir_stats():
             district_condition = f" AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
         else :
             district_condition = ""
+
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
 
         fir_stats_query = """
                 SELECT 
@@ -2929,8 +3104,7 @@ def ps_fir_stats():
 @jwt_required()
 def conference_call_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
-
+    processed_db_conn, processed_db_cursor = None, None
     try:
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
@@ -2970,6 +3144,18 @@ def conference_call_stats():
         else:
             district_condition = ""
 
+        # Parse dates and calculate the difference
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+        delta_days = (to_date_obj - from_date_obj).days
+
+        # Determine which processed database connection to use
+        if delta_days > 7:
+            processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        else:
+            processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
+
+
         dist_conf_query = """
                 SELECT 
                     district_id,
@@ -2981,6 +3167,7 @@ def conference_call_stats():
                     date BETWEEN %s AND %s
                     AND field3 IS NOT NULL
                     AND district_id is not NULL
+                    AND district_id NOT IN ('0','41','42','43','44','45','46')
                     AND parent_id = 0
                     {district_condition}
                 GROUP BY 
@@ -3016,7 +3203,7 @@ def conference_call_stats():
 @jwt_required()
 def response_time_alerts():
     log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    processed_db_conn, processed_db_cursor = None,None
     try:
         view_role = request.form.get('view_role',type=int)
         district_str = request.form.get('district')
@@ -3055,6 +3242,17 @@ def response_time_alerts():
             district_condition = f" AND district_id IN ({', '.join(map(str, district_ids))})"
         else:
             district_condition = ""
+
+            # Parse dates and calculate the difference
+            from_date_obj = datetime.strptime(from_date, "%Y-%m-%d").date()
+            to_date_obj = datetime.strptime(to_date, "%Y-%m-%d").date()
+            delta_days = (to_date_obj - from_date_obj).days
+
+            # Determine which processed database connection to use
+            if delta_days > 7:
+                processed_db_conn, processed_db_cursor = get_processed_db_connection()
+            else:
+                processed_db_conn, processed_db_cursor = utils.get_new_processed_db_connection()
 
 
         alerts_count_query = """
@@ -4391,140 +4589,140 @@ def add_message():
             'message': f'Internal server error {e}'
         }), 400
 
-
-@socketio.on('connect')
-def handle_connect():
-    user_id = request.form.get('user_id')  # Pass user ID during connection
-    if not user_id:
-        return False  # Reject the connection if no user ID is provided
-
-    # Log user connection
-    print(f"User {user_id} connected.")
-    emit('connect_ack', {'message': f'User {user_id} connected successfully!'})
-
-
-@socketio.on('join_chat')
-def join_chat(data):
-    try:
-        user_1_id = data['user_1_id'].split('@')[0]
-        user_2_id = data['user_2_id'].split('@')[0]
-
-        # Generate a unique room name
-        room_name = f"{min(user_1_id, user_2_id)}_{max(user_1_id, user_2_id)}"
-
-        # Save the room to the database if it doesn’t exist
-        conn = db_config.get_chat_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT * FROM chat_rooms WHERE room_name = %s", (room_name,))
-        room = cursor.fetchone()
-
-        if not room:
-            cursor.execute(
-                """
-                INSERT INTO chat_rooms (room_name, user_1, user_2)
-                VALUES (%s, %s, %s)
-                """,
-                (room_name, user_1_id, user_2_id)
-            )
-            conn.commit()
-        # Join the Socket.IO room
-        join_room(room_name)
-
-        # Acknowledge the client
-        emit('join_ack', {'room_name': room_name}, to=room_name)
-    except Exception as e:
-        print(traceback.format_exc(e))
-
-@socketio.on('send_message')
-def handle_message(data):
-    print(data)
-
-    if 'sender_id' not in data or 'message' not in data:
-        return
-    sender_id = data['sender_id'].split('@')[0]
-    recipient_id = data['recipient_id'].split('@')[0]
-    message = data['message']
-    room_name = data['room_name']
-
-    # Save the message to the database
-    conn = db_config.get_chat_db_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        INSERT INTO chat_messages (room_name, sender_id, message, timestamp)
-        VALUES (%s, %s, %s, NOW())
-        """,
-        (room_name, sender_id, message)
-    )
-    conn.commit()
-
-    # Emit the message to the room
-    emit('receive_message', {
-        'sender_id': sender_id,
-        'message': message,
-        'timestamp': datetime.now().isoformat()
-    }, to=room_name)
-
-    recipient_room = f"user_{recipient_id}"
-    emit('new_message_notification', {
-        'sender_id': sender_id,
-        'message_preview': message[:30],  # Limit preview length
-        'timestamp': datetime.now().isoformat()
-    }, to=recipient_room)
-
-
-@app.route(configs.CHAT_HISTORY['ENDPOINT'], methods=[configs.CHAT_HISTORY['METHOD']])
-@limiter.limit(configs.LIMITER)
-@require_api_key
-@jwt_required()
-def fetch_chat_history():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    try:
-        user_1_id = request.form.get('user_1')
-        user_2_id = request.form.get('user_2')
-
-        # Generate the room name
-
-        room_name = f"{min(user_1_id, user_2_id)}_{max(user_1_id, user_2_id)}"
-
-        # current_user_id = get_jwt_identity()
-        # if current_user_id not in (user_1_id, user_2_id):
-        #     return jsonify({'status': False, 'message': 'Unauthorized'}), 403
-
-        # Fetch messages from the database
-        conn = db_config.get_chat_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT sender_id, message, timestamp
-            FROM chat_messages
-            WHERE room_name = %s
-            ORDER BY timestamp ASC
-            """,
-            (room_name,)
-        )
-        messages = cursor.fetchall()
-
-        # Format the messages
-        formatted_messages = [
-            {'sender_id': row[0], 'message': row[1], 'timestamp': datetime.strftime(row[2], '%Y-%m-%d %H:%M:%S')}
-            for row in messages
-        ]
-
-        return jsonify({'status': True,
-                        'data': formatted_messages,
-                        'message': 'chat messages fetched successfully'
-                        }), 200
-
-    except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
-        return jsonify({
-            'status': False,
-            'message': f'Internal server error {e}'
-        }), 400
+#
+# @socketio.on('connect')
+# def handle_connect():
+#     user_id = request.form.get('user_id')  # Pass user ID during connection
+#     if not user_id:
+#         return False  # Reject the connection if no user ID is provided
+#
+#     # Log user connection
+#     print(f"User {user_id} connected.")
+#     emit('connect_ack', {'message': f'User {user_id} connected successfully!'})
+#
+#
+# @socketio.on('join_chat')
+# def join_chat(data):
+#     try:
+#         user_1_id = data['user_1_id'].split('@')[0]
+#         user_2_id = data['user_2_id'].split('@')[0]
+#
+#         # Generate a unique room name
+#         room_name = f"{min(user_1_id, user_2_id)}_{max(user_1_id, user_2_id)}"
+#
+#         # Save the room to the database if it doesn’t exist
+#         conn = db_config.get_chat_db_connection()
+#         cursor = conn.cursor()
+#
+#         cursor.execute("SELECT * FROM chat_rooms WHERE room_name = %s", (room_name,))
+#         room = cursor.fetchone()
+#
+#         if not room:
+#             cursor.execute(
+#                 """
+#                 INSERT INTO chat_rooms (room_name, user_1, user_2)
+#                 VALUES (%s, %s, %s)
+#                 """,
+#                 (room_name, user_1_id, user_2_id)
+#             )
+#             conn.commit()
+#         # Join the Socket.IO room
+#         join_room(room_name)
+#
+#         # Acknowledge the client
+#         emit('join_ack', {'room_name': room_name}, to=room_name)
+#     except Exception as e:
+#         print(traceback.format_exc(e))
+#
+# @socketio.on('send_message')
+# def handle_message(data):
+#     print(data)
+#
+#     if 'sender_id' not in data or 'message' not in data:
+#         return
+#     sender_id = data['sender_id'].split('@')[0]
+#     recipient_id = data['recipient_id'].split('@')[0]
+#     message = data['message']
+#     room_name = data['room_name']
+#
+#     # Save the message to the database
+#     conn = db_config.get_chat_db_connection()
+#     cursor = conn.cursor()
+#
+#     cursor.execute(
+#         """
+#         INSERT INTO chat_messages (room_name, sender_id, message, timestamp)
+#         VALUES (%s, %s, %s, NOW())
+#         """,
+#         (room_name, sender_id, message)
+#     )
+#     conn.commit()
+#
+#     # Emit the message to the room
+#     emit('receive_message', {
+#         'sender_id': sender_id,
+#         'message': message,
+#         'timestamp': datetime.now().isoformat()
+#     }, to=room_name)
+#
+#     recipient_room = f"user_{recipient_id}"
+#     emit('new_message_notification', {
+#         'sender_id': sender_id,
+#         'message_preview': message[:30],  # Limit preview length
+#         'timestamp': datetime.now().isoformat()
+#     }, to=recipient_room)
+#
+#
+# @app.route(configs.CHAT_HISTORY['ENDPOINT'], methods=[configs.CHAT_HISTORY['METHOD']])
+# @limiter.limit(configs.LIMITER)
+# @require_api_key
+# @jwt_required()
+# def fetch_chat_history():
+#     log_db_conn, log_db_cursor = get_log_db_connection()
+#     try:
+#         user_1_id = request.form.get('user_1')
+#         user_2_id = request.form.get('user_2')
+#
+#         # Generate the room name
+#
+#         room_name = f"{min(user_1_id, user_2_id)}_{max(user_1_id, user_2_id)}"
+#
+#         # current_user_id = get_jwt_identity()
+#         # if current_user_id not in (user_1_id, user_2_id):
+#         #     return jsonify({'status': False, 'message': 'Unauthorized'}), 403
+#
+#         # Fetch messages from the database
+#         conn = db_config.get_chat_db_connection()
+#         cursor = conn.cursor()
+#
+#         cursor.execute(
+#             """
+#             SELECT sender_id, message, timestamp
+#             FROM chat_messages
+#             WHERE room_name = %s
+#             ORDER BY timestamp ASC
+#             """,
+#             (room_name,)
+#         )
+#         messages = cursor.fetchall()
+#
+#         # Format the messages
+#         formatted_messages = [
+#             {'sender_id': row[0], 'message': row[1], 'timestamp': datetime.strftime(row[2], '%Y-%m-%d %H:%M:%S')}
+#             for row in messages
+#         ]
+#
+#         return jsonify({'status': True,
+#                         'data': formatted_messages,
+#                         'message': 'chat messages fetched successfully'
+#                         }), 200
+#
+#     except Exception as e:
+#         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+#         return jsonify({
+#             'status': False,
+#             'message': f'Internal server error {e}'
+#         }), 400
 
 if __name__ == '__main__':
     app.run(host=configs.HOST, port=configs.PORT, debug=True) #configs.DEBUG_

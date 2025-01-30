@@ -828,35 +828,22 @@ def get_last_timestamp(remarks):
         return None
 
 
-def send_fcm_notification(user_ids, title, body, data=None):
+def parse_remarks(remarks):
+    # Load the JSON string into a Python object
+    if remarks is None:
+        return []
     try:
-        processed_db_conn, processed_db_cursor = get_processed_db_connection()
-        tokens = []
-        for user_id in user_ids:
-            processed_db_cursor.execute(
-                "SELECT fcm_token FROM user_fcm_tokens WHERE user_name = %s",
-                (user_id.strip(),)
-            )
-            tokens.extend([row[0] for row in processed_db_cursor.fetchall()])
-        processed_db_conn.close()
+        data = json.loads(remarks)
+    except json.JSONDecodeError:
+        # Handle the case where the JSON string is invalid
+        return []
 
-        if not tokens:
-            return
-
-        # Send multicast message to all tokens
-        message = messaging.MulticastMessage(
-            tokens=tokens,
-            notification=messaging.Notification(title=title, body=body),
-            data=data
-        )
-        response = messaging.send_each_for_multicast(message)
-
-        # Handle failed tokens
-        if response.failure_count > 0:
-            for idx, resp in enumerate(response.responses):
-                if resp.exception:
-                    token = tokens[idx]
-
-    except Exception as e:
-        print(e)
-        raise
+    # If the data is a dictionary (single object), wrap it in a list
+    if isinstance(data, dict):
+        return [data]
+    # If the data is already a list, return it as is
+    elif isinstance(data, list):
+        return data
+    # Handle any other unexpected types
+    else:
+        return []
