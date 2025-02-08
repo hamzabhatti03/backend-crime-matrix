@@ -189,7 +189,7 @@ def insert_results(db_connection, log_db_cursor, results, date):
                     row['succ_conf_calls'],
                     row['unsucc_conf_calls'], row['vccs'], row['vcm']
                 ))
-                print(f"Inserted/updated: {row}")
+                # print(f"Inserted/updated: {row}")
             except Exception as e:
                 print(f"Error for district {district_id}, station {police_station}, hour {hour}: {e}")
                 # db_connection.rollback()  # Roll back the entire transaction on error
