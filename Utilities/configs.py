@@ -763,3 +763,42 @@ CRIME_TRENDS_CATEGORIES = {
          OR level3_case_nature IN ('Aerial Firing', 'Motorcycle Theft', 'Car Theft', 'Cycle Theft', 'Other Vehicles Theft'))
     """
 }
+
+district_eng_urdu = {
+    "Attock": "اٹک",
+    "Bahawalnagar": "بہاولنگر",
+    "Bahawalpur": "بہاولپور",
+    "Bhakkar": "بھکر",
+    "Chakwal": "چکوال",
+    "Chiniot": "چنیوٹ",
+    "Dera Ghazi Khan": "ڈیرہ غازی خان",
+    "Faisalabad": "فیصل آباد",
+    "Gujranwala": "گوجرانوالہ",
+    "Gujrat": "گجرات",
+    "Hafizabad": "حافظ آباد",
+    "Jhang": "جھنگ",
+    "Jhelum": "جہلم",
+    "Kasur": "قصور",
+    "Khanewal": "خانیوال",
+    "Khushab": "خوشاب",
+    "Lahore": "لاہور",
+    "Layyah": "لیہ",
+    "Lodhran": "لودھراں",
+    "Mandi Bahauddin": "منڈی بہاؤالدین",
+    "Mianwali": "میانوالی",
+    "Multan": "ملتان",
+    "Muzaffargarh": "مظفر گڑھ",
+    "Nankana Sahib": "ننکانہ صاحب",
+    "Narowal": "نارووال",
+    "Okara": "اوکاڑہ",
+    "Pakpattan": "پاکپتن",
+    "Rahim Yar Khan": "رحیم یار خان",
+    "Rajanpur": "راجن پور",
+    "Rawalpindi": "راولپنڈی",
+    "Sahiwal": "ساہیوال",
+    "Sargodha": "سرگودھا",
+    "Sheikhupura": "شیخوپورہ",
+    "Sialkot": "سیالکوٹ",
+    "Toba Tek Singh": "ٹوبہ ٹیک سنگھ",
+    "Vehari": "وہاڑی"
+}

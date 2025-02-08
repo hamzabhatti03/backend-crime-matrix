@@ -1738,7 +1738,7 @@ def pswise_categories():
                 'police_mv_locations': vehicles_location_data,
                 'successful_conf_calls': successful_calls,
                 'unsuccessful_conf_calls': unsuccessful_calls,
-                'hotspot_coordinates': filter_lat_longs(coordinates, max_distance_km=5)
+                'hotspot_coordinates': filter_lat_longs(coordinates, max_distance_km=3)
             }
         }
         return jsonify(response), 200
@@ -2293,17 +2293,31 @@ def emergency_15_integration():
                    "registration_no", "district", "unit_type"]
         mv_data = [dict(zip(columns, row)) for row in records]
 
+        urdu_districts = [configs.district_eng_urdu.get(district, district) for district in districts]
+
+        lat_long_query = """
+            SELECT latitude, longitude
+            FROM fir_murder_psrms
+            WHERE district IN ({})
+        """.format(", ".join(repr(d) for d in urdu_districts))
+
+        processed_db_cursor.execute(lat_long_query)
+        lat_long_records = processed_db_cursor.fetchall()
+
+        # Convert query results into a list of [latitude, longitude] pairs
+        district_lat_long = [[row[0], row[1]] for row in lat_long_records]
+
         response = {
             'status': True,
             'message': 'Integrated Emergency 15 Dashboard details fetched successfully',
             'data': {
                 'emergency_15_stats': emergency_15_stats,
                 'vehicle_stats': status_counts,
-                'vehicles_data': mv_data
+                'vehicles_data': mv_data,
+                'homicide_hotspots' : district_lat_long
             }
         }
         return jsonify(response), 200
-
 
     except Exception as e:
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
@@ -3430,9 +3444,11 @@ def vwps_stats():
         view_role = request.form.get('view_role', type=int)
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
+        category = request.form.get('category')
 
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
+        category = category.split(",") if category else []
 
         if not all([district_str, police_station_str, from_date, to_date]):
             return jsonify({
@@ -3462,6 +3478,13 @@ def vwps_stats():
             district_condition = f" AND district_id IN ({', '.join(map(str, district_ids))})"
         else:
             district_condition = ""
+
+        categories = f""" AND level3_case_nature IN ({', '.join(f"'{category.strip()}'" for category in category)}) """ if category else """
+         AND level3_case_nature IN ('Female Kidnapping/ Abduction', 'Sexual Assault/ Harassment To Women', 'Domestic Violence', 'Rape', 
+        'Child Abuse / Molestation', 'Prostitution/ Brothel House' ,'Attempt to Kidnap / Abduct', 'Murder', 'Kidnapping for Ransom' ,
+        'Attempt to Murder' , 'Acid Throwing', 'Other Assault', 'Physical Threats / Harrasment', 'Hurt / Injuries', 'Missing Person reported', 
+        'Missing Person Found', 'Attempt to Suicide', 'Suicide', 'Prostitution/ Brothel House')
+        """
 
         from_date_obj = datetime.strptime(from_date, '%Y-%m-%d')
         to_date_obj = datetime.strptime(to_date, '%Y-%m-%d')
@@ -3521,6 +3544,42 @@ def vwps_stats():
                  police_station, final_status_remarks, description, district, created_at) in cases
         ]
 
+        if districts:
+            district_ids = [repr(district) for district in district_ids]  # Safely quote district names
+            district_condition = f" AND district_id IN ({', '.join(district_ids)})"
+
+        # Build police station condition
+        police_station_condition = ""
+        if police_stations:
+            police_station_names = [repr(ps) for ps in police_stations]  # Safely quote police station names
+            police_station_condition = f" AND pucar_police_station IN ({', '.join(police_station_names)})"
+
+        crime_hotspots_query = f"""
+            Select district_id ,pucar_police_station, pucar_level2_case_nature , pucar_lat, pucar_long
+            FROM case_final_status
+            WHERE pucar_lat is NOT NULL
+            AND pucar_long is NOT NULL
+            AND pucar_lat != ''    
+            AND pucar_long != ''
+            {categories} 
+            {district_condition}
+            """
+
+        db_cursor.execute(crime_hotspots_query, )
+        hotspot_results = db_cursor.fetchall()
+
+        # Initialize an empty list to store the coordinates
+        coordinates = []
+
+        # Loop through the fetched results
+        for result in hotspot_results:
+            # Extract the latitude and longitude values from the result
+            reached_lat = result[3]
+            reached_long = result[4]
+
+            # Append the coordinates as a list to the coordinates list
+            coordinates.append([float(reached_lat), float(reached_long)])
+
         response = {"status": "success",
                     "data": {
                         'stats': {
@@ -3532,6 +3591,7 @@ def vwps_stats():
                             'resolved_cases': resolved_vwps_cases
                         },
                         'cases': cases_list,
+                        'hotspot_coordinates': utils.filter_lat_longs(coordinates,district_str)
                     },
                     "message": "VWPS STATS AND CASES fetched successfully", }
 
@@ -3562,11 +3622,13 @@ def vccs_stats():
         view_role = request.form.get('view_role', type=int)
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
+        category = request.form.get('category')
 
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
+        category = category.split(",") if category else []
 
-        if not all([district_str, police_station_str, from_date, to_date]):
+        if not all([district_str, from_date, to_date]):
             return jsonify({
                 'status': False,
                 'message': 'Missing required parameters',
@@ -3595,6 +3657,11 @@ def vccs_stats():
         else:
             district_condition = ""
 
+        categories = f""" AND level3_case_nature IN ({', '.join(f"'{category.strip()}'" for category in category)}) """ if category else """
+         AND level3_case_nature IN ('Child Abuse / Molestation', 'Child Lost/ Missing', 'Child Kidnapping', 'Child Found', 'Child Labor' , 
+         'Kidnapping for Ransom', 'Attempt to Kidnap / Abduct', 'Murder') 
+        """
+
         from_date_obj = datetime.strptime(from_date, '%Y-%m-%d')
         to_date_obj = datetime.strptime(to_date, '%Y-%m-%d')
 
@@ -3612,11 +3679,11 @@ def vccs_stats():
                     COUNT(CASE WHEN is_challan_submitted = 1 THEN 1 ELSE NULL END) AS challan_vccs,
                     SUM(CASE WHEN final_status_id = 6 THEN 1 ELSE 0 END +
                         CASE WHEN final_status_id = 12 AND 
-                                    handed_over_to = 2 AND created_at >= %s AND created_at <= %s 
-                                    THEN 1 ELSE 0 END) AS resolved_vccs
+                        handed_over_to = 2 AND created_at >= %s AND created_at <= %s 
+                        THEN 1 ELSE 0 END) AS resolved_vccs
                     FROM case_final_status
                     WHERE created_at BETWEEN %s AND %s
-                                AND district_id IS NOT NULL
+                    AND district_id IS NOT NULL
                     {district_condition}
                 """
         db_cursor.execute(vccs_query,
@@ -3655,6 +3722,43 @@ def vccs_stats():
                  police_station, final_status_remarks, description, district, created_at) in cases
         ]
 
+        if districts:
+            district_ids = [repr(district) for district in district_ids]  # Safely quote district names
+            district_condition = f" AND district_id IN ({', '.join(district_ids)})"
+
+        # Build police station condition
+        police_station_condition = ""
+        if police_stations:
+            police_station_names = [repr(ps) for ps in police_stations]  # Safely quote police station names
+            police_station_condition = f" AND pucar_police_station IN ({', '.join(police_station_names)})"
+
+        crime_hotspots_query = f"""
+            Select district_id ,pucar_police_station, pucar_level2_case_nature , pucar_lat, pucar_long
+            FROM case_final_status
+            WHERE pucar_lat is NOT NULL
+            AND pucar_long is NOT NULL
+            AND pucar_lat != ''    
+            AND pucar_long != ''
+            {categories}
+            {district_condition}
+            """
+
+        db_cursor.execute(crime_hotspots_query, )
+        hotspot_results = db_cursor.fetchall()
+
+        # Initialize an empty list to store the coordinates
+        coordinates = []
+
+        # Loop through the fetched results
+        for result in hotspot_results:
+            # Extract the latitude and longitude values from the result
+            reached_lat = result[3]
+            reached_long = result[4]
+
+            # Append the coordinates as a list to the coordinates list
+            coordinates.append([float(reached_lat), float(reached_long)])
+
+
         response = {"status": "success",
                     "data": {
                         'stats': {
@@ -3666,6 +3770,7 @@ def vccs_stats():
                             'resolved_cases': resolved_vccs_cases
                         },
                         'cases': cases_list,
+                        'hotspot_coordinates': utils.filter_lat_longs(coordinates,district_str)
                     },
                     "message": "VCCS STATS AND CASES fetched successfully", }
 

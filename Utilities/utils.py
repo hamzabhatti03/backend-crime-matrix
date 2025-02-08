@@ -549,6 +549,7 @@ def log_to_database(log_conn, log_cursor, level, message):
     except mysql.connector.Error as err:
         print(f"Database Error: {err}")
 
+
 def log_to_database_updated(log_conn, level, message):
     query = """
         INSERT INTO 15_stats_log (status, time_date, description, Host_IP_address)
@@ -567,6 +568,7 @@ def log_to_database_updated(log_conn, level, message):
         log_conn.commit()
     except Exception as err:
         print(f"Database Error: {err}")
+
 
 def get_current_time():
     return datetime.now().strftime(configs.YMD_HMS)
@@ -763,7 +765,6 @@ def log_error_to_db_and_console(db_conn, log_db_cursor, error_message):
     print("ERROR:", error_message)
 
 
-
 # def get_category_condition(category):
 #     """Returns the SQL condition for the given category."""
 #     if category in configs.CRIME_TRENDS_CATEGORIES:
@@ -807,12 +808,14 @@ def get_week_range(date_str):
     end_of_week = start_of_week + timedelta(days=6)
     return start_of_week.strftime("%Y-%m-%d"), end_of_week.strftime("%Y-%m-%d")
 
+
 def get_month_range(date_str):
     """Calculate start and end of the month."""
     start_of_month = datetime.strptime(date_str, "%Y-%m")
     next_month = start_of_month.replace(day=28) + timedelta(days=4)
     end_of_month = next_month - timedelta(days=next_month.day)
     return start_of_month.strftime("%Y-%m-%d"), end_of_month.strftime("%Y-%m-%d")
+
 
 def get_last_timestamp(remarks):
     try:
@@ -831,7 +834,7 @@ def get_last_timestamp(remarks):
 def parse_remarks(remarks):
     # Load the JSON string into a Python object
     if remarks is None:
-        return ''
+        return []
     try:
         data = json.loads(remarks)
     except json.JSONDecodeError:
@@ -847,3 +850,163 @@ def parse_remarks(remarks):
     # Handle any other unexpected types
     else:
         return []
+
+
+# def is_within_punjab(lat, lon):
+#     """Check if the given coordinates are within the boundaries of Punjab, Pakistan."""
+#     # Define the latitude and longitude boundaries of Punjab, Pakistan
+#     min_lat, max_lat = 23.6345, 32.0841
+#     min_lon, max_lon = 69.3737, 77.0369
+#
+#     return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+#
+#
+# def filter_lat_longs(lat_longs):
+#     """Filter out points that are out of bounds of Punjab."""
+#     if not lat_longs:
+#         return []  # Return an empty list if input is empty
+#
+#     filtered = []
+#
+#     for lat, lon in lat_longs:
+#         # Only include points within the boundaries of Punjab
+#         if is_within_punjab(lat, lon):
+#             filtered.append((lat, lon))
+#
+#     return filtered
+
+# def is_within_punjab(lat, lon):
+#     """Check if the given coordinates are within the boundaries of Punjab, Pakistan."""
+#     # Define the latitude and longitude boundaries of Punjab, Pakistan
+#     min_lat, max_lat = 23.6345, 32.0841
+#     min_lon, max_lon = 69.3737, 77.0369
+#     return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+
+def is_within_punjab(lat, lon):
+    """Check if the given coordinates are within the boundaries of Punjab, Pakistan."""
+    # Define the latitude and longitude boundaries of Punjab, Pakistan
+    min_lat, max_lat = 23.6345, 32.0851  # Adjusted latitude for Punjab's southern and northern boundaries
+    min_lon, max_lon = 69.3839, 76.8855  # Adjusted longitude for Punjab's western and eastern boundaries
+
+    # Check if the coordinates are within these bounds
+    return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+
+district_boundaries = {
+        "Sialkot": (31.5, 32.0, 74.0, 75.5),
+        "Lahore": (31.4, 31.7, 74.0, 75.0),
+        "Gujranwala": (31.5, 32.0, 73.5, 74.5),
+        "Bahawalpur": (29.5, 30.5, 71.5, 73.0),
+        "Faisalabad": (31.3, 31.7, 72.5, 73.5),
+        "M.B. Din": (31.5, 32.0, 73.5, 74.5),
+        "Bahawalnagar": (29.5, 30.5, 72.0, 73.5),
+        "Okara": (30.5, 31.0, 72.5, 73.0),
+        "Sahiwal": (30.5, 31.0, 72.0, 73.0),
+        "Khushab": (32.0, 32.5, 72.5, 73.5),
+        "Layyah": (30.5, 31.0, 70.5, 71.5),
+        "T.T. Singh": (31.5, 32.0, 72.5, 73.5),
+        "Muzaffargarh": (30.5, 31.5, 70.5, 72.0),
+        "Multan": (29.5, 30.0, 71.5, 72.5),
+        "Sargodha": (32.0, 32.5, 72.5, 73.5),
+        "Gujrat": (32.0, 32.5, 73.5, 74.5),
+        "Rahimyar Khan": (28.5, 29.5, 70.5, 72.5),
+        "Sheikhupura": (31.5, 32.0, 73.5, 74.5),
+        "Attock": (33.5, 34.0, 72.5, 73.5),
+        "Jhang": (31.5, 32.0, 72.0, 73.0),
+        "Khanewal": (30.5, 31.0, 71.5, 72.5),
+        "Mianwali": (31.5, 32.0, 71.5, 72.5),
+        "Rawalpindi": (33.5, 34.0, 72.5, 73.5),
+        "D.G. Khan": (30.5, 31.5, 70.0, 72.0),
+        "Pakpattan": (30.5, 31.0, 72.5, 73.0),
+        "Hafizabad": (32.0, 32.5, 73.5, 74.5),
+        "Chiniot": (31.5, 32.0, 72.0, 73.0),
+        "Narowal": (31.5, 32.0, 74.0, 75.0),
+        "Rajanpur": (29.5, 30.5, 70.5, 71.5),
+        "Vehari": (30.5, 31.0, 71.5, 72.5),
+        "Nankana Sb": (31.0, 31.5, 73.5, 74.5),
+        "Kasur": (31.5, 32.0, 73.5, 74.5),
+        "Chakwal": (32.0, 32.5, 72.5, 73.5),
+        "Bhakkar": (31.0, 31.5, 71.5, 72.5),
+        "Lodhran": (29.5, 30.0, 71.5, 72.5),
+        "Jhelum": (32.0, 32.5, 72.5, 73.5)
+    }
+
+
+def district_bounding_box(district):
+    """Return the bounding box for the specified district (approximate)."""
+    return district_boundaries.get(district, None)
+
+
+def is_within_district(lat, lon, district):
+    """Check if the coordinates are within a specified district's bounding box."""
+    bounds = district_bounding_box(district)
+    if not bounds:
+        return False  # If the district is not found
+    min_lat, max_lat, min_lon, max_lon = bounds
+    return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+
+
+# def filter_lat_longs(lat_longs, districts=None):
+#     """Filter out points that are out of bounds of Punjab or the specified district(s)."""
+#     if not lat_longs:
+#         return []  # Return an empty list if input is empty
+#
+#     filtered = []
+#
+#     if districts:
+#         # Check if the districts parameter is a single district or multiple districts
+#         district_list = [district.strip() for district in districts.split(',')] if ',' in districts else [
+#             districts.strip()]
+#
+#         # If we have a single district, filter based on that district
+#         if len(district_list) == 1:
+#             for lat, lon in lat_longs:
+#                 if is_within_district(lat, lon, district_list[0]):
+#                     filtered.append((lat, lon))
+#         else:
+#             # If multiple districts are provided, filter based on the Punjab boundaries
+#             for lat, lon in lat_longs:
+#                 if is_within_punjab(lat, lon):
+#                     filtered.append((lat, lon))
+#     else:
+#         # If no district is specified, filter within Punjab boundaries
+#         for lat, lon in lat_longs:
+#             if is_within_punjab(lat, lon):
+#                 filtered.append((lat, lon))
+#
+#     return filtered
+
+def filter_lat_longs(lat_longs, districts=None):
+    """Filter out points that are out of bounds of Punjab or the specified district(s)."""
+    if not lat_longs:
+        return []  # Return an empty list if input is empty
+
+    filtered = []
+
+    if districts:
+        # Check if the districts parameter is a single district or multiple districts
+        district_list = [district.strip() for district in districts.split(',')] if ',' in districts else [
+            districts.strip()]
+
+        # If we have a single district, filter based on that district
+        if len(district_list) == 1:
+            for lat, lon in lat_longs:
+                if is_within_district(lat, lon, district_list[0]):
+                    filtered.append((lat, lon))
+        else:
+            # If no district is specified, check if the coordinates are within any district's bounding box
+            for lat, lon in lat_longs:
+                # Check if the coordinates fall within any district
+                for district in district_list:
+                    if is_within_district(lat, lon, district):
+                        filtered.append((lat, lon))
+                        break  # If the point is within one district, no need to check further districts
+    else:
+        # If no district is specified, check if the coordinates are within any district's bounding box
+        for lat, lon in lat_longs:
+            # Check if the coordinates fall within any district
+            for district in district_boundaries:
+                if is_within_district(lat, lon, district):
+                    filtered.append((lat, lon))
+                    break  # If the point is within one district, no need to check further districts
+
+    return filtered
