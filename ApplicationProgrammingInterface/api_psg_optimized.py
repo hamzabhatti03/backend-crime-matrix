@@ -1823,7 +1823,7 @@ def punjab_case_details():
             'caller_number': caller_number,
             'caller_location': caller_location,
             'level3_case_nature': level3_case_nature,
-            'remarks':  utils.parse_remarks(remarks),
+            'remarks': utils.parse_remarks(remarks),
             'assigned_by': assignedby_remarks,
             'assigned_to': assignedto_remarks,
             'dispatched_time': datetime.fromtimestamp(int(dispatched_time)).strftime(
@@ -2314,7 +2314,8 @@ def emergency_15_integration():
                 'emergency_15_stats': emergency_15_stats,
                 'vehicle_stats': status_counts,
                 'vehicles_data': mv_data,
-                'homicide_hotspots' : district_lat_long
+                # 'homicide_hotspots': utils.filter_lat_longs(district_lat_long, district_str)
+                'homicide_hotspots': district_lat_long
             }
         }
         return jsonify(response), 200
@@ -3591,7 +3592,7 @@ def vwps_stats():
                             'resolved_cases': resolved_vwps_cases
                         },
                         'cases': cases_list,
-                        'hotspot_coordinates': utils.filter_lat_longs(coordinates,district_str)
+                        'hotspot_coordinates': utils.filter_lat_longs(coordinates, district_str)
                     },
                     "message": "VWPS STATS AND CASES fetched successfully", }
 
@@ -3758,7 +3759,6 @@ def vccs_stats():
             # Append the coordinates as a list to the coordinates list
             coordinates.append([float(reached_lat), float(reached_long)])
 
-
         response = {"status": "success",
                     "data": {
                         'stats': {
@@ -3770,7 +3770,7 @@ def vccs_stats():
                             'resolved_cases': resolved_vccs_cases
                         },
                         'cases': cases_list,
-                        'hotspot_coordinates': utils.filter_lat_longs(coordinates,district_str)
+                        'hotspot_coordinates': utils.filter_lat_longs(coordinates, district_str)
                     },
                     "message": "VCCS STATS AND CASES fetched successfully", }
 
