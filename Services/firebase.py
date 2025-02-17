@@ -10,6 +10,5 @@ def send_push_notification_to_topic(username, title, body):
             topic=sanitized_topic
         )
         response = messaging.send(message)
-        print(f"Notification sent successfully to topic {sanitized_topic}: {response}")
     except Exception as e:
-        print(f"Error sending notification: {str(e)}")
+        print(f"Error sending notification")
