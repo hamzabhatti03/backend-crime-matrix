@@ -109,3 +109,18 @@ def get_chat_db_connection():
     except Exception as e:
         print(e)
         raise
+
+
+def get_notification_db_connection():
+    try:
+        conn = psycopg2.connect(
+            dbname=os.getenv('NOTIFICATION_DB'),
+            user=os.getenv('USER_CHAT'),
+            password=os.getenv('PASSWORD_CHAT'),
+            host=os.getenv('HOST_CHAT'),
+            port=os.getenv('PORT_CHAT')
+        )
+        return conn
+    except Exception as e:
+        print(e)
+        raise

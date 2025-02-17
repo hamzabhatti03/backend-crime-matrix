@@ -1010,3 +1010,64 @@ def filter_lat_longs(lat_longs, districts=None):
                     break  # If the point is within one district, no need to check further districts
 
     return filtered
+
+
+def get_remark_flags(remark_text, time_stamp):
+    """
+    Returns a tuple (status_flag, priority_flag) based on the parsed remark_text and time_stamp.
+
+    - If the remark list has only one entry, it is considered unanswered (status_flag = 0).
+    - If there are multiple entries, and the first remark's assigned_to equals the last remark's assigned_by,
+      then status_flag = 1; otherwise, status_flag = 0.
+    - priority_flag is set to 1 if time_stamp exists, the case is less than 3 days old, and the remark status is unanswered.
+    """
+    try:
+        remarks_list = json.loads(remark_text)
+    except Exception:
+        remarks_list = []
+
+    if len(remarks_list) <= 1:
+        status_flag = 0
+        unanswered = True
+    else:
+        first_remark = remarks_list[0]
+        last_remark = remarks_list[-1]
+        if first_remark.get('assigned_to') == last_remark.get('assigned_by'):
+            status_flag = 1
+            unanswered = False
+        else:
+            status_flag = 0
+            unanswered = True
+
+    priority_flag = 0
+    if time_stamp:
+        try:
+            case_time = datetime.strptime(time_stamp, "%Y-%m-%d %H:%M:%S")
+            if (datetime.now() - case_time).days < 3 and unanswered:
+                priority_flag = 1
+        except ValueError:
+            pass
+
+    return status_flag, priority_flag
+
+
+def construct_homicide_fir_query(urdu_districts):
+    # Escape district names to prevent SQL injection
+    escaped_districts = [repr(d) for d in urdu_districts]
+
+    # Construct the base query
+    if urdu_districts:
+        # Include the WHERE clause if districts are provided
+        lat_long_query = """
+            SELECT latitude, longitude
+            FROM fir_murder_psrms
+            WHERE district IN ({})
+        """.format(", ".join(escaped_districts))
+    else:
+        # Omit the WHERE clause if no districts are provided
+        lat_long_query = """
+            SELECT latitude, longitude
+            FROM fir_murder_psrms
+        """
+
+    return lat_long_query
