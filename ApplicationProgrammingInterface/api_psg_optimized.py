@@ -357,17 +357,82 @@ def punjab_stats_dashboard():
 
         category_query = """
             SELECT 
-                sum(terrorist_act) as terrorism, sum(murder) as murder, 
-                sum(aerial_firing) as firing, sum(rape) as women_harrasment,
-                sum(kidnapping) as kidnapping, sum(child_abuse) as child_abuse,
-                sum(other_person) as others_cap, sum(dacoity) as dacoity,
-                sum(robbery_snatching) as robbery_snatching, sum(theft) as theft,
-                sum(motorcycle_theft) as motorcycle_theft, sum(car_theft) as car_theft,
-                sum(other_property) as others_property, sum(minorities) as minorities,
-                sum(burglary) as burglary, sum(dacoity_with_murder) as dacoity_with_murder
-            FROM punjab_today
-            WHERE date BETWEEN %s AND %s
-            {district_condition}
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                ) AS terrorism,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Murder', 'Attempt to Murder')
+                ) AS murder,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Aerial Firing'
+                ) AS firing,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Sexual Assault/ Harrasment To Women')
+                ) AS women_harrasment,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Child Kidnapping', 'Female Kidnapping/ Abduction', 'Male Kidnapping/ Abduction',
+                        'Kidnapping for Ransom', 'Attempt to Kidnap / Abduct', 'Child Kidnapping '
+                    )
+                ) AS kidnapping,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Rape', 'Child Abuse / Molestation')
+                ) AS child_abuse,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Prostitution/ Brothel House', 'Acid Throwing', 'Hurt / Injuries', 'Street Fight', 
+                        'Other Assault', 'Physical Threats / Harrasment', 'Domestic Violence', 
+                        'Criminal Intimidation (Threat with Weapon)'
+                    )
+                ) AS others_cap,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
+                        'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
+                    )
+                ) AS dacoity,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                        'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                        'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
+                        'Robbery with Murder'
+                    )
+                ) AS robbery_snatching,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Mobile Theft', 'Any Other Theft', 'Cattle theft', 'Transformer/ Motor Theft', 'Pick Pocketing',
+                        'Purse / Wallet / Luggage Theft', 'Cycle Theft', 'Weapon Theft', 'Other Vehicles Theft',
+                        'House Burglary', 'Shop Burglary', 'Other Burglary'
+                    )
+                ) AS theft,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Motorcycle Theft'
+                ) AS motorcycle_theft,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Car Theft'
+                ) AS car_theft,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises'
+                ) AS others_property,
+                COUNT(*) FILTER (
+                    WHERE queue = 'minorities-15'
+                ) AS minorities,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('House Burglary', 'Shop Burglary', 'Other Burglary')
+                ) AS burglary,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Dacoity with Murder'
+                ) AS dacoity_with_murder
+            FROM response_time
+            WHERE 
+                police_station is not Null
+                AND response_time IS NOT NULL
+                AND date BETWEEN %s AND %s
+                AND parent_id=0
+                AND response_time > 0
+                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                {district_condition};
         """
         category_query = category_query.format(district_condition=district_condition)
         processed_db_cursor.execute(category_query, [from_date_str, to_date_str])
@@ -1030,6 +1095,8 @@ def punjab_more_info():
                 {district_condition}
                 AND police_station IS NOT NULL
                 AND parent_id = 0
+                AND response_time > 0
+                AND response_time IS NOT NULL
             GROUP BY 
                 police_station_id, district_id, police_station
             HAVING 
@@ -1081,6 +1148,8 @@ def punjab_more_info():
                     WHERE {condition}
                         AND district_id NOT IN ('0','41','42','43','44','45','46')
                         AND police_station is not Null
+                        AND response_time IS NOT NULL
+                        AND response_time > 0
                         AND date BETWEEN %s AND %s
                         AND parent_id=0
                         {district_condition}
@@ -1231,6 +1300,9 @@ def districtwise_counts():
                 AND date BETWEEN %s AND %s
                 {district_condition}
                 AND parent_id = 0
+                AND response_time IS NOT NULL
+                AND response_time > 0
+                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
             GROUP BY 
                 district_id;
         """
@@ -1338,28 +1410,83 @@ def districtwise_more_info():
         # Get category-wise statistics
         category_query = """
             SELECT 
-                SUM(murder), 
-                SUM(dacoity), 
-                SUM(aerial_firing), 
-                SUM(rape),
-                SUM(kidnapping), 
-                SUM(minorities), 
-                SUM(robbery_snatching), 
-                SUM(motorcycle_theft), 
-                SUM(car_theft),
-                SUM(theft), 
-                SUM(child_abuse), 
-                SUM(terrorist_act),
-                SUM(other_person), 
-                SUM(other_property), 
-                SUM(dacoity_with_murder)
-            FROM 
-                punjab_today
-            WHERE 
-                district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-                AND district_id IS NOT NULL
-                AND date BETWEEN %s AND %s
-                {district_condition};
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Murder', 'Attempt to Murder')
+                ) AS murder,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
+                        'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
+                    )
+                ) AS dacoity,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Aerial Firing')
+                ) AS aerial_firing,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Sexual Assault/ Harrasment To Women')
+                ) AS rape,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Child Kidnapping', 'Female Kidnapping/ Abduction', 'Male Kidnapping/ Abduction',
+                        'Kidnapping for Ransom', 'Attempt to Kidnap / Abduct', 'Child Kidnapping '
+                    )
+                ) AS kidnapping,
+                COUNT(*) FILTER (
+                    WHERE queue = 'minorities-15'
+                ) AS minorities,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                        'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                        'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching',
+                        'Jewellery Shop Robbery', 'Robbery with Murder'
+                    )
+                ) AS robbery_snatching,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Motorcycle Theft')
+                ) AS motorcycle_theft,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Car Theft')
+                ) AS car_theft,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Mobile Theft', 'Any Other Theft', 'Cattle theft', 'Transformer/ Motor Theft', 
+                        'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 'Cycle Theft', 'Weapon Theft', 
+                        'Other Vehicles Theft', 'House Burglary', 'Shop Burglary', 'Other Burglary'
+                    )
+                ) AS theft,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Rape', 'Child Abuse / Molestation')
+                ) AS child_abuse,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                ) AS terrorist_act,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Prostitution/ Brothel House', 'Acid Throwing', 'Hurt / Injuries', 'Street Fight',
+                        'Other Assault', 'Physical Threats / Harrasment', 'Domestic Violence',
+                        'Criminal Intimidation (Threat with Weapon)'
+                    )
+                ) AS other_person,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Attempt to Illegal Possession of Land/ Premises')
+                ) AS other_property,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Dacoity with Murder')
+                ) AS dacoity_with_murder
+            FROM response_time
+            WHERE date BETWEEN %s AND %s 
+              AND district_id IS NOT NULL
+              AND (
+                    level1_case_nature IN ('Crime Against Person', 'Crime Against Property') 
+                    OR level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises')
+                )
+              AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+              {district_condition}
+              AND parent_id = 0
+              AND response_time IS NOT NULL
+              AND response_time > 0;
+
         """
         # Dynamically format the query to include `district_condition`
         category_query = category_query.format(district_condition=district_condition)
@@ -1420,6 +1547,8 @@ def districtwise_more_info():
                 )
                 AND rt.parent_id = 0
                 AND rt.police_station IS NOT NULL
+                AND rt.response_time > 0
+                AND rt.response_time is NOT NULL
             GROUP BY 
                 ps.police_circle, 
                 ps.police_station
@@ -1444,7 +1573,10 @@ def districtwise_more_info():
             if district_str == 'Multan':
                 police_division = configs.MULTAN_DIVISON_MAPPING[police_circle]
             elif district_str == 'Lahore':
-                police_division = configs.LAHORE_DIVISION_MAPPING[police_circle]
+                if police_station == 'Sabzazar':
+                    police_division = 'Iqbal Town Division'
+                else :
+                    police_division = configs.LAHORE_DIVISION_MAPPING[police_circle]
             elif district_str == 'Rawalpindi':
                 if police_circle in configs.RAWALPINDI_DIVISION_MAPPING:
                     police_division = configs.RAWALPINDI_DIVISION_MAPPING[police_circle]
@@ -1472,9 +1604,15 @@ def districtwise_more_info():
                     ps_wise_response_dict[police_division][corrected_circle] = {}
                 ps_wise_response_dict[police_division][corrected_circle][police_station] = count
             else:
-                if police_circle not in ps_wise_response_dict[police_division]:
-                    ps_wise_response_dict[police_division][police_circle] = {}
-                ps_wise_response_dict[police_division][police_circle][police_station] = count
+                if police_circle:
+                    if police_circle not in ps_wise_response_dict[police_division]:
+                        ps_wise_response_dict[police_division][police_circle] = {}
+                    ps_wise_response_dict[police_division][police_circle][police_station] = count
+                else:
+                    police_circle = 'Sabzazar'
+                    if police_circle not in ps_wise_response_dict[police_division]:
+                        ps_wise_response_dict[police_division][police_circle] = {}
+                    ps_wise_response_dict[police_division][police_circle][police_station] = count
 
         response = {
             'status': True,
@@ -1544,26 +1682,80 @@ def pswise_categories():
 
         ps_query = """
             SELECT 
-                COALESCE(SUM(murder), 0) AS murder,
-                COALESCE(SUM(dacoity), 0) AS dacoity,
-                COALESCE(SUM(aerial_firing), 0) AS aerial_firing,
-                COALESCE(SUM(rape), 0) AS rape,
-                COALESCE(SUM(kidnapping), 0) AS kidnapping,
-                COALESCE(SUM(minorities), 0) AS minorities,
-                COALESCE(SUM(robbery_snatching), 0) AS robbery_snatching,
-                COALESCE(SUM(motorcycle_theft), 0) AS motorcycle_theft,
-                COALESCE(SUM(car_theft), 0) AS car_theft,
-                COALESCE(SUM(theft), 0) AS theft,
-                COALESCE(SUM(child_abuse), 0) AS child_abuse,
-                COALESCE(SUM(terrorist_act), 0) AS terrorist_act,
-                COALESCE(SUM(other_person), 0) AS other_person,
-                COALESCE(SUM(other_property), 0) AS other_property,
-                COALESCE(SUM(burglary), 0) AS burglary,
-                COALESCE(SUM(dacoity_with_murder), 0) AS dacoity_with_murder
-            FROM punjab_today
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Murder', 'Attempt to Murder')
+                ), 0) AS murder,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
+                        'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
+                    )
+                ), 0) AS dacoity,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Aerial Firing'
+                ), 0) AS aerial_firing,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Sexual Assault/ Harrasment To Women')
+                ), 0) AS rape,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Child Kidnapping', 'Female Kidnapping/ Abduction', 'Male Kidnapping/ Abduction',
+                        'Kidnapping for Ransom', 'Attempt to Kidnap / Abduct', 'Child Kidnapping '
+                    )
+                ), 0) AS kidnapping,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE queue = 'minorities-15'
+                ), 0) AS minorities,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                        'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                        'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching',
+                        'Jewellery Shop Robbery', 'Robbery with Murder'
+                    )
+                ), 0) AS robbery_snatching,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Motorcycle Theft'
+                ), 0) AS motorcycle_theft,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Car Theft'
+                ), 0) AS car_theft,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Mobile Theft', 'Any Other Theft', 'Cattle theft', 'Transformer/ Motor Theft', 
+                        'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 'Cycle Theft', 'Weapon Theft', 
+                        'Other Vehicles Theft', 'House Burglary', 'Shop Burglary', 'Other Burglary'
+                    )
+                ), 0) AS theft,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Rape', 'Child Abuse / Molestation')
+                ), 0) AS child_abuse,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                ), 0) AS terrorist_act,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Prostitution/ Brothel House', 'Acid Throwing', 'Hurt / Injuries', 'Street Fight',
+                        'Other Assault', 'Physical Threats / Harrasment', 'Domestic Violence', 
+                        'Criminal Intimidation (Threat with Weapon)'
+                    )
+                ), 0) AS other_person,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Attempt to Illegal Possession of Land/ Premises')
+                ), 0) AS other_property,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('House Burglary', 'Shop Burglary', 'Other Burglary')
+                ), 0) AS burglary,
+                COALESCE(COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Dacoity with Murder')
+                ), 0) AS dacoity_with_murder
+            FROM response_time
             WHERE date BETWEEN %s AND %s
-                AND district_id = %s
-                AND police_station = %s
+              AND district_id = %s
+              AND police_station = %s
+              AND parent_id = 0
+              AND response_time IS NOT NULL
+              AND response_time > 0;
         """
         # Execute the query
         processed_db_cursor.execute(ps_query, (from_date, to_date, district_id, police_station))
@@ -2035,6 +2227,8 @@ def district_category_details():
                 AND police_station is not Null
                 AND date BETWEEN %s AND %s
                 {district_condition}
+                AND response_time IS NOT NULL
+                AND response_time > 0
                 AND parent_id = 0
         """
 
@@ -2100,6 +2294,8 @@ def district_category_details():
                         {additional_condition}
                         AND rt.parent_id = 0
                         AND rt.police_station is NOT NULL
+                        AND rt.response_time IS NOT NULL
+                        AND rt.response_time > 0
                     GROUP BY
                         ps.police_station_id, ps.police_station;
         """
@@ -4399,10 +4595,105 @@ def crime_trends():
                     'message': "User not found"
                 }), 400
 
+        case_types = []
+        if selected_category == 'crime_against_property':
+            case_types = [
+                'dacoity', 'burglary', 'robbery_snatching', 'motorcycle_theft',
+                'car_theft', 'vehicle_theft', 'vehicle_snatching', 'car_snatching',
+                'motorcycle_snatching'
+            ]
+        elif selected_category == 'crime_against_person':
+            case_types = ['murder', 'firing', 'sexual_assault', 'kidnapping']
+        elif selected_category:
+            case_types = selected_category.split(',')
+        else:  # Default: all except 'other'
+            case_types = [
+                'dacoity', 'burglary', 'robbery_snatching', 'motorcycle_theft',
+                'car_theft', 'vehicle_theft', 'vehicle_snatching', 'car_snatching',
+                'motorcycle_snatching', 'murder', 'firing', 'sexual_assault', 'kidnapping'
+            ]
+
+        # Build WHERE conditions dynamically
+        conditions = [
+            "district_id IS NOT NULL",
+            "police_station IS NOT NULL",
+            "parent_id = 0",
+            "DATE(date) > '2024-06-01'"
+        ]
+        params = {'case_types': case_types}
+
+        if district_str:
+            district_id = configs.REVERSED_DISTRICTS_DICTIONARY.get(district_str)
+            conditions.append("district_id = %(district_id)s")
+            params['district_id'] = district_id
+
+        if police_stations:
+            conditions.append("police_station = ANY(%(police_stations)s)")
+            params['police_stations'] = police_stations
+
+        if year:
+            conditions.append("EXTRACT(YEAR FROM DATE(date)) = %(year)s")
+            params['year'] = year
+
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+
         if time_period == 'week':
-            time_grouping = "TO_CHAR(DATE_TRUNC('week', date::DATE), 'YYYY-MM-DD')"  # Weekly format: '2025-01-16'
-        else:
+            time_grouping = "TO_CHAR(DATE_TRUNC('week', date::DATE), 'YYYY-MM-DD')"
+        else:  # Default to month
             time_grouping = "TO_CHAR(date::DATE, 'YYYY-MM')"
+
+        # Main query for crime trends
+        query = f"""
+                    WITH categorized_crimes AS (
+                        SELECT 
+                            DATE(date) AS date,
+                            CASE 
+                                WHEN level2_case_nature = 'Robbery/Snatching' THEN 'robbery_snatching'
+                                WHEN level2_case_nature = 'Dacoity' THEN 'dacoity'
+                                WHEN level3_case_nature = 'Motorcycle Theft' THEN 'motorcycle_theft'
+                                WHEN level3_case_nature IN ('Cycle Theft','Other Vehicles Theft') THEN 'vehicle_theft'
+                                WHEN level2_case_nature = 'Burglary' THEN 'burglary'
+                                WHEN level3_case_nature = 'Car Theft' THEN 'car_theft'
+                                WHEN level3_case_nature = 'Motorcycle Snatching' THEN 'motorcycle_snatching'
+                                WHEN level3_case_nature = 'Car Snatching' THEN 'car_snatching'
+                                WHEN level2_case_nature = 'Vehicle Snatching' THEN 'vehicle_snatching'
+                                WHEN level2_case_nature = 'Murder' THEN 'murder'
+                                WHEN level2_case_nature = 'Kiddnapping / Abduction' THEN 'kidnapping'
+                                WHEN level2_case_nature = 'Sexual Assault' THEN 'sexual_assault'
+                                WHEN level3_case_nature = 'Aerial Firing' THEN 'firing'
+                                ELSE 'other'
+                            END AS case_type
+                        FROM response_time
+                        {where_clause}
+                    )
+                    SELECT 
+                        {time_grouping} AS time_period,
+                        COUNT(*) AS total_crimes,
+                        ROUND(
+                            (COUNT(*) - LAG(COUNT(*)) OVER (ORDER BY {time_grouping})) * 100.0 / 
+                            NULLIF(LAG(COUNT(*)) OVER (ORDER BY {time_grouping}), 0),
+                            2
+                        ) AS percentage_change
+                    FROM categorized_crimes
+                    WHERE case_type = ANY(%(case_types)s)
+                    GROUP BY {time_grouping}
+                    ORDER BY {time_grouping};
+                """
+
+        processed_db_cursor.execute(query, params)
+        data = processed_db_cursor.fetchall()
+
+        crime_time_periods = [row[0] for row in data]
+        total_crimes = [row[1] for row in data]
+        crime_pct_changes = [float(row[2]) if row[2] is not None else None for row in data]
+
+        result_crime_trends = []
+        for period, total, change in zip(crime_time_periods, total_crimes, crime_pct_changes):
+            result_crime_trends.append({
+                'time_period': period,
+                'count': total,
+                'percentage_change': change
+            })
 
         categories = selected_category.split(',') if selected_category else []
 
@@ -4428,57 +4719,6 @@ def crime_trends():
                 "SUM(vehicle_snatching) + SUM(car_snatching) + SUM(motorcycle_snatching) + "
                 "SUM(murder) + SUM(firing) + SUM(sexual_assault) + SUM(kidnapping)"
             )
-
-        query = f"""
-                SELECT 
-                    {time_grouping} AS time_period,
-                    ({columns_to_sum}) AS total_crimes,
-                    ROUND(
-                        (
-                            ({columns_to_sum}) - 
-                            LAG({columns_to_sum}) OVER (
-                                ORDER BY {time_grouping} ASC
-                            )
-                        ) * 100.0 / 
-                        NULLIF(
-                            LAG({columns_to_sum}) OVER (
-                                ORDER BY {time_grouping} ASC
-                            ), 0
-                        ), 2
-                    ) AS percentage_change
-                FROM crime_trends
-                WHERE date > '2024-06-01'
-                """
-
-        if district_str:
-            district_id = configs.REVERSED_DISTRICTS_DICTIONARY.get(district_str)
-            query += f" AND district_id = {district_id}"
-
-        if police_station_str and police_station_str != 'null':
-            query += f" AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
-
-        if year:
-            query += f" AND EXTRACT(YEAR FROM date::DATE) = {year}"
-
-        query += f"""
-                GROUP BY {time_grouping}
-                ORDER BY {time_grouping} ASC;
-                """
-
-        processed_db_cursor.execute(query)
-        data = processed_db_cursor.fetchall()
-
-        crime_time_periods = [row[0] for row in data]
-        total_crimes = [row[1] for row in data]
-        crime_pct_changes = [float(row[2]) if row[2] is not None else None for row in data]
-
-        result_crime_trends = []
-        for period, total, change in zip(crime_time_periods, total_crimes, crime_pct_changes):
-            result_crime_trends.append({
-                'time_period': period,
-                'count': total,
-                'percentage_change': change
-            })
 
         fir_query = f"""
         SELECT 
@@ -4548,6 +4788,7 @@ def crime_trends():
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
+
     finally:
         log_db_cursor.close()
         log_db_conn.close()
@@ -4948,6 +5189,8 @@ def crime_trend_cases():
                 description, first_arrival_time, response_time
             FROM response_time
             WHERE district_id = %s
+            AND police_station is NOT NULL
+            AND parent_id = 0
              {category_condition}
             AND date BETWEEN %s AND %s
         """
