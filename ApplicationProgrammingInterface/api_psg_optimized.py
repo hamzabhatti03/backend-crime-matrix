@@ -7,7 +7,7 @@ from flask_limiter.util import get_remote_address
 from Utilities import utils, configs, validate
 from Utilities import db_config
 from math import radians, sin, cos, sqrt, atan2
-from flask_jwt_extended import (JWTManager, create_access_token, jwt_required,  get_jwt_identity)
+from flask_jwt_extended import (JWTManager, create_access_token, jwt_required, get_jwt_identity)
 import json
 import hashlib
 import traceback
@@ -23,7 +23,7 @@ from psycopg2 import pool as pg_pool
 from mysql.connector import pooling as sql_pool
 import time
 import firebase_admin
-from firebase_admin import credentials , messaging
+from firebase_admin import credentials, messaging
 from Services import firebase
 
 load_dotenv()
@@ -39,8 +39,9 @@ postgresql_pool = None
 mysql_pool = None
 notification_pool = None
 
+
 def initialize_pools():
-    global postgresql_pool, mysql_pool,notification_pool
+    global postgresql_pool, mysql_pool, notification_pool
     try:
         # PostgreSQL connection pool
         postgresql_pool = pg_pool.SimpleConnectionPool(
@@ -205,7 +206,7 @@ def validate_ownership(fn):
 
         # Check if the username matches the JWT identity
         if not username or username != current_user:
-            return jsonify({"message": "You do not have permission to access this resource.","status": False}), 403
+            return jsonify({"message": "You do not have permission to access this resource.", "status": False}), 403
 
         # Proceed with the original function
         return fn(*args, **kwargs)
@@ -1575,7 +1576,7 @@ def districtwise_more_info():
             elif district_str == 'Lahore':
                 if police_station == 'Sabzazar':
                     police_division = 'Iqbal Town Division'
-                else :
+                else:
                     police_division = configs.LAHORE_DIVISION_MAPPING[police_circle]
             elif district_str == 'Rawalpindi':
                 if police_circle in configs.RAWALPINDI_DIVISION_MAPPING:
@@ -2694,7 +2695,7 @@ def add_remarks():
                """
         notification_cursor.execute(
             notification_query,
-            (case_number,user_name, assigned_to, 'remark')
+            (case_number, user_name, assigned_to, 'remark')
         )
 
         notification_conn.commit()
@@ -3030,7 +3031,8 @@ def get_remarks():
                 "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)) if district_id else None,
                 "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS) if time_id else None,
                 "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(configs.YMD_HMS) if reached_time else None,
+                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+                    configs.YMD_HMS) if reached_time else None,
                 "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else None,
                 "assignedby": assigned_by,
                 "priority_flag": priority_flag,
@@ -3058,9 +3060,10 @@ def get_remarks():
                 "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)) if district_id else None,
                 "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS) if time_id else None,
                 "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(configs.YMD_HMS) if reached_time else None,
+                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+                    configs.YMD_HMS) if reached_time else None,
                 "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else None,
-                "assignedto": assigned_to, #utils.split_name(assigned_to) if assigned_to else None
+                "assignedto": assigned_to,  # utils.split_name(assigned_to) if assigned_to else None
                 "priority_flag": priority_flag,
                 "status_flag": status_flag,
                 "is_notify": (
@@ -3091,7 +3094,8 @@ def get_remarks():
                 "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)) if district_id else None,
                 "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS) if time_id else None,
                 "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(configs.YMD_HMS) if reached_time else None,
+                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+                    configs.YMD_HMS) if reached_time else None,
                 "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else None,
                 "assigned_by": assigned_by,
                 "cc": cc,
@@ -3165,7 +3169,7 @@ def update_remarks():
             "messaged_by": user_name,
             "messaged_to": reciever,
             "cc": cc if cc else "",
-            "name":name,
+            "name": name,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -3259,7 +3263,7 @@ def get_notifications():
 
     try:
         # Retrieved parameters from the request
-        view_role = request.form.get('view_role',type=int)
+        view_role = request.form.get('view_role', type=int)
         user_name = request.form.get('username')
 
         # Validated required fields
@@ -3280,7 +3284,7 @@ def get_notifications():
                 "user_name": row[2],
                 "case_number": row[1],
                 "assigned_by": row[0],
-                "type" : row[3]
+                "type": row[3]
             }
             for row in rows
         ]
@@ -5353,7 +5357,7 @@ def negative_feedback_cases():
         mysql_connection.close()
 
 
-def get_filtered_users(view_role, district, police_station):
+def get_filtered_users(user_name, view_role, district, police_station):
     try:
         connection = db_config.get_db_connection()
         cursor = connection.cursor()
@@ -5402,13 +5406,15 @@ def get_filtered_users(view_role, district, police_station):
                     'last_name': user[2],
                     'user_name': user[3]
                 })
-            elif view_role == 5 and user_role not in (2, 3, 4) and "sdpo" not in user[3]:
-                filtered_users.append({
-                    'user_id': user[0],
-                    'first_name': user[1],
-                    'last_name': user[2],
-                    'user_name': user[3]
-                })
+            elif view_role == 5 and user_role not in (2, 3, 4):
+                if user_name != user[3]:
+                    if "sp" not in user[3]:
+                        filtered_users.append({
+                            'user_id': user[0],
+                            'first_name': user[1],
+                            'last_name': user[2],
+                            'user_name': user[3]
+                        })
 
         return filtered_users
 
@@ -5436,7 +5442,7 @@ def get_users():
             return jsonify({"error": "Missing required fields."}), 400
 
         # Get filtered users
-        filtered_users = get_filtered_users(view_role, district, police_station)
+        filtered_users = get_filtered_users(user_name, view_role, district, police_station)
 
         return jsonify(filtered_users), 200
 
