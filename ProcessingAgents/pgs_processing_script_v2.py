@@ -1160,6 +1160,13 @@ def main(start_date, end_date, start):
                             time_stamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);
             """)
 
+            processed_cursor.execute("""
+                        CREATE TABLE emergency_i_user_logs (
+                            id SERIAL PRIMARY KEY,
+                            username VARCHAR(255) UNIQUE NOT NULL,
+                            lastseen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);
+            """)
+
             """ Add indexes for optimization """
             processed_cursor.execute(
                 'CREATE INDEX IF NOT EXISTS idx_date_district_ps ON processed_data (date, district_id, police_station)')

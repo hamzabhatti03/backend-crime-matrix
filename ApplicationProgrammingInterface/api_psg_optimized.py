@@ -289,10 +289,83 @@ def login():
         db_conn.close()
 
 
+@app.route(configs.UPDATE_PASSWORD['ENDPOINT'], methods=[configs.UPDATE_PASSWORD['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def update_password():
+    db_conn, db_cursor = get_log_db_connection()
+    try:
+        current_user = get_jwt_identity()
+        current_password = request.form.get('current_password')
+        new_password = request.form.get('new_password')
+        confirm_password = request.form.get('confirm_password')
+
+        if not all([current_password, new_password, confirm_password]):
+            return jsonify({
+                'status': False,
+                'message': 'All password fields are required.',
+            }), 400
+
+        if new_password != confirm_password:
+            return jsonify({
+                'status': False,
+                'message': 'New Password and Confirm Password do not match.',
+            }), 400
+
+        if len(new_password) < 8 or len(new_password) > 24:
+            return jsonify({
+                'status': False,
+                'message': 'New password must be between 8 and 24 characters long.',
+            }), 400
+
+        if current_password == new_password:
+            return jsonify({
+                'status': False,
+                'message': 'New password cannot be the same as the current password.',
+            }), 400
+
+        hashed_current_pass = hashlib.md5(current_password.encode()).hexdigest()
+        hashed_new_pass = hashlib.md5(new_password.encode()).hexdigest()
+
+        db_cursor.execute("SELECT * FROM `15_stats_users` WHERE `user_name_emergency` = %s", (current_user,))
+        user = db_cursor.fetchone()
+
+        if not user or user[4] != hashed_current_pass:
+            return jsonify({
+                'status': False,
+                'message': 'Current password is incorrect.'
+            }), 400
+
+        db_cursor.execute("""
+                    UPDATE 15_stats_users
+                    SET password_emergency = %s,
+                    last_password_change = NOW()
+                    WHERE user_name_emergency = %s
+                """, (hashed_new_pass, current_user))
+        db_conn.commit()
+
+        return jsonify({
+            'message': "Password updated successfully.",
+            'status': True
+        }), 200
+
+    except Exception as e:
+        error_response = {
+            'status': False,
+            'message': f'Password update failed, Please try again Later',
+        }
+        utils.log_to_database(db_conn, db_cursor, "ERROR", f"Password update failed: {traceback.format_exc()}")
+        return jsonify(error_response), 500
+    finally:
+        db_cursor.close()
+        db_conn.close()
+
+
 @app.route(configs.DASHBOARD_PUNJAB['ENDPOINT'], methods=[configs.DASHBOARD_PUNJAB['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def punjab_stats_dashboard():
     """Get Punjab dashboard statistics.
 
@@ -961,7 +1034,7 @@ def punjab_stats_dashboard():
 @app.route(configs.PUNJAB_MORE_INFO['ENDPOINT'], methods=[configs.PUNJAB_MORE_INFO['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def punjab_more_info():
     """Get detailed Punjab information for a specific category.
 
@@ -1048,18 +1121,30 @@ def punjab_more_info():
             )
 
         district_query = """
-            SELECT 
-                district_id, SUM({category}) AS count
-            FROM 
-                punjab_today
-            WHERE 
-                date BETWEEN %s AND %s
-                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-                {district_condition}
-            GROUP BY
-                district_id
-            HAVING 
-                SUM({category}) > 0
+            WITH categorized_data AS (
+                SELECT
+                    district_id,
+                    CASE
+                        WHEN level3_case_nature IN ({level3_list})
+                        THEN '{category}'
+                        ELSE NULL
+                    END AS category
+                FROM response_time
+                WHERE date BETWEEN %s AND %s
+                  AND parent_id = 0
+                  AND response_time IS NOT NULL
+                  AND response_time > 0
+                  AND police_station is not Null
+                  AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                  {district_condition}
+            )
+            SELECT
+                district_id,
+                COUNT(*) AS count
+            FROM categorized_data
+            WHERE category = '{category}'
+            GROUP BY district_id
+            HAVING COUNT(*) > 0;
         """
         district_query = district_query.format(category=category, district_condition=district_condition)
         processed_db_cursor.execute(district_query, (from_date, to_date))
@@ -1216,7 +1301,7 @@ def punjab_more_info():
 @app.route(configs.DISTRICTWISE_STATS['ENDPOINT'], methods=[configs.DISTRICTWISE_STATS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def districtwise_counts():
     """Get district-wise crime statistics.
 
@@ -1342,7 +1427,7 @@ def districtwise_counts():
 @app.route(configs.DISTRICTWISE_MORE_INFO['ENDPOINT'], methods=['POST'])  # Changed to POST
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def districtwise_more_info():
     """Get detailed district-wise information including category-wise stats, police station stats, and cases.
 
@@ -1642,7 +1727,7 @@ def districtwise_more_info():
 @app.route(configs.PSWISE_CATEGORIES['ENDPOINT'], methods=[configs.PSWISE_CATEGORIES['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def pswise_categories():
     """Get police station-wise crime statistics and case details.
 
@@ -1995,7 +2080,7 @@ def pswise_categories():
            methods=[configs.PUNJABTODAY_CASE_DETAILS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def punjab_case_details():
     """Get detailed information for a specific case number.
 
@@ -2153,7 +2238,7 @@ def punjab_case_details():
 @app.route(configs.DIST_CATEGORY_DETAILS['ENDPOINT'], methods=[configs.DIST_CATEGORY_DETAILS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def district_category_details():
     """Get district-wise details for a specific crime category.
 
@@ -2339,7 +2424,7 @@ def district_category_details():
 @app.route(configs.PREDICTIVE_FORECAST['ENDPOINT'], methods=[configs.PREDICTIVE_FORECAST['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def forcast_predictive_policing():
     try:
         log_db_conn, log_db_cursor = get_log_db_connection()
@@ -2374,7 +2459,7 @@ def forcast_predictive_policing():
 @app.route(configs.DATEWISE_FORECAST['ENDPOINT'], methods=[configs.DATEWISE_FORECAST['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def forecast_datewise():
     try:
         log_db_conn, log_db_cursor = get_log_db_connection()
@@ -2414,7 +2499,7 @@ def forecast_datewise():
 @app.route(configs.EMERGENCY_15_INTEGRATION['ENDPOINT'], methods=[configs.EMERGENCY_15_INTEGRATION['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def emergency_15_integration():
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     log_db_conn, log_db_cursor = get_log_db_connection()
@@ -2627,7 +2712,7 @@ def emergency_15_integration():
 @app.route(configs.ADD_REMARKS['ENDPOINT'], methods=[configs.ADD_REMARKS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def add_remarks():
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     notification_conn, notification_cursor = get_notification_db_connection()
@@ -2741,7 +2826,7 @@ def parse_timestamp(remarks):
 # @app.route(configs.GET_REMARKS['ENDPOINT'], methods=[configs.GET_REMARKS['METHOD']])  # Changed to POST
 # @limiter.limit(configs.LIMITER)
 # @require_api_key
-# @jwt_required()
+# @validate_ownership
 # def get_remarks():
 #     log_db_conn, log_db_cursor = get_log_db_connection()
 #     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -2918,7 +3003,7 @@ def parse_timestamp(remarks):
 @app.route(configs.GET_REMARKS['ENDPOINT'], methods=[configs.GET_REMARKS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def get_remarks():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -3144,7 +3229,7 @@ def get_remarks():
 @app.route(configs.UPDATE_REMARKS['ENDPOINT'], methods=[configs.UPDATE_REMARKS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def update_remarks():
     try:
         # Retrieve parameters from the request
@@ -3255,7 +3340,7 @@ def update_remarks():
 @app.route(configs.GET_NOTIFICATIONS['ENDPOINT'], methods=[configs.GET_NOTIFICATIONS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def get_notifications():
     # Connect to the databases
     notification_conn, notification_cursor = get_notification_db_connection()
@@ -3321,7 +3406,7 @@ def get_notifications():
 @app.route(configs.CM_DIST_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_DIST_RESPONSE_TIME['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def dist_response_time():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -3408,7 +3493,7 @@ def dist_response_time():
 @app.route(configs.CM_PS_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_PS_RESPONSE_TIME['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def cm_ps_responsetime():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -3488,7 +3573,7 @@ def cm_ps_responsetime():
 @app.route(configs.DISTRICT_FIR_DATA['ENDPOINT'], methods=[configs.DISTRICT_FIR_DATA['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def district_fir_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -3616,7 +3701,7 @@ def district_fir_stats():
 @app.route(configs.PS_FIR_DATA['ENDPOINT'], methods=[configs.PS_FIR_DATA['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def ps_fir_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -3729,7 +3814,7 @@ def ps_fir_stats():
 @app.route(configs.CONFERENCE_CALL_STATS['ENDPOINT'], methods=[configs.CONFERENCE_CALL_STATS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def conference_call_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -3830,7 +3915,7 @@ def conference_call_stats():
 @app.route(configs.ALERT_RESPONSETIME['ENDPOINT'], methods=[configs.ALERT_RESPONSETIME['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def response_time_alerts():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -3977,7 +4062,7 @@ def response_time_alerts():
 @app.route(configs.VEHICLE_LOCATIONS['ENDPOINT'], methods=[configs.VEHICLE_LOCATIONS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def police_vehicle_locations():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -4064,7 +4149,7 @@ def police_vehicle_locations():
 @app.route(configs.VWPS_STATS['ENDPOINT'], methods=[configs.VWPS_STATS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def vwps_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
     db_conn = db_config.get_vwps_db_connection()
@@ -4242,7 +4327,7 @@ def vwps_stats():
 @app.route(configs.VCCS_STATS['ENDPOINT'], methods=[configs.VCCS_STATS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def vccs_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
     db_conn = db_config.get_vccs_db_connection()
@@ -4420,7 +4505,7 @@ def vccs_stats():
 @app.route(configs.VCM_STATS['ENDPOINT'], methods=[configs.VCM_STATS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def vcm_stats():
     log_db_conn, log_db_cursor = get_log_db_connection()
     db_conn = db_config.get_vcm_db_connection()
@@ -4552,7 +4637,7 @@ def vcm_stats():
 @app.route(configs.CRIME_TRENDS['ENDPOINT'], methods=[configs.CRIME_TRENDS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def crime_trends():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -4805,7 +4890,7 @@ def crime_trends():
 @app.route(configs.CALLER_FEEDBACK['ENDPOINT'], methods=[configs.CALLER_FEEDBACK['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def caller_feedback():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -4899,7 +4984,7 @@ def caller_feedback():
 @app.route(configs.BLOOD_DONATION['ENDPOINT'], methods=[configs.BLOOD_DONATION['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def blood_donation():
     log_db_conn, log_db_cursor = get_log_db_connection()
     db_conn = db_config.get_blood_db_connection()
@@ -5043,7 +5128,7 @@ def blood_donation():
 @app.route(configs.ESCALATED_CASES['ENDPOINT'], methods=[configs.ESCALATED_CASES['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def escalated_cases():
     log_db_conn, log_db_cursor = get_log_db_connection()
     vccs_conn = db_config.get_vccs_db_connection()
@@ -5163,7 +5248,7 @@ def escalated_cases():
 @app.route(configs.CRIME_TREND_CASES['ENDPOINT'], methods=[configs.CRIME_TREND_CASES['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def crime_trend_cases():
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
@@ -5251,7 +5336,7 @@ def crime_trend_cases():
 @app.route(configs.NEGATIVE_FEEDBACK_CASES['ENDPOINT'], methods=[configs.NEGATIVE_FEEDBACK_CASES['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def negative_feedback_cases():
     log_db_conn, log_db_cursor = get_log_db_connection()
     mysql_connection = db_config.get_db_connection()
@@ -5429,7 +5514,7 @@ def get_filtered_users(user_name, view_role, district, police_station):
 @app.route('/get_remarks_user', methods=['POST'])
 @limiter.limit(configs.LIMITER)
 @require_api_key
-@jwt_required()
+@validate_ownership
 def get_users():
     try:
         # Extract input parameters from form data
@@ -5520,7 +5605,7 @@ def get_chat_users(view_role, district, police_station):
 @app.route('/get_chat_user', methods=['POST'])
 # @limiter.limit(configs.LIMITER)
 # @require_api_key
-# @jwt_required()
+# @validate_ownership
 def get_chat_user():
     try:
         # Extract input parameters from form data

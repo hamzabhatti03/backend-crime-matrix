@@ -358,7 +358,7 @@ CHAT_HISTORY = {'ENDPOINT': '/chat_history', 'METHOD': 'POST'}
 SUBSCRIBE_TOPIC = {'ENDPOINT': '/subscribe_user_topic', 'METHOD': 'POST'}
 UNSUBSCRIBE_TOPIC = {'ENDPOINT': '/unsubscribe_user_topic', 'METHOD': 'POST'}
 GET_NOTIFICATIONS = {'ENDPOINT': '/get_notifications', 'METHOD': 'POST'}
-
+UPDATE_PASSWORD = {'ENDPOINT': '/update_password', 'METHOD': 'PUT'}
 
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
 
