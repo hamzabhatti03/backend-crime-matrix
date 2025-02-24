@@ -1125,7 +1125,7 @@ def punjab_more_info():
                 SELECT
                     district_id,
                     CASE
-                        WHEN level3_case_nature IN ({level3_list})
+                        WHEN {where_condition}
                         THEN '{category}'
                         ELSE NULL
                     END AS category
@@ -1134,7 +1134,7 @@ def punjab_more_info():
                   AND parent_id = 0
                   AND response_time IS NOT NULL
                   AND response_time > 0
-                  AND police_station is not Null
+                  AND police_station IS NOT NULL
                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
                   {district_condition}
             )
@@ -1146,8 +1146,26 @@ def punjab_more_info():
             GROUP BY district_id
             HAVING COUNT(*) > 0;
         """
-        district_query = district_query.format(category=category, district_condition=district_condition)
-        processed_db_cursor.execute(district_query, (from_date, to_date))
+
+        # Handling 'minorities' category separately
+        if category == 'minorities':
+            where_condition = "queue = 'minorities-15'"
+            query_params = [from_date, to_date]
+        else:
+            level3_values = configs.CATEGORIES.get(category, [])
+            level3_list = ", ".join(f"'{val}'" for val in level3_values)
+            where_condition = f"level3_case_nature IN ({level3_list})"
+            query_params = [from_date, to_date]
+
+        # Formatting the query with appropriate conditions
+        district_query = district_query.format(
+            where_condition=where_condition,
+            category=category,
+            district_condition=district_condition
+        )
+
+        # Executing the query
+        processed_db_cursor.execute(district_query, query_params)
         district_response = processed_db_cursor.fetchall()
 
         district_response_obj = {
@@ -1177,12 +1195,12 @@ def punjab_more_info():
                 response_time
             WHERE 
                 date BETWEEN %s AND %s
-                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-                {district_condition}
-                AND police_station IS NOT NULL
-                AND parent_id = 0
-                AND response_time > 0
-                AND response_time IS NOT NULL
+                    AND parent_id = 0
+                    AND response_time IS NOT NULL
+                    AND police_station is not Null
+                    AND response_time > 0
+                    {district_condition}
+                    AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
             GROUP BY 
                 police_station_id, district_id, police_station
             HAVING 
@@ -1235,10 +1253,11 @@ def punjab_more_info():
                         AND district_id NOT IN ('0','41','42','43','44','45','46')
                         AND police_station is not Null
                         AND response_time IS NOT NULL
-                        AND response_time > 0
                         AND date BETWEEN %s AND %s
                         AND parent_id=0
+                        AND response_time > 0
                         {district_condition}
+
                 """
         if category == 'minorities':
             where_condition = "queue = 'minorities-15'"
