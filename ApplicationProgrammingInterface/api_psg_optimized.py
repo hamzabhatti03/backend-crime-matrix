@@ -1849,9 +1849,6 @@ def pswise_categories():
                     WHERE level3_case_nature IN ('Attempt to Illegal Possession of Land/ Premises')
                 ), 0) AS other_property,
                 COALESCE(COUNT(*) FILTER (
-                    WHERE level3_case_nature IN ('House Burglary', 'Shop Burglary', 'Other Burglary')
-                ), 0) AS burglary,
-                COALESCE(COUNT(*) FILTER (
                     WHERE level3_case_nature IN ('Dacoity with Murder')
                 ), 0) AS dacoity_with_murder
             FROM response_time
@@ -1866,7 +1863,7 @@ def pswise_categories():
         processed_db_cursor.execute(ps_query, (from_date, to_date, district_id, police_station))
         (murder, dacoity, firing, rape_sexual_assault, kidnapping, minorities,
          robbery_snatching, motorcycle_theft, car_theft, theft, child_abuse,
-         terrorism, other_person, other_property, burglary,
+         terrorism, other_person, other_property,
          dacoity_with_murder) = processed_db_cursor.fetchone()
 
         pswise_response = {
@@ -1882,7 +1879,6 @@ def pswise_categories():
             'child_abuse': child_abuse,
             'motorcycle_theft': motorcycle_theft,
             'car_theft': car_theft,
-            'burglary': burglary,
             'firing': firing,
             'police_encounter': 0,
             'women_harrassment': rape_sexual_assault,
