@@ -3283,10 +3283,16 @@ def update_remarks():
         notification_conn, notification_cursor = get_notification_db_connection()
 
         # Check if a record exists in the remarks table for the given combination
-        processed_db_cursor.execute(
-            "SELECT remarks FROM remarks WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
-            (case_number, user_name, reciever)
-        )
+        if user_name.lower() == "ig.punjab":
+            processed_db_cursor.execute(
+                "SELECT remarks FROM remarks WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
+                (case_number, reciever, user_name)
+            )
+        else :
+            processed_db_cursor.execute(
+                "SELECT remarks FROM remarks WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
+                (case_number, user_name, reciever)
+            )
         row = processed_db_cursor.fetchone()
 
         if row:
@@ -3306,10 +3312,16 @@ def update_remarks():
             updated_remarks_json = json.dumps(existing_remarks)
 
             # Update the remarks record in the database
-            processed_db_cursor.execute(
-                "UPDATE remarks SET remarks = %s WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
-                (updated_remarks_json, case_number, user_name, reciever)
-            )
+            if user_name.lower() == "ig.punjab":
+                processed_db_cursor.execute(
+                    "UPDATE remarks SET remarks = %s WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
+                    (updated_remarks_json, case_number, reciever, user_name)
+                )
+            else:
+                processed_db_cursor.execute(
+                    "UPDATE remarks SET remarks = %s WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
+                    (updated_remarks_json, case_number, user_name, reciever)
+                )
             processed_db_conn.commit()
 
             notification_query = """
