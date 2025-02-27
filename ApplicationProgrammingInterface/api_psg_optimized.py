@@ -3284,7 +3284,7 @@ def update_remarks():
                 "SELECT remarks FROM remarks WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
                 (case_number, reciever, user_name)
             )
-        else :
+        else:
             processed_db_cursor.execute(
                 "SELECT remarks FROM remarks WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
                 (case_number, user_name, reciever)
@@ -5478,7 +5478,7 @@ def get_filtered_users(user_name, view_role, district, police_station):
         query = """
                SELECT user_id_emergency, first_name_emergency,last_name_emergency, user_name_emergency,view_role_emergency FROM `15_stats_users`
                WHERE
-                   (FIND_IN_SET(%s, assigned_district_emergency) > 0 AND FIND_IN_SET(%s, assigned_ps_emergency) > 0)
+                   status = 'active' AND is_field_officer = 1 AND (FIND_IN_SET(%s, assigned_district_emergency) > 0 AND FIND_IN_SET(%s, assigned_ps_emergency) > 0)
                """
         params = (district, police_station)
 
@@ -5497,25 +5497,29 @@ def get_filtered_users(user_name, view_role, district, police_station):
                 user_role = None
 
             # Role-based filtering
-            if view_role == 2:
+            if view_role == 2 and (
+                    "rpo" in user[3] or "cpo" in user[3] or "dpo" in user[3] or "sp" in user[3] or "sdpo" in user[
+                3] or "sho" in user[3]):
                 filtered_users.append({
                     'user_id': user[0],
-                    'first_name': user[1],
-                    'last_name': user[2],
+                    'first_name': user[1] + " " + user[2],
+                    'last_name': "",
                     'user_name': user[3]
                 })
-            elif view_role == 3 and user_role not in (2, 3):
+            elif view_role == 3 and user_role not in (2, 3) and (
+                    "dpo" in user[3] or "sp" in user[3] or "sdpo" in user[3] or "sho" in user[3]):
                 filtered_users.append({
                     'user_id': user[0],
-                    'first_name': user[1],
-                    'last_name': user[2],
+                    'first_name': user[1] + " " + user[2],
+                    'last_name': "",
                     'user_name': user[3]
                 })
-            elif view_role == 4 and user_role not in (2, 3, 4):
+            elif view_role == 4 and user_role not in (2, 3, 4) and (
+                    "sp" in user[3] or "sdpo" in user[3] or "sho" in user[3]):
                 filtered_users.append({
                     'user_id': user[0],
-                    'first_name': user[1],
-                    'last_name': user[2],
+                    'first_name': user[1] + " " + user[2],
+                    'last_name': "",
                     'user_name': user[3]
                 })
             elif view_role == 5 and user_role not in (2, 3, 4):
@@ -5523,8 +5527,8 @@ def get_filtered_users(user_name, view_role, district, police_station):
                     if "sp" not in user[3]:
                         filtered_users.append({
                             'user_id': user[0],
-                            'first_name': user[1],
-                            'last_name': user[2],
+                            'first_name': user[1] + " " + user[2],
+                            'last_name': "",
                             'user_name': user[3]
                         })
 
@@ -5539,9 +5543,9 @@ def get_filtered_users(user_name, view_role, district, police_station):
 
 
 @app.route('/get_remarks_user', methods=['POST'])
-@limiter.limit(configs.LIMITER)
-@require_api_key
-@validate_ownership
+# @limiter.limit(configs.LIMITER)
+# @require_api_key
+# @validate_ownership
 def get_users():
     try:
         # Extract input parameters from form data
