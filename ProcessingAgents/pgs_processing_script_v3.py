@@ -271,7 +271,7 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
         LEFT JOIN 
             `15_police_stations` p ON l.police_station_id = p.id
         WHERE 
-            l.status = 'CompCa' AND
+            (l.status = 'CompCa' OR l.case_status = 'closed') AND
             l.time_id BETWEEN %s AND %s
         GROUP BY 
             l.lead_id, l.time_id, l.case_number, l.first_arrival_time, l.cli, 
@@ -829,6 +829,6 @@ def main(start_date, end_date, start):
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('28-02-25', '%d-%m-%y')
+    start_date = datetime.strptime('03-03-25', '%d-%m-%y')
     end_date = datetime.strptime('03-03-25', '%d-%m-%y')
     main(start_date, end_date, True)
