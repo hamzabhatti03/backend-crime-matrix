@@ -6074,4 +6074,4 @@ def user_analytics():
 
 
 if __name__ == '__main__':
-    app.run(host=configs.HOST, port=5010, debug=False)  # configs.DEBUG_
+    app.run(host=configs.HOST, port=configs.PORT, debug=False)  # configs.DEBUG_
