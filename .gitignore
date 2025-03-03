@@ -23,7 +23,7 @@ firebase/*
 static/*
 templates/*
 service_account.json
-
+Services/__pycache__/firebase.cpython-312.pyc
 app.py
 app_copy.py
 app_v1.py

@@ -1150,22 +1150,22 @@ def main(start_date, end_date, start):
                         ''')
 
             processed_cursor.execute("""
-                        CREATE TABLE remarks (
-                            id SERIAL PRIMARY KEY,
-                            case_id VARCHAR(255) NOT NULL,
-                            assigned_to VARCHAR(255),
-                            assigned_by VARCHAR(255),
-                            cc VARCHAR(255),
-                            remarks TEXT,
-                            time_stamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);
-            """)
+                                    CREATE TABLE IF NOT EXISTS remarks (
+                                        id SERIAL PRIMARY KEY,
+                                        case_id VARCHAR(255) NOT NULL,
+                                        assigned_to VARCHAR(255),
+                                        assigned_by VARCHAR(255),
+                                        cc VARCHAR(255),
+                                        remarks TEXT,
+                                        time_stamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                        """)
 
             processed_cursor.execute("""
-                        CREATE TABLE emergency_i_user_logs (
-                            id SERIAL PRIMARY KEY,
-                            username VARCHAR(255) UNIQUE NOT NULL,
-                            lastseen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);
-            """)
+                                    CREATE TABLE IF NOT EXISTS emergency_i_user_logs (
+                                        id SERIAL PRIMARY KEY,
+                                        username VARCHAR(255) UNIQUE NOT NULL,
+                                        lastseen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);
+                        """)
 
             """ Add indexes for optimization """
             processed_cursor.execute(
