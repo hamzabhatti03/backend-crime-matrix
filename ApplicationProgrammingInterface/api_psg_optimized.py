@@ -25,6 +25,7 @@ import time
 import firebase_admin
 from firebase_admin import credentials, messaging
 from Services import firebase
+import ast
 
 load_dotenv()
 
@@ -4677,7 +4678,10 @@ def crime_trends():
         time_period = request.form.get('time_period')  # 'week' or 'month'
         user_name = request.form.get('user_name')
 
-        police_stations = police_station_str.split(",") if police_station_str else []
+        if police_station_str == 'null':
+            police_stations = []
+        else:
+            police_stations = police_station_str.split(",") if police_station_str else []
 
         if not user_name:
             return jsonify({
@@ -5651,6 +5655,345 @@ def get_chat_user():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route(configs.CRIME_REOCCURENCE_CASE['ENDPOINT'],
+           methods=[configs.CRIME_REOCCURENCE_CASE['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def crime_reoccurrence_case():
+    """Get detailed information for a specific case number.
+
+    Expected POST body:
+    {
+        "case_number": "string",      # The case number to retrieve details for
+        "assigned_to": "string",      # Optional; if empty, use the current username or handle differently
+        "assigned_by": "string"       # Optional; if empty, use the current username or handle differently
+    }
+
+    Returns:
+        JSON: Case details with a standardized response format.
+              When neither assigned parameter is provided, an additional key
+              'assigned_by_users' lists all users to whom the current user has assigned the case.
+    """
+    log_db_conn, log_db_cursor = get_log_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    db_conn = db_config.get_db_connection()
+    db_cursor = db_conn.cursor()
+
+    try:
+        username = get_jwt_identity()
+
+        case_number_str = str(request.form.get('case_number'))
+        assigned_to_param = request.form.get('assigned_to')
+        assigned_by_param = request.form.get('assigned_by')
+
+        case_query = """
+            SELECT 
+                case_number, description, response_time, 
+                responder_id, accepted_time, police_station,
+                district_id, region_category, caller_name,
+                caller_number, caller_location, level3_case_nature, 
+                dispatched_time, first_arrival_time,lat, long, 
+                responder_lat, responder_long
+            FROM response_time
+            WHERE case_number = %s
+        """
+        processed_db_cursor.execute(case_query, (case_number_str,))
+        case_details = processed_db_cursor.fetchone()
+
+        if not case_details:
+            return jsonify({
+                'status': False,
+                'message': 'Case not found',
+                'data': None
+            }), 404
+
+        # Unpack the case details
+        (case_number, description, response_time, responder_id, accepted_time, police_station,
+         district_id, region_category, caller_name, caller_number, caller_location,
+         level3_case_nature, dispatched_time, first_arrival_time,
+         lat, long, responder_lat, responder_long) = case_details
+
+        # Query remarks (if applicable) or get assigned users list ---
+        # Initialize variables that will be used in the response.
+        new_remarks = ""
+        new_assignedby = None
+        new_assignedto = None
+        assigned_users = None  # extra key added only in one scenario
+
+        # Neither assigned_to nor assigned_by provided.
+        if not assigned_to_param and not assigned_by_param:
+            assigned_query = """
+                SELECT DISTINCT assigned_to
+                FROM remarks
+                WHERE case_id = %s AND assigned_by = %s
+            """
+            processed_db_cursor.execute(assigned_query, (case_number_str, username))
+            assigned_records = processed_db_cursor.fetchall()
+            assigned_users = [rec[0] for rec in assigned_records] if assigned_records else []
+            # For this example, we leave remarks empty and record that the current user is the assigner.
+            new_assignedby = username
+            new_assignedto = None
+        else:
+            # one of assigned_to or assigned_by is provided.
+            if not assigned_to_param:
+                assigned_to = username
+                assigned_by = assigned_by_param
+            elif not assigned_by_param:
+                assigned_by = username
+                assigned_to = assigned_to_param
+            else:
+                assigned_to = assigned_to_param
+                assigned_by = assigned_by_param
+
+            remarks_query = """
+                SELECT remarks, assigned_by, assigned_to
+                FROM remarks
+                WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s
+                LIMIT 1
+            """
+            processed_db_cursor.execute(remarks_query, (case_number_str, assigned_to, assigned_by))
+            remarks_record = processed_db_cursor.fetchone()
+
+            if remarks_record:
+                new_remarks = remarks_record[0]
+                new_assignedby = remarks_record[1]
+                new_assignedto = remarks_record[2]
+            else:
+                new_remarks = ""
+                new_assignedby = assigned_by
+                new_assignedto = assigned_to
+
+
+        db_cursor.execute(f"""
+                            SELECT matched_coordinates, related_cases 
+                            FROM pred_pol_crimes_hotspot 
+                            WHERE case_number = %s
+                """, (case_number,))
+        re_occurrences_cases = db_cursor.fetchone()
+
+        if re_occurrences_cases:
+            matched_coordinates, related_cases = re_occurrences_cases
+            matched_coordinates_str = matched_coordinates.decode('utf-8')  if isinstance(matched_coordinates, bytes) else matched_coordinates
+            related_cases_str = related_cases.decode('utf-8')  if isinstance(related_cases, bytes) else related_cases
+
+            matched_coordinates = json.loads(matched_coordinates_str)
+            related_cases = ast.literal_eval(related_cases_str)
+        else:
+            # Handle the case where no data is returned
+            matched_coordinates, related_cases = None, None
+
+        case_response = {
+            'case_number': case_number,
+            'description': description,
+            'response_time': f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else "0:00",
+            'responder_id': responder_id,
+            'accepted_time': accepted_time,
+            'police_station': police_station,
+            'district_id': configs.DISTRICTS_DICTIONARY.get(district_id),
+            'region_category': region_category,
+            'caller_name': caller_name,
+            'caller_number': caller_number,
+            'caller_location': caller_location,
+            'level3_case_nature': level3_case_nature,
+            'remarks': utils.parse_remarks(new_remarks),
+            'assigned_by': new_assignedby,
+            'assigned_to': new_assignedto,
+            'dispatched_time': (datetime.fromtimestamp(int(dispatched_time)).strftime("%d %b %Y %H:%M:%S")
+                                if dispatched_time is not None else 'N/A'),
+            'first_arrival_time': (datetime.fromtimestamp(int(first_arrival_time)).strftime("%d %b %Y %H:%M:%S")
+                                   if first_arrival_time is not None else 'N/A'),
+            'lat': lat,
+            'long': long,
+            'responder_lat': responder_lat,
+            'responder_long': responder_long,
+            're-occurence_coordinates' : matched_coordinates,
+            're-occurrence_case_numbers' : related_cases
+        }
+
+        # incase assigned_by and assigned_to are not provided
+        if assigned_users is not None:
+            case_response['assigned_by_users'] = assigned_users
+
+        response = {
+            'status': True,
+            'message': 'Case details fetched successfully',
+            'data': case_response
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error: {e}',
+            'data': None
+        }), 500
+
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(configs.USER_ANALYTICS['ENDPOINT'], methods=[configs.USER_ANALYTICS['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def user_analytics():
+    log_db_conn, log_db_cursor = get_log_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    db_conn = db_config.get_db_connection()
+    db_cursor = db_conn.cursor()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+
+        districts = district_str.split(",") if district_str else []
+
+        if view_role not in [1, 2, 3, 4]:
+            return jsonify({
+                'status': False,
+                'message': 'Invalid User Role For User Analytics',
+                'data': None
+            }), 400
+
+
+        district_condition = ""
+        if (view_role == 3 or view_role == 4) and districts:
+            district_condition = f"AND district IN ({', '.join(map(str, districts))})"
+
+        # Total User Status
+        user_status_query = f"""
+                SELECT 
+                    COUNT(*) AS total_users,
+                    SUM(CASE WHEN DATE(lastseen) = CURDATE() THEN 1 ELSE 0 END) AS online,
+                    SUM(CASE WHEN DATE(lastseen) <> CURDATE() THEN 1 ELSE 0 END) AS offline
+                FROM 15_stats_users
+                Where 1=1
+                 {district_condition};
+
+                """
+        db_cursor.execute(user_status_query,)
+        row = db_cursor.fetchone()
+
+        if row:
+            total_users = int(row[0]) if isinstance(row[0], Decimal) else row[0]
+            online_users = int(row[1]) if isinstance(row[1], Decimal) else row[1]
+            offline_users = int(row[2]) if isinstance(row[2], Decimal) else row[2]
+
+        # Districtwise User Status
+        district_query = f"""
+                SELECT 
+                  district,
+                  COUNT(*) AS total_users,
+                  SUM(CASE WHEN DATE(lastseen) = CURDATE() THEN 1 ELSE 0 END) AS online,
+                  SUM(CASE WHEN DATE(lastseen) <> CURDATE() THEN 1 ELSE 0 END) AS offline
+                FROM `15_stats_users`
+                WHERE district IS NOT NULL
+                {district_condition}
+                GROUP BY district;
+        """
+        db_cursor.execute(district_query)
+        district_data = db_cursor.fetchall()
+
+        district_results = []
+        for row in district_data:
+            district_results.append({
+                'district': row[0],
+                'total_users': row[1],
+                'online': int(row[2]) if isinstance(row[2], Decimal) else row[2],
+                'offline': int(row[3]) if isinstance(row[3], Decimal) else row[3]
+            })
+
+        query_users = "SELECT user_name_emergency FROM `15_stats_users` where view_role_emergency > %s AND district is not null"
+        db_cursor.execute(query_users,(view_role,))
+
+        # all usernames
+        usernames = [row[0] for row in db_cursor.fetchall()]
+        placeholders = ', '.join(['%s'] * len(usernames))
+
+        query_remarks = (
+            f"SELECT assigned_by , assigned_to , case_id FROM remarks "
+            f"WHERE assigned_by IN ({placeholders}) AND time_stamp::date = CURRENT_DATE"
+        )
+        processed_db_cursor.execute(query_remarks, tuple(usernames))
+        remarks_data = processed_db_cursor.fetchall()
+
+        columns = [desc[0] for desc in processed_db_cursor.description]
+        remarks = [dict(zip(columns, row)) for row in remarks_data]
+
+        offline_users_query = f"""
+                SELECT first_name_emergency, last_name_emergency, lastseen, district
+                FROM `15_stats_users`
+                WHERE DATE(lastseen) <> CURDATE()
+                AND district is NOT NULL
+                {district_condition};
+        """
+        db_cursor.execute(offline_users_query)
+        offline = db_cursor.fetchall()
+
+        offline_users_activity = [
+            {
+                "name": row[0] + ' ' + row[1],
+                "lastseen": row[2].strftime("%Y-%m-%d %H:%M:%S") if isinstance(row[2], datetime) else row[2],
+                "district" : row[3]
+            }
+            for row in offline
+        ]
+
+        online_users_query = f"""
+                SELECT first_name_emergency, last_name_emergency, lastseen , district
+                FROM `15_stats_users`
+                WHERE DATE(lastseen) = CURDATE()
+                AND district is NOT NULL
+                {district_condition};
+        """
+        db_cursor.execute(online_users_query)
+        online = db_cursor.fetchall()
+
+        online_users_activity = [
+            {
+                "name": row[0] + ' ' + row[1],
+                "lastseen": row[2].strftime("%Y-%m-%d %H:%M:%S") if isinstance(row[2], datetime) else row[2],
+                "district" : row[3]
+            }
+            for row in online
+        ]
+
+
+        response = {
+            "data" : {
+                "overall_stats" : {
+                    'total' : total_users,
+                    'online' : online_users,
+                    'offline' : offline_users
+                },
+                "district_wise_users" : district_results,
+                "remarks" : remarks,
+                "online_users_activity" : online_users_activity,
+                "offline_users_activity" : offline_users_activity
+            }
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        db_cursor.close()
+        db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 if __name__ == '__main__':

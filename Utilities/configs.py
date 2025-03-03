@@ -39,7 +39,7 @@ PROCESSED_STATS_TEST_DB = '../DatabaseManager/processed1.db'
 
 """PostgreSQL DATABASES"""
 POSTGRES_PROCESSED_STATS_MAIN = {
-    'dbname': 'test_0624',
+    'dbname': 'test_1224',
     'user': 'postgres',
     'password': 'psca@officialmai1',
     'host': '10.20.170.151',
@@ -359,6 +359,11 @@ SUBSCRIBE_TOPIC = {'ENDPOINT': '/subscribe_user_topic', 'METHOD': 'POST'}
 UNSUBSCRIBE_TOPIC = {'ENDPOINT': '/unsubscribe_user_topic', 'METHOD': 'POST'}
 GET_NOTIFICATIONS = {'ENDPOINT': '/get_notifications', 'METHOD': 'POST'}
 UPDATE_PASSWORD = {'ENDPOINT': '/update_password', 'METHOD': 'PUT'}
+CRIME_REOCCURENCE_CASE = {'ENDPOINT': '/crime_reoccurence_case', 'METHOD': 'POST'}
+PS_CONFERENCE_CALL_STATS = {'ENDPOINT': '/ps_conferencecall_stats', 'METHOD': 'POST'}
+CALLER_FEEBACK_PSWISE = {'ENDPOINT': '/caller_feedback_pswise', 'METHOD': 'POST'}
+USER_ANALYTICS = {'ENDPOINT': '/user_analytics', 'METHOD': 'POST'}
+
 
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
 
