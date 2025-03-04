@@ -306,6 +306,9 @@ def update_password():
     db_conn, db_cursor = get_log_db_connection()
     try:
         current_user = get_jwt_identity()
+        if 'multipart/form-data' not in request.content_type :
+            return jsonify({"error": "Invalid request format. Use form-data."}), 400
+
         current_password = request.form.get('current_password')
         new_password = request.form.get('new_password')
         confirm_password = request.form.get('confirm_password')
