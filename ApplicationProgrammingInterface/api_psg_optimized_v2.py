@@ -22,9 +22,9 @@ from psycopg2.extras import RealDictCursor
 from psycopg2 import pool as pg_pool
 from mysql.connector import pooling as sql_pool
 import time
-import firebase_admin
-from firebase_admin import credentials , messaging
-from Services import firebase
+# import firebase_admin
+# from firebase_admin import credentials , messaging
+# from Services import firebase
 import requests
 import ast
 
@@ -36,13 +36,14 @@ Latest file before this file is api_psg_optimized.py, This file includes the cha
 1) PS wise conference calls integrated
 2) Caller feedback in response time logic updated to return the same response but with good fetching speed
 3) User activity logs mechanism implemented
+4) Removed Firebase
 '''
 
-try:
-    cred = credentials.Certificate(os.getenv('FIREBASE_CREDENTIALS'))
-    firebase_admin.initialize_app(cred)
-except Exception as e:
-    print(f"Error initializing Firebase: {e}")
+# try:
+#     cred = credentials.Certificate(os.getenv('FIREBASE_CREDENTIALS'))
+#     firebase_admin.initialize_app(cred)
+# except Exception as e:
+#     print(f"Error initializing Firebase: {e}")
 
 # Initialize connection pools
 postgresql_pool = None
@@ -66,7 +67,7 @@ def initialize_pools():
         # MySQL connection pool
         mysql_pool = sql_pool.MySQLConnectionPool(
             pool_name="mysql_pool",
-            pool_size=15,  # Number of connections in the pool
+            pool_size=32,  # Number of connections in the pool
             host=os.getenv('DB_HOST'),
             database=os.getenv('DB_NAME'),
             user=os.getenv('DB_USER'),
@@ -155,6 +156,9 @@ def get_processed_db_connection():
 
 
 def get_notification_db_connection():
+    if notification_pool is None:
+        raise Exception("Notification pool is not initialized. Call `initialize_pools()` before using the database.")
+
     notification_conn = notification_pool.getconn()
     notification_cursor = notification_conn.cursor()
     return notification_conn, notification_cursor
@@ -261,12 +265,12 @@ def login():
                             """, (access_token, username))
             db_conn.commit()
 
-            sanitized_topic = username.replace("@", "_at_").replace(".", "_dot_")
-
-            try:
-                messaging.subscribe_to_topic([fcm_token], sanitized_topic)
-            except Exception as e:
-                print(f"Error subscribing to topic: {str(e)}")
+            # sanitized_topic = username.replace("@", "_at_").replace(".", "_dot_")
+            #
+            # try:
+            #     messaging.subscribe_to_topic([fcm_token], sanitized_topic)
+            # except Exception as e:
+            #     print(f"Error subscribing to topic: {str(e)}")
         else:
             return jsonify({
                 'status': False,
@@ -313,7 +317,7 @@ def update_password():
         new_password = request.form.get('new_password')
         confirm_password = request.form.get('confirm_password')
 
-        if not all([current_password, new_password, confirm_password]):
+        if not all([current_password, new_password]):
             return jsonify({
                 'status': False,
                 'message': 'All password fields are required.',
@@ -2130,10 +2134,10 @@ def add_remarks():
         # Send push notifications
         title = "New Remark Added"
         body = f"{name} added remarks for case {case_number}"
-        if assigned_to and assigned_to.strip():
-            firebase.send_push_notification_to_topic(assigned_to.strip(), title, body)
-        if cc and cc.strip():
-            firebase.send_push_notification_to_topic(cc.strip(), title, body)
+        # if assigned_to and assigned_to.strip():
+        #     firebase.send_push_notification_to_topic(assigned_to.strip(), title, body)
+        # if cc and cc.strip():
+        #     firebase.send_push_notification_to_topic(cc.strip(), title, body)
 
         response_message = "Remarks added successfully."
         return jsonify({
@@ -2647,10 +2651,10 @@ def update_remarks():
 
             title = "Reply Added"
             body = f"{user_name} replied for case {case_number}"
-            if reciever and reciever.strip():
-                firebase.send_push_notification_to_topic(reciever.strip(), title, body)
-            if cc and cc.strip():
-                firebase.send_push_notification_to_topic(cc.strip(), title, body)
+            # if reciever and reciever.strip():
+            #     firebase.send_push_notification_to_topic(reciever.strip(), title, body)
+            # if cc and cc.strip():
+            #     firebase.send_push_notification_to_topic(cc.strip(), title, body)
         else:
             response_message = "No record found for the provided case_number, assigned_by, and assigned_to."
 
@@ -2681,12 +2685,13 @@ def update_remarks():
 @require_api_key
 @validate_ownership
 def get_notifications():
-    # Connect to the databases
-    notification_conn, notification_cursor = get_notification_db_connection()
-    log_db_conn, log_db_cursor = get_log_db_connection()
-
+    notification_conn, notification_cursor = None, None
+    log_db_conn, log_db_cursor = None, None
     try:
-        # Retrieved parameters from the request
+        # Connect to the databases
+        notification_conn, notification_cursor = get_notification_db_connection()
+        log_db_conn, log_db_cursor = get_log_db_connection()
+
         view_role = request.form.get('view_role',type=int)
         user_name = request.form.get('username')
 
@@ -2736,10 +2741,15 @@ def get_notifications():
         }), 500
 
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
-        notification_cursor.close()
-        notification_pool.putconn(notification_conn)
+        if log_db_cursor:
+            log_db_cursor.close()
+        if log_db_conn:
+            log_db_conn.close()
+
+        if notification_cursor:
+            notification_cursor.close()
+        if notification_conn:
+            notification_pool.putconn(notification_conn, close=False)
 
 
 @app.route(configs.CM_DIST_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_DIST_RESPONSE_TIME['METHOD']])
@@ -3297,6 +3307,8 @@ def response_time_alerts():
                     AND parent_id = 0
                     AND district_id IS NOT NULL
                     AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND level3_case_nature NOT IN ('Other Help')
+                    AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 'Kiddnapping / Abduction', 'Murder', 'Terrorist Act')
                     {district_condition}
                     GROUP BY district_id
         """
@@ -3317,6 +3329,8 @@ def response_time_alerts():
                       AND parent_id = 0
                       AND district_id IS NOT NULL
                       AND district_id NOT IN ('0','41','42','43','44','45','46')
+                      AND level3_case_nature NOT IN ('Other Help')
+                      AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 'Kiddnapping / Abduction', 'Murder', 'Terrorist Act')
                       {district_condition}
                     GROUP BY district_id;
         """
@@ -3348,23 +3362,45 @@ def response_time_alerts():
         current_date_str = current_date.strftime("%Y-%m-%d")
 
         db_cursor.execute(f"""
-                    SELECT district, group_concat(case_number) 
+                    SELECT district, GROUP_CONCAT(
+                        CONCAT('Case Number: ', case_number, 
+                               ', District: ', district, 
+                               ', Case Nature: ', case_nature,
+                               ', Police Station: ',police_station)
+                        SEPARATOR ' ; '
+                    ) AS details 
                     FROM pred_pol_crimes_hotspot 
                     WHERE case_number IS NOT null
                     AND date = %s
+                    AND case_nature in ('Highway/Road/Street Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 'Any Other Robbery', 
+                    'Snatching/Jhapatta', 'House Robbery', 'Cattle Robbery', 'Robbery with Murder', 'Bank/Money Exchange/ ATM Robbery', 
+                    'Jewellery Shop Robbery','Motorcycle Snatching', 'Bank Burglary', 'House Burglary', 'Shop Burglary', 'Other Burglary', 
+                    'Dacoity with Murder', 'House Dacoity', 'Highway/Road/Street Dacoity', 'Cattle Dacoity', 'Shop Dacoity', 'Any Other Dacoity', 
+                    'Patrol Pump Dacoity', 'Jewellery Shop Dacoity', 'Sexual Assault/ Harrasment To Women', 'Rape', 'Child Abuse / Molestation', 
+                    'Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 'Attempt to Kidnap / Abduct', 'Child Kidnapping', 
+                    'Kidnapping for Ransom','Illegal detention of a person', 'Attempt to Murder', 'Murder', 'Firing on Police', 
+                    'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
                     {additional_condition}
                     Group By district
         """, (current_date.strftime('%d-%m-%Y'),))
         re_occurrences_cases = db_cursor.fetchall()
 
         crime_occurence = []
-        for i in re_occurrences_cases:
-            i = list(i)
+        for row in re_occurrences_cases:
+            # Convert the row into a list
+            row = list(row)
 
-            i[0] = i[0].decode('utf-8') if isinstance(i[0], bytearray) else i[0]
-            i[1] = i[1].decode('utf-8') if isinstance(i[1], bytes) else i[1]
+            # Decode the district value if necessary
+            row[0] = row[0].decode('utf-8') if isinstance(row[0], bytearray) else row[0]
 
-            crime_occurence.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1].split(",")})
+            # Decode the details string if necessary
+            row[1] = row[1].decode('utf-8') if isinstance(row[1], bytes) else row[1]
+
+            # Split the details string on ' ; ' since that's our separator in the query
+            details_list = row[1].split(" ; ")
+
+            # Append the result using the district dictionary for mapping
+            crime_occurence.append({configs.DISTRICTS_DICTIONARY[int(row[0])]: details_list})
 
         response = {
             "status": True,
@@ -4978,7 +5014,13 @@ def ps_conference_call_stats():
                 for ps in dist_conf_results
             }
 
-            return jsonify(district_response), 200
+            response = {
+                'status': True,
+                'message': 'PS Conference calls Stats fetched successfully',
+                'data': district_response
+            }
+            return jsonify(response),200
+
         else:
             return jsonify({
                 "success": False,
@@ -5618,6 +5660,8 @@ def punjab_stats_dashboard():
                             AND parent_id = 0
                             AND district_id IS NOT NULL
                             AND district_id NOT IN ('0','41','42','43','44','45','46')
+                            AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 
+                            'Kiddnapping / Abduction', 'Murder', 'Terrorist Act')
                             {district_condition}
                             GROUP BY district_id
                 """
@@ -5651,6 +5695,14 @@ def punjab_stats_dashboard():
                     SELECT count(*)
                     FROM pred_pol_crimes_hotspot 
                     WHERE case_number IS NOT null
+                    AND case_nature in ('Highway/Road/Street Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 'Any Other Robbery', 
+                    'Snatching/Jhapatta', 'House Robbery', 'Cattle Robbery', 'Robbery with Murder', 'Bank/Money Exchange/ ATM Robbery', 
+                    'Jewellery Shop Robbery','Motorcycle Snatching', 'Bank Burglary', 'House Burglary', 'Shop Burglary', 'Other Burglary', 
+                    'Dacoity with Murder', 'House Dacoity', 'Highway/Road/Street Dacoity', 'Cattle Dacoity', 'Shop Dacoity', 'Any Other Dacoity', 
+                    'Patrol Pump Dacoity', 'Jewellery Shop Dacoity', 'Sexual Assault/ Harrasment To Women', 'Rape', 'Child Abuse / Molestation', 
+                    'Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 'Attempt to Kidnap / Abduct', 'Child Kidnapping', 
+                    'Kidnapping for Ransom','Illegal detention of a person', 'Attempt to Murder', 'Murder', 'Firing on Police', 
+                    'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
                     AND date = %s
                     {additional_condition}
         """, (current_date.strftime('%d-%m-%Y'),))

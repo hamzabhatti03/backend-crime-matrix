@@ -303,7 +303,8 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
             reached_time = EXCLUDED.reached_time,
             dispatched_time = EXCLUDED.dispatched_time,
             start_time = EXCLUDED.start_time,
-            completed_time = EXCLUDED.completed_time;
+            completed_time = EXCLUDED.completed_time,
+            caller_feedback = EXCLUDED.caller_feedback;
         """).format(
             placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(39))
         )
@@ -829,6 +830,6 @@ def main(start_date, end_date, start):
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('04-03-25', '%d-%m-%y')
-    end_date = datetime.strptime('04-03-25', '%d-%m-%y')
+    start_date = datetime.strptime('07-03-25', '%d-%m-%y')
+    end_date = datetime.strptime('07-03-25', '%d-%m-%y')
     main(start_date, end_date, True)
