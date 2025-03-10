@@ -7,7 +7,7 @@ from flask_limiter.util import get_remote_address
 from Utilities import utils, configs, validate
 from Utilities import db_config
 from math import radians, sin, cos, sqrt, atan2
-from flask_jwt_extended import (JWTManager, create_access_token, jwt_required,  get_jwt_identity)
+from flask_jwt_extended import (JWTManager, create_access_token, jwt_required, get_jwt_identity)
 import json
 import hashlib
 import traceback
@@ -50,8 +50,9 @@ postgresql_pool = None
 mysql_pool = None
 notification_pool = None
 
+
 def initialize_pools():
-    global postgresql_pool, mysql_pool,notification_pool
+    global postgresql_pool, mysql_pool, notification_pool
     try:
         # PostgreSQL connection pool
         postgresql_pool = pg_pool.SimpleConnectionPool(
@@ -219,7 +220,7 @@ def validate_ownership(fn):
 
         # Check if the username matches the JWT identity
         if not username or username != current_user:
-            return jsonify({"message": "You do not have permission to access this resource.","status": False}), 403
+            return jsonify({"message": "You do not have permission to access this resource.", "status": False}), 403
 
         # Proceed with the original function
         return fn(*args, **kwargs)
@@ -310,7 +311,7 @@ def update_password():
     db_conn, db_cursor = get_log_db_connection()
     try:
         current_user = get_jwt_identity()
-        if 'multipart/form-data' not in request.content_type :
+        if 'multipart/form-data' not in request.content_type:
             return jsonify({"error": "Invalid request format. Use form-data."}), 400
 
         current_password = request.form.get('current_password')
@@ -658,8 +659,12 @@ def punjab_more_info():
             'data': None
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -784,8 +789,12 @@ def districtwise_counts():
             'data': None
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -1025,7 +1034,7 @@ def districtwise_more_info():
             elif district_str == 'Lahore':
                 if police_station == 'Sabzazar':
                     police_division = 'Iqbal Town Division'
-                else :
+                else:
                     police_division = configs.LAHORE_DIVISION_MAPPING[police_circle]
             elif district_str == 'Rawalpindi':
                 if police_circle in configs.RAWALPINDI_DIVISION_MAPPING:
@@ -1082,8 +1091,12 @@ def districtwise_more_info():
             'message': f'Internal server error {traceback.format_exc()}'
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -1416,8 +1429,12 @@ def pswise_categories():
             'data': None
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -1575,8 +1592,12 @@ def punjab_case_details():
         }), 500
 
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -1761,8 +1782,12 @@ def district_category_details():
             'data': None
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -1798,8 +1823,12 @@ def forcast_predictive_policing():
             'data': None
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
 
 
 @app.route(configs.DATEWISE_FORECAST['ENDPOINT'], methods=[configs.DATEWISE_FORECAST['METHOD']])
@@ -1838,8 +1867,12 @@ def forecast_datewise():
             'data': None
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
 
 
 @app.route(configs.EMERGENCY_15_INTEGRATION['ENDPOINT'], methods=[configs.EMERGENCY_15_INTEGRATION['METHOD']])
@@ -2049,8 +2082,12 @@ def emergency_15_integration():
             'message': f'Internal server error {e}',
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -2126,7 +2163,7 @@ def add_remarks():
                """
         notification_cursor.execute(
             notification_query,
-            (case_number,user_name, assigned_to, 'remark')
+            (case_number, user_name, assigned_to, 'remark')
         )
 
         notification_conn.commit()
@@ -2155,8 +2192,12 @@ def add_remarks():
 
     finally:
         # Clean up database connections and cursors
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         notification_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
@@ -2462,7 +2503,8 @@ def get_remarks():
                 "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)) if district_id else None,
                 "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS) if time_id else None,
                 "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(configs.YMD_HMS) if reached_time else None,
+                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+                    configs.YMD_HMS) if reached_time else None,
                 "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else None,
                 "assignedby": assigned_by,
                 "priority_flag": priority_flag,
@@ -2490,9 +2532,10 @@ def get_remarks():
                 "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)) if district_id else None,
                 "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS) if time_id else None,
                 "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(configs.YMD_HMS) if reached_time else None,
+                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+                    configs.YMD_HMS) if reached_time else None,
                 "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else None,
-                "assignedto": assigned_to, #utils.split_name(assigned_to) if assigned_to else None
+                "assignedto": assigned_to,  # utils.split_name(assigned_to) if assigned_to else None
                 "priority_flag": priority_flag,
                 "status_flag": status_flag,
                 "is_notify": (
@@ -2523,7 +2566,8 @@ def get_remarks():
                 "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)) if district_id else None,
                 "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS) if time_id else None,
                 "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(configs.YMD_HMS) if reached_time else None,
+                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+                    configs.YMD_HMS) if reached_time else None,
                 "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else None,
                 "assigned_by": assigned_by,
                 "cc": cc,
@@ -2563,8 +2607,12 @@ def get_remarks():
             'data': None
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -2597,7 +2645,7 @@ def update_remarks():
             "messaged_by": user_name,
             "messaged_to": reciever,
             "cc": cc if cc else "",
-            "name":name,
+            "name": name,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -2672,8 +2720,12 @@ def update_remarks():
 
     finally:
         # Clean up database connections and cursors
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         notification_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
@@ -2692,7 +2744,7 @@ def get_notifications():
         notification_conn, notification_cursor = get_notification_db_connection()
         log_db_conn, log_db_cursor = get_log_db_connection()
 
-        view_role = request.form.get('view_role',type=int)
+        view_role = request.form.get('view_role', type=int)
         user_name = request.form.get('username')
 
         # Validated required fields
@@ -2713,7 +2765,7 @@ def get_notifications():
                 "user_name": row[2],
                 "case_number": row[1],
                 "assigned_by": row[0],
-                "type" : row[3]
+                "type": row[3]
             }
             for row in rows
         ]
@@ -2743,8 +2795,10 @@ def get_notifications():
     finally:
         if log_db_cursor:
             log_db_cursor.close()
+
         if log_db_conn:
-            log_db_conn.close()
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
 
         if notification_cursor:
             notification_cursor.close()
@@ -2833,8 +2887,12 @@ def dist_response_time():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -2913,8 +2971,12 @@ def cm_ps_responsetime():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3041,8 +3103,12 @@ def district_fir_stats():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3154,8 +3220,12 @@ def ps_fir_stats():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3247,8 +3317,12 @@ def conference_call_stats():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3420,8 +3494,12 @@ def response_time_alerts():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3507,8 +3585,12 @@ def police_vehicle_locations():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3687,8 +3769,12 @@ def vwps_stats():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
 
 
 @app.route(configs.VCCS_STATS['ENDPOINT'], methods=[configs.VCCS_STATS['METHOD']])
@@ -3865,8 +3951,12 @@ def vccs_stats():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
 
 
 @app.route(configs.VCM_STATS['ENDPOINT'], methods=[configs.VCM_STATS['METHOD']])
@@ -3997,8 +4087,12 @@ def vcm_stats():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
 
 
 @app.route(configs.CRIME_TRENDS['ENDPOINT'], methods=[configs.CRIME_TRENDS['METHOD']])
@@ -4246,13 +4340,16 @@ def crime_trends():
         }), 500
 
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
         master_cursor.close()
         master_db_connection.close()
-
 
 
 @app.route(configs.BLOOD_DONATION['ENDPOINT'], methods=[configs.BLOOD_DONATION['METHOD']])
@@ -4395,8 +4492,12 @@ def blood_donation():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
 
 
 @app.route(configs.ESCALATED_CASES['ENDPOINT'], methods=[configs.ESCALATED_CASES['METHOD']])
@@ -4509,8 +4610,12 @@ def escalated_cases():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         vwps_cursor.close()
         vwps_conn.close()
         vccs_cursor.close()
@@ -4601,8 +4706,12 @@ def crime_trend_cases():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -4898,7 +5007,6 @@ def crime_reoccurrence_case():
                 new_assignedby = assigned_by
                 new_assignedto = assigned_to
 
-
         db_cursor.execute(f"""
                             SELECT matched_coordinates, related_cases 
                             FROM pred_pol_crimes_hotspot 
@@ -4908,8 +5016,9 @@ def crime_reoccurrence_case():
 
         if re_occurrences_cases:
             matched_coordinates, related_cases = re_occurrences_cases
-            matched_coordinates_str = matched_coordinates.decode('utf-8')  if isinstance(matched_coordinates, bytes) else matched_coordinates
-            related_cases_str = related_cases.decode('utf-8')  if isinstance(related_cases, bytes) else related_cases
+            matched_coordinates_str = matched_coordinates.decode('utf-8') if isinstance(matched_coordinates,
+                                                                                        bytes) else matched_coordinates
+            related_cases_str = related_cases.decode('utf-8') if isinstance(related_cases, bytes) else related_cases
 
             matched_coordinates = json.loads(matched_coordinates_str)
             related_cases = ast.literal_eval(related_cases_str)
@@ -4941,8 +5050,8 @@ def crime_reoccurrence_case():
             'long': long,
             'responder_lat': responder_lat,
             'responder_long': responder_long,
-            're-occurence_coordinates' : matched_coordinates,
-            're-occurrence_case_numbers' : related_cases
+            're-occurence_coordinates': matched_coordinates,
+            're-occurrence_case_numbers': related_cases
         }
 
         # incase assigned_by and assigned_to are not provided
@@ -4965,8 +5074,12 @@ def crime_reoccurrence_case():
         }), 500
 
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -5019,7 +5132,7 @@ def ps_conference_call_stats():
                 'message': 'PS Conference calls Stats fetched successfully',
                 'data': district_response
             }
-            return jsonify(response),200
+            return jsonify(response), 200
 
         else:
             return jsonify({
@@ -5033,8 +5146,12 @@ def ps_conference_call_stats():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -5069,13 +5186,15 @@ def caller_feedback_districtwise():
                                 date = %s
                             {district_condition}
                             Group By district_id
-                        """,(currnt_date,))
+                        """, (currnt_date,))
 
         district_feedback_stats = processed_db_cursor.fetchall()
 
-        existing_stats = {configs.DISTRICTS_DICTIONARY.get(row[0]): {"district":configs.DISTRICTS_DICTIONARY.get(row[0]), "positive": row[1],
-                                                                     "negative": row[2], "not_responding": row[3]}
-                          for row in district_feedback_stats}
+        existing_stats = {
+            configs.DISTRICTS_DICTIONARY.get(row[0]): {"district": configs.DISTRICTS_DICTIONARY.get(row[0]),
+                                                       "positive": row[1],
+                                                       "negative": row[2], "not_responding": row[3]}
+            for row in district_feedback_stats}
 
         dist_stats = []
         for district in districts:
@@ -5118,8 +5237,12 @@ def caller_feedback_districtwise():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -5149,12 +5272,12 @@ def caller_feedback_pswise():
                                 date = %s
                                 AND district_id = %s
                             Group By police_station
-                        """,(currnt_date,district_id))
+                        """, (currnt_date, district_id))
 
         district_feedback_stats = processed_db_cursor.fetchall()
 
-        existing_stats = [{"police_station":row[0], "positive": row[1],
-                                                                     "negative": row[2], "not_responding": row[3]}
+        existing_stats = [{"police_station": row[0], "positive": row[1],
+                           "negative": row[2], "not_responding": row[3]}
                           for row in district_feedback_stats]
 
         processed_db_conn.close()
@@ -5174,8 +5297,12 @@ def caller_feedback_pswise():
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -5583,7 +5710,7 @@ def punjab_stats_dashboard():
                                     {where_cond}
                                 """
         negative_caller_feedback_query = negative_caller_feedback_query.format(where_cond=where_cond)
-        processed_db_cursor.execute(negative_caller_feedback_query,(from_date_str,to_date_str))
+        processed_db_cursor.execute(negative_caller_feedback_query, (from_date_str, to_date_str))
         row = processed_db_cursor.fetchone()
         negative_feedback_count = row[0] if row is not None else 0
 
@@ -5860,8 +5987,12 @@ def punjab_stats_dashboard():
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
         return jsonify(error_response), 500
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -5965,8 +6096,12 @@ def negative_feedback_cases():
             'message': f'Internal server error {e}'
         }), 400
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -5993,7 +6128,6 @@ def user_analytics():
                 'data': None
             }), 400
 
-
         district_condition = ""
         if (view_role == 3 or view_role == 4) and districts:
             district_condition = f"""AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
@@ -6009,7 +6143,7 @@ def user_analytics():
                  {district_condition};
 
                 """
-        db_cursor.execute(user_status_query,)
+        db_cursor.execute(user_status_query, )
         row = db_cursor.fetchone()
 
         if row:
@@ -6042,7 +6176,7 @@ def user_analytics():
             })
 
         query_users = "SELECT user_name_emergency FROM `15_stats_users` where view_role_emergency > %s AND district is not null"
-        db_cursor.execute(query_users,(view_role,))
+        db_cursor.execute(query_users, (view_role,))
 
         # all usernames
         usernames = [row[0] for row in db_cursor.fetchall()]
@@ -6072,7 +6206,7 @@ def user_analytics():
             {
                 "name": row[0] + ' ' + row[1],
                 "lastseen": row[2].strftime("%Y-%m-%d %H:%M:%S") if isinstance(row[2], datetime) else row[2],
-                "district" : row[3]
+                "district": row[3]
             }
             for row in offline
         ]
@@ -6091,23 +6225,22 @@ def user_analytics():
             {
                 "name": row[0] + ' ' + row[1],
                 "lastseen": row[2].strftime("%Y-%m-%d %H:%M:%S") if isinstance(row[2], datetime) else row[2],
-                "district" : row[3]
+                "district": row[3]
             }
             for row in online
         ]
 
-
         response = {
-            "data" : {
-                "overall_stats" : {
-                    'total' : total_users,
-                    'online' : online_users,
-                    'offline' : offline_users
+            "data": {
+                "overall_stats": {
+                    'total': total_users,
+                    'online': online_users,
+                    'offline': offline_users
                 },
-                "district_wise_users" : district_results,
-                "remarks" : remarks,
-                "online_users_activity" : online_users_activity,
-                "offline_users_activity" : offline_users_activity
+                "district_wise_users": district_results,
+                "remarks": remarks,
+                "online_users_activity": online_users_activity,
+                "offline_users_activity": offline_users_activity
             }
         }
 
@@ -6120,8 +6253,12 @@ def user_analytics():
             'message': f'Internal server error {e}'
         }), 400
     finally:
-        log_db_cursor.close()
-        log_db_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+
+        if log_db_conn:
+            log_db_conn.rollback()  # Rollback any uncommitted transactions
+            log_db_conn.close()  # Properly return to the pool without removing it
         db_cursor.close()
         db_conn.close()
         processed_db_cursor.close()
