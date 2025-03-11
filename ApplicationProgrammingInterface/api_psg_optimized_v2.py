@@ -205,6 +205,23 @@ def unauthorized_response(callback):
 
 @jwt.expired_token_loader
 def expired_token_callback(jwt_header, jwt_payload):
+    # # Extract request details before JWT validation
+    # client_ip = request.remote_addr  # Get client IP
+    # user_agent = request.headers.get('User-Agent', 'Unknown')  # Get browser/client details
+    # referrer = request.referrer  # Get referrer URL if available
+    # request_method = request.method  # HTTP method (GET, POST, etc.)
+    # request_url = request.url  # Full request URL
+    # request_headers = dict(request.headers)  # Convert headers to dict
+    # request_data = request.form.to_dict() if request.form else request.json  # Form or JSON data
+    #
+    # # Print or log request details
+    # print(f"--- Incoming Request ---")
+    # print(f"Method: {request_method} URL: {request_url}")
+    # print(f"Client IP: {client_ip}")
+    # print(f"User-Agent: {user_agent}")
+    # print(f"Referrer: {referrer}")
+    # print(f"Headers: {request_headers}")
+    # print(f"Request Data: {request_data}")
     return jsonify({"msg": "JWT Token has expired"}), 401
 
 
