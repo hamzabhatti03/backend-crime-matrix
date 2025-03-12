@@ -15,6 +15,8 @@ Utilities/__pycache__
 ApplicationProgrammingInterface/__pycache__
 ProcessingAgents/__pycache__
 ApplicationProgrammingInterface/api_psg_optimized_copy.py
+ApplicationProgrammingInterface/api_pgs_optimized_v2_copy.py
+ProcessingAgents/users_migration.py
 ProcessingAgents/fetch_data_vwps.py
 ProcessingAgents/fetch_data_vccs.py
 ProcessingAgents/fetch and insert_users.py
