@@ -1,5 +1,6 @@
 import pandas as pd
 import sqlite3
+import hashlib
 from datetime import datetime
 
 # Mapping of district names to short forms
@@ -50,44 +51,53 @@ def generate_username(designation, station, district):
     """Generate email username following the given rules."""
     short_district = district_short_forms.get(district, district[:3].upper())
     designation_clean = designation.lower()
-    station_clean = station.lower()
+    station_clean = station.lower().replace(" ", ".")
 
     # Remove duplicate designation word from station
     if designation_clean in station_clean:
-        station_clean = station_clean.replace(designation_clean, "").strip()
+        station_clean = station_clean.replace(designation_clean, "").strip(".")
 
-    return f"{designation_clean}.{station_clean}.{short_district}@punjabpolice.gov.pk"
+    # Remove district name if already in station and append short district
+    station_clean = station_clean.replace(district.lower(), "").strip(".")
+
+    return f"{designation_clean}.{station_clean}.{short_district.lower()}@punjabpolice.gov.pk"
 
 
 def get_view_role(designation):
     """Assign view role based on designation."""
     designation = designation.lower()
-    if "rpo" in designation:
+    if designation == "rpo":
         return 3
-    elif "dpo" in designation:
+    elif designation == "dpo":
         return 4
     return 5
 
 
+def to_camel_case(text):
+    return " ".join(word.upper() for word in text.split())
+
+
 # Process DataFrame
+allowed_designations = {"sho"}  # Define allowed designations
 data = []
 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-
-def to_camel_case(text):
-    return " ".join(word.capitalize() for word in text.split())
-
-
 for _, row in df.iterrows():
+    if row["Designation"].lower() not in allowed_designations:
+        continue
+
     username = generate_username(row["Designation"], row["Police station"], row["District"])
     view_role = get_view_role(row["Designation"])
+    hashed_password = hashlib.md5("PunjabPolice321".encode()).hexdigest()
+
+    station_short = row["Police station"].replace(row["District"], "").strip()
+    last_name = f"{station_short} - {district_short_forms.get(row["District"], row["District"][:3].upper())}"
 
     data.append((
         to_camel_case(row["Designation"]),
-        to_camel_case(
-            row["Police station"] + " - " + district_short_forms.get(row["District"], row["District"][:3].upper())),
+        to_camel_case(last_name),
         username,
-        "PunjabPolice321",
+        hashed_password,
         0,  # role_emergency
         "",  # jwt_token_emergency
         row["District"],
