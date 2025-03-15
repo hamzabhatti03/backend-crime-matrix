@@ -537,17 +537,32 @@ def get_district_cases(district_id, fromDate, toDate, shift):
     return jsonify(response)
 
 
-def log_to_database(log_conn, log_cursor, level, message):
-    query = "INSERT INTO 15_stats_log (status, time_date, description,Host_IP_address) VALUES (%s, %s, %s, %s)"
-    data = (level, get_current_time(), message, SYS_IP)
+# def log_to_database(log_conn, log_cursor, level, message):
+#     query = "INSERT INTO 15_stats_log (status, time_date, description,Host_IP_address) VALUES (%s, %s, %s, %s)"
+#     data = (level, get_current_time(), message, SYS_IP)
+#     try:
+#         log_cursor.execute(query, data)
+#         # Print the error to the console
+#         print("ERROR:", message)
+#
+#         log_conn.commit()
+#     except mysql.connector.Error as err:
+#         print(f"Database Error: {err}")
+
+
+def log_to_pg_database(log_conn, log_cursor, level, message, client_ip):
+    query = """
+        INSERT INTO emergency_i_logs (status, time_date, description, host_ip_address, client_ip_address) 
+        VALUES (%s, %s, %s, %s, %s)
+    """
+    data = (level, get_current_time(), message, SYS_IP, client_ip)
+
     try:
         log_cursor.execute(query, data)
-        # Print the error to the console
-        print("ERROR:", message)
-
         log_conn.commit()
-    except mysql.connector.Error as err:
+    except psycopg2.Error as err:
         print(f"Database Error: {err}")
+        log_conn.rollback()  # Rollback to prevent partial commits
 
 
 def log_to_database_updated(log_conn, level, message):
@@ -754,16 +769,16 @@ def get_new_processed_db_connection():
         raise
 
 
-def log_error_to_db_and_console(db_conn, log_db_cursor, error_message):
-    # Capture the error message
-    error_message = traceback.format_exc()
-
-    # Log the error to the database
-    log_to_database(db_conn, log_db_cursor, "ERROR", error_message)
-
-    # Print the error to the console
-    print("ERROR:", error_message)
-
+# def log_error_to_db_and_console(db_conn, log_db_cursor, error_message):
+#     # Capture the error message
+#     error_message = traceback.format_exc()
+#
+#     # Log the error to the database
+#     log_to_database(db_conn, log_db_cursor, "ERROR", error_message)
+#
+#     # Print the error to the console
+#     print("ERROR:", error_message)
+#
 
 # def get_category_condition(category):
 #     """Returns the SQL condition for the given category."""
@@ -1071,3 +1086,7 @@ def construct_homicide_fir_query(urdu_districts):
         """
 
     return lat_long_query
+
+
+def allowed_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in configs.ALLOWED_IMG_EXTENSIONS

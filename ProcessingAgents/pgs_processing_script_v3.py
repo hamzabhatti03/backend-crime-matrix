@@ -756,6 +756,7 @@ def main(start_date, end_date, start):
                             assigned_by VARCHAR(255),
                             cc VARCHAR(255),
                             remarks TEXT,
+                            image_path VARCHAR(255),
                             time_stamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);
             """)
 
@@ -830,6 +831,6 @@ def main(start_date, end_date, start):
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('07-03-25', '%d-%m-%y')
-    end_date = datetime.strptime('07-03-25', '%d-%m-%y')
+    start_date = datetime.strptime('13-03-25', '%d-%m-%y')
+    end_date = datetime.strptime('14-03-25', '%d-%m-%y')
     main(start_date, end_date, True)

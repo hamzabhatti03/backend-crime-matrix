@@ -15,6 +15,8 @@ import os
 from dotenv import load_dotenv
 from functools import wraps
 from predictive_api import yesterday_forecast_db as yesterday_forecast
+from werkzeug.utils import secure_filename
+from flask import send_from_directory
 from predictive_api import forecast_date
 from predictive_api import get_category_data
 from decimal import Decimal
@@ -50,10 +52,11 @@ postgresql_pool = None
 mysql_pool = None
 notification_pool = None
 usersdb_pool = None
+log_db_pool = None
 
 
 def initialize_pools():
-    global postgresql_pool, mysql_pool, notification_pool,usersdb_pool
+    global postgresql_pool, mysql_pool, notification_pool, usersdb_pool, log_db_pool
     try:
         # PostgreSQL connection pool
         postgresql_pool = pg_pool.SimpleConnectionPool(
@@ -90,6 +93,16 @@ def initialize_pools():
             minconn=1,  # Minimum number of connections
             maxconn=50,  # Maximum number of connections
             dbname=os.getenv('PG_DATABASE'),
+            user=os.getenv('PG_USER'),
+            password=os.getenv('PG_PASSWORD'),
+            host=os.getenv('PG_HOST'),
+            port=os.getenv('PG_PORT')
+        )
+
+        log_db_pool = pg_pool.SimpleConnectionPool(
+            minconn=1,  # Minimum number of connections
+            maxconn=50,  # Maximum number of connections
+            dbname=os.getenv('LOGS_DB_NAME'),
             user=os.getenv('PG_USER'),
             password=os.getenv('PG_PASSWORD'),
             host=os.getenv('PG_HOST'),
@@ -183,6 +196,11 @@ def get_users_db_connection():
     return users_db_conn, users_db_cursor
 
 
+def get_log_pg_db_connection():
+    log_db_conn = log_db_pool.getconn()
+    log_db_cursor = log_db_conn.cursor()
+    return log_db_conn, log_db_cursor
+
 @app.after_request
 def set_security_headers(response):
     response.headers['Content-Security-Policy'] = "default-src 'self'"
@@ -266,13 +284,62 @@ def validate_ownership(fn):
 """PUNJAB EMERGENCY-i APIs"""
 
 
+@app.route(configs.REGISTER['ENDPOINT'], methods=[configs.REGISTER['METHOD']])
+@require_api_key
+@require_login_key
+@limiter.limit(configs.LIMITER)
+def register():
+    conn,cursor = get_users_db_connection()
+    try:
+        first_name = request.form.get('first_name')
+        last_name = request.form.get('last_name')
+        username = request.form.get('user_name')
+        password = request.form.get('password')
+        assigned_district = request.form.get('district', '')
+        assigned_division = request.form.get('division', '')
+        assigned_ps = request.form.get('police_station', '')
+        current_district = request.form.get('current_district', '')
+        view_role = request.form.get('view_role', type=int)
+        role_emergency = request.form.get('role_emergency', type=int)
+
+        # Check for missing fields
+        if not all([first_name, last_name, username, password, view_role]):
+            return jsonify({"error": "All required fields must be provided"}), 400
+
+        # hashed_password = hashlib.md5(password.encode()).hexdigest()
+
+        # Check if username already exists
+        cursor.execute("SELECT user_id_emergency FROM users WHERE user_name_emergency = %s", (username,))
+        if cursor.fetchone():
+            return jsonify({"error": "Username already exists"}), 409
+
+        insert_query = """
+            INSERT INTO users 
+            (first_name_emergency, last_name_emergency, user_name_emergency, password_emergency, 
+            assigned_district_emergency, assigned_division_emergency, assigned_ps_emergency, view_role_emergency, district, role_emergency) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        cursor.execute(insert_query, (first_name, last_name, username, password,
+                                      assigned_district, assigned_division, assigned_ps, view_role, current_district, role_emergency))
+
+        conn.commit()
+        return jsonify({"message": "User registered successfully"}), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        usersdb_pool.putconn(conn)
+
+
 @app.route(configs.LOGIN['ENDPOINT'], methods=[configs.LOGIN['METHOD']])
 @require_api_key
 @require_login_key
 @limiter.limit(configs.LIMITER)
 def login():
     users_db_conn, usersdb_cursor = get_users_db_connection()
-    db_conn, db_cursor = get_log_db_connection()
+    db_conn, db_cursor = get_log_pg_db_connection()
     try:
         username = request.form.get('username')
         password = request.form.get('password')
@@ -329,18 +396,14 @@ def login():
         }), 200
 
     except Exception as e:
-        utils.log_to_database(db_conn, db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(db_conn, db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}'
         }), 400
     finally:
-        if db_cursor:
-            db_cursor.close()
-
-        if db_conn:
-            db_conn.rollback()  # Rollback any uncommitted transactions
-            db_conn.close()  # Properly return to the pool without removing it
+        db_cursor.close()
+        log_db_pool.putconn(db_conn)
         usersdb_cursor.close()
         usersdb_pool.putconn(users_db_conn)
 
@@ -350,7 +413,7 @@ def login():
 @require_api_key
 @validate_ownership
 def update_password():
-    db_conn, db_cursor = get_log_db_connection()
+    db_conn, db_cursor = get_log_pg_db_connection()
     users_db_conn, usersdb_cursor = get_users_db_connection()
     try:
         current_user = get_jwt_identity()
@@ -415,15 +478,12 @@ def update_password():
             'status': False,
             'message': f'Password update failed, Please try again Later',
         }
-        utils.log_to_database(db_conn, db_cursor, "ERROR", f"Password update failed: {traceback.format_exc()}")
+        utils.log_to_pg_database(db_conn, db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify(error_response), 500
     finally:
-        if db_cursor:
-            db_cursor.close()
-
-        if db_conn:
-            db_conn.rollback()  # Rollback any uncommitted transactions
-            db_conn.close()  # Properly return to the pool without removing it
+        db_cursor.close()
+        log_db_pool.putconn(db_conn)
+        # Properly return to the pool without removing it
         usersdb_cursor.close()
         usersdb_pool.putconn(users_db_conn)
 
@@ -448,7 +508,8 @@ def punjab_stats_dashboard():
         JSON: Dashboard statistics with standardized response format
     """
 
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    predpol_db_conn, predpol_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     users_db_conn, usersdb_cursor = get_users_db_connection()
     try:
@@ -939,7 +1000,7 @@ def punjab_stats_dashboard():
 
         current_date = datetime.now()
 
-        log_db_cursor.execute(f"""
+        predpol_db_cursor.execute(f"""
                     SELECT count(*)
                     FROM pred_pol_crimes_hotspot 
                     WHERE case_number IS NOT null
@@ -954,7 +1015,7 @@ def punjab_stats_dashboard():
                     AND date = %s
                     {additional_condition}
         """, (current_date.strftime('%d-%m-%Y'),))
-        re_occurrences_count = log_db_cursor.fetchone()
+        re_occurrences_count = predpol_db_cursor.fetchone()
         if re_occurrences_count is not None:
             re_occurrences_response = {"reoccured_cases": re_occurrences_count[0]}
         else:
@@ -1105,15 +1166,17 @@ def punjab_stats_dashboard():
             'message': f'Internal server error : {e}',
             'data': None
         }
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify(error_response), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        if predpol_db_cursor:
+            predpol_db_cursor.close()
+        if predpol_db_conn:
+            predpol_db_conn.close()
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
 
         usersdb_cursor.close()
         usersdb_pool.putconn(users_db_conn)
@@ -1142,7 +1205,7 @@ def punjab_more_info():
     Returns:
         JSON: Detailed statistics with standardized response format
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -1348,7 +1411,7 @@ def punjab_more_info():
                         AND parent_id=0
                         AND response_time > 0
                         {district_condition}
-                        
+
                 """
         if category == 'minorities':
             where_condition = "queue = 'minorities-15'"
@@ -1395,19 +1458,16 @@ def punjab_more_info():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': 'Internal server error',
             'data': None
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -1431,7 +1491,7 @@ def districtwise_counts():
     Returns:
         JSON: District-wise case counts with standardized response format
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -1525,19 +1585,16 @@ def districtwise_counts():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': 'Internal server error',
             'data': None
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -1561,7 +1618,7 @@ def districtwise_more_info():
     Returns:
         JSON: Detailed district statistics
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -1828,18 +1885,15 @@ def districtwise_more_info():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': f'Internal server error {traceback.format_exc()}'
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -1862,7 +1916,7 @@ def pswise_categories():
     Returns:
         JSON: Police station statistics and cases
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -2165,19 +2219,16 @@ def pswise_categories():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': 'Internal server error',
             'data': None
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -2202,7 +2253,7 @@ def punjab_case_details():
               When neither assigned parameter is provided, an additional key
               'assigned_by_users' lists all users to whom the current user has assigned the case.
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -2327,7 +2378,7 @@ def punjab_case_details():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': f'Internal server error: {e}',
@@ -2335,12 +2386,9 @@ def punjab_case_details():
         }), 500
 
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -2365,7 +2413,7 @@ def district_category_details():
     Returns:
         JSON: Police station-wise counts and case details for the specified category
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -2518,19 +2566,16 @@ def district_category_details():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}',
             'data': None
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -2541,7 +2586,7 @@ def district_category_details():
 @validate_ownership
 def forcast_predictive_policing():
     try:
-        log_db_conn, log_db_cursor = get_log_db_connection()
+        log_db_conn, log_db_cursor = get_log_pg_db_connection()
 
         ps = request.form.get('police_station')
         district = request.form.get('district')
@@ -2559,7 +2604,7 @@ def forcast_predictive_policing():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': 'Internal server error',
@@ -2580,7 +2625,7 @@ def forcast_predictive_policing():
 @validate_ownership
 def forecast_datewise():
     try:
-        log_db_conn, log_db_cursor = get_log_db_connection()
+        log_db_conn, log_db_cursor = get_log_pg_db_connection()
 
         ps = request.form.get('police_station')
         district = request.form.get('district')
@@ -2603,7 +2648,7 @@ def forecast_datewise():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': f'Internal server error : {e}',
@@ -2624,7 +2669,7 @@ def forecast_datewise():
 @validate_ownership
 def emergency_15_integration():
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     try:
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
@@ -2819,18 +2864,15 @@ def emergency_15_integration():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}',
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+         # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -2842,36 +2884,22 @@ def emergency_15_integration():
 def add_remarks():
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     notification_conn, notification_cursor = get_notification_db_connection()
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
 
     try:
-        # Retrieve data from the request form
         case_number = request.form.get('case_number')
         view_role = request.form.get('view_role')
         remarks = request.form.get('remarks')
         user_name = request.form.get('user_name')
         assigned_to = request.form.get('assigned_to')
         cc = request.form.get('cc')
-        name = request.form.get('name')  # Full name for notification display
+        name = request.form.get('name')
 
         # Validate required fields
         if not case_number or not user_name or not view_role or not remarks:
-            return jsonify({
-                "success": False,
-                "message": "Missing required fields"
-            }), 400
+            return jsonify({"success": False, "message": "Missing required fields"}), 400
 
-        # Construct the new remark in a structured format
-        new_remark = {
-            "message": remarks,
-            "messaged_by": user_name,
-            "messaged_to": assigned_to,
-            "cc": cc,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "name": name
-        }
-
-        # Check if remarks already exist for the given case_id, assigned_by, and assigned_to
+        # Check if remarks already exist
         processed_db_cursor.execute(
             "SELECT remarks FROM remarks WHERE case_id = %s AND assigned_by = %s AND assigned_to = %s",
             (case_number, user_name, assigned_to)
@@ -2879,68 +2907,67 @@ def add_remarks():
         row = processed_db_cursor.fetchone()
 
         if row and row[0]:
-            # If remarks exist, return a message without inserting a new record
-            response_message = "Remarks already exist for this case_number, assigned_by, and assigned_to."
-            return jsonify({
-                "success": True,
-                "message": response_message
-            }), 200
+            return jsonify({"success": True, "message": "Remarks already exist for this case_number, assigned_by, and assigned_to."}), 200
 
-        # Since no previous remarks exist, prepare the JSON structure to be stored as a list
+        image_path = None  # Default: No image
+        if "image" in request.files:
+            image_file = request.files["image"]
+            if image_file and utils.allowed_file(image_file.filename):
+                filename = secure_filename(f"{case_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
+                BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+                STATIC_FOLDER = os.path.abspath(os.path.join(BASE_DIR, "..", "static", "images"))
+
+                os.makedirs(STATIC_FOLDER, exist_ok=True)
+                file_path = os.path.join(STATIC_FOLDER, filename)
+
+                image_file.save(file_path)
+
+                image_path = f"static/images/{filename}"
+
+        new_remark = {
+            "message": remarks,
+            "messaged_by": user_name,
+            "messaged_to": assigned_to,
+            "cc": cc,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "name": name,
+            "image_path": image_path
+        }
+
         new_remark_json = json.dumps([new_remark])
-
-        # Insert the new remark into the database
         insert_query = """
-            INSERT INTO remarks (case_id, assigned_to, assigned_by, cc, remarks)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO remarks (case_id, assigned_to, assigned_by, cc, remarks, image_path)
+            VALUES (%s, %s, %s, %s, %s, %s)
         """
         processed_db_cursor.execute(
             insert_query,
-            (case_number, assigned_to, user_name, cc, new_remark_json)
+            (case_number, assigned_to, user_name, cc, new_remark_json, image_path)
         )
         processed_db_conn.commit()
 
         notification_query = """
-                   INSERT INTO realtime_notifications (case_number, user_name, update_from, type)
-                   VALUES (%s, %s, %s, %s)
-               """
+            INSERT INTO realtime_notifications (case_number, user_name, update_from, type)
+            VALUES (%s, %s, %s, %s)
+        """
         notification_cursor.execute(
             notification_query,
             (case_number, user_name, assigned_to, 'remark')
         )
-
         notification_conn.commit()
-
-        # Send push notifications
-        title = "New Remark Added"
-        body = f"{name} added remarks for case {case_number}"
-        # if assigned_to and assigned_to.strip():
-        #     firebase.send_push_notification_to_topic(assigned_to.strip(), title, body)
-        # if cc and cc.strip():
-        #     firebase.send_push_notification_to_topic(cc.strip(), title, body)
 
         response_message = "Remarks added successfully."
         return jsonify({
             "success": True,
-            "message": response_message
+            "message": response_message,
         }), 200
 
     except Exception as e:
-        # Log exception details into the log database
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
-        return jsonify({
-            "success": False,
-            "message": "An unexpected error occurred. Please try again later."
-        }), 500
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({"success": False, "message": "An unexpected error occurred. Please try again later."}), 500
 
     finally:
-        # Clean up database connections and cursors
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
         processed_db_cursor.close()
         notification_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
@@ -3135,7 +3162,7 @@ def parse_timestamp(remarks):
 @require_api_key
 @validate_ownership
 def get_remarks():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
         # get request parameters
@@ -3202,7 +3229,8 @@ def get_remarks():
                 r.assigned_to, 
                 r.cc, 
                 r.remarks, 
-                r.time_stamp
+                r.time_stamp,
+                r.image_path
             FROM response_time rt
             JOIN remarks r ON rt.case_number = r.case_id
             WHERE 
@@ -3231,7 +3259,7 @@ def get_remarks():
         for row in my_followups_rows:
             (case_number, level3_case_nature, caller_name, caller_number, created_time,
              police_station, district_id, time_id, description, reached_time, response_time,
-             assigned_by, assigned_to, cc, remark_text, time_stamp) = row
+             assigned_by, assigned_to, cc, remark_text, time_stamp,image_path) = row
 
             status_flag, priority_flag = utils.get_remark_flags(remark_text, time_id)
 
@@ -3252,7 +3280,8 @@ def get_remarks():
                 "assignedby": assigned_by,
                 "priority_flag": priority_flag,
                 "status_flag": status_flag,
-                "last_timestamp": time_stamp
+                "last_timestamp": time_stamp,
+                "image_url" : (os.getenv('BASE_URL') + image_path ) if image_path else None
             })
 
         current_time = datetime.now()
@@ -3260,7 +3289,7 @@ def get_remarks():
         for row in followups_needed_rows:
             (case_number, level3_case_nature, caller_name, caller_number, created_time,
              police_station, district_id, time_id, description, reached_time, response_time,
-             assigned_by, assigned_to, cc, remark_text, time_stamp) = row
+             assigned_by, assigned_to, cc, remark_text, time_stamp,image_path) = row
 
             status_flag, priority_flag = utils.get_remark_flags(remark_text, time_id)
 
@@ -3287,14 +3316,15 @@ def get_remarks():
                        (current_time - datetime.strptime(last_timestamp, configs.YMD_HMS)).total_seconds() < 30
                     else 0
                 ),
-                "last_timestamp": time_stamp
+                "last_timestamp": time_stamp,
+                "image_url": (os.getenv('BASE_URL') + image_path ) if image_path else None
             })
 
         cc_followups_list = []
         for row in cc_followups_rows:
             (case_number, level3_case_nature, caller_name, caller_number, created_time,
              police_station, district_id, time_id, description, reached_time, response_time,
-             assigned_by, assigned_to, cc, remark_text, time_stamp) = row
+             assigned_by, assigned_to, cc, remark_text, time_stamp, image_path) = row
 
             status_flag, priority_flag = utils.get_remark_flags(remark_text, time_id)
 
@@ -3316,7 +3346,8 @@ def get_remarks():
                 "cc": cc,
                 "priority_flag": priority_flag,
                 "status_flag": status_flag,
-                "last_timestamp": time_stamp
+                "last_timestamp": time_stamp,
+                "image_url" : (os.getenv('BASE_URL') + image_path ) if image_path else None
             })
 
         # sorted lists by timestamp (newest first)
@@ -3343,21 +3374,24 @@ def get_remarks():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': 'An unexpected error occurred. Please try again later.',
             'data': None
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route('/static/images/<path:filename>',methods = ['GET'])
+def serve_static(filename):
+    images_directory = os.path.join(os.getenv('STATIC_FOLDER'), 'images')
+    return send_from_directory(images_directory, filename),200
 
 
 @app.route(configs.UPDATE_REMARKS['ENDPOINT'], methods=[configs.UPDATE_REMARKS['METHOD']])
@@ -3370,10 +3404,11 @@ def update_remarks():
         case_number = request.form.get('case_number')
         view_role = request.form.get('view_role')
         new_remarks = request.form.get('remarks')
-        user_name = request.form.get('user_name')
+        user_name = request.form.get('username')
         cc = request.form.get('cc')
         name = request.form.get('name')
         reciever = request.form.get('assigned_to')
+        image = request.files.get('image')
 
         # Validate required fields
         if not case_number or not user_name or not view_role or not new_remarks:
@@ -3382,26 +3417,47 @@ def update_remarks():
                 "message": "Missing required fields"
             }), 400
 
-        # Build the new remark object in the same structured format
+        image_path = None
+        if image and utils.allowed_file(image.filename):
+            filename = secure_filename(f"{case_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
+            BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+            STATIC_FOLDER = os.path.abspath(os.path.join(BASE_DIR, "..", "static", "images"))
+
+            os.makedirs(STATIC_FOLDER, exist_ok=True)
+            file_path = os.path.join(STATIC_FOLDER, filename)
+
+            image.save(file_path)  # Save image
+
+            # Store only relative path
+            image_path = f"static/images/{filename}"
+
+            # Build the new remark object in the same structured format
         appended_remark = {
             "message": new_remarks,
             "messaged_by": user_name,
             "messaged_to": reciever,
             "cc": cc if cc else "",
             "name": name,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "image_url": image_path
         }
 
         # Connect to the processed and log databases
         processed_db_conn, processed_db_cursor = get_processed_db_connection()
-        log_db_conn, log_db_cursor = get_log_db_connection()
+        log_db_conn, log_db_cursor = get_log_pg_db_connection()
         notification_conn, notification_cursor = get_notification_db_connection()
 
-        # Check if a record exists in the remarks table for the given combination
-        processed_db_cursor.execute(
-            "SELECT remarks FROM remarks WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
-            (case_number, user_name, reciever)
-        )
+        # Handle Exceptional Case for ig.punjab
+        if user_name.lower() == "ig.punjab":
+            processed_db_cursor.execute(
+                "SELECT remarks FROM remarks WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
+                (case_number, reciever, user_name)
+            )
+        else:
+            processed_db_cursor.execute(
+                "SELECT remarks FROM remarks WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
+                (case_number, user_name, reciever)
+            )
         row = processed_db_cursor.fetchone()
 
         if row:
@@ -3421,10 +3477,16 @@ def update_remarks():
             updated_remarks_json = json.dumps(existing_remarks)
 
             # Update the remarks record in the database
-            processed_db_cursor.execute(
-                "UPDATE remarks SET remarks = %s WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
-                (updated_remarks_json, case_number, user_name, reciever)
-            )
+            if user_name.lower() == "ig.punjab":
+                processed_db_cursor.execute(
+                    "UPDATE remarks SET remarks = %s WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
+                    (updated_remarks_json, case_number, reciever, user_name)
+                )
+            else:
+                processed_db_cursor.execute(
+                    "UPDATE remarks SET remarks = %s WHERE case_id = %s AND assigned_to = %s AND assigned_by = %s",
+                    (updated_remarks_json, case_number, user_name, reciever)
+                )
             processed_db_conn.commit()
 
             notification_query = """
@@ -3440,12 +3502,6 @@ def update_remarks():
 
             response_message = "Remarks updated successfully."
 
-            title = "Reply Added"
-            body = f"{user_name} replied for case {case_number}"
-            # if reciever and reciever.strip():
-            #     firebase.send_push_notification_to_topic(reciever.strip(), title, body)
-            # if cc and cc.strip():
-            #     firebase.send_push_notification_to_topic(cc.strip(), title, body)
         else:
             response_message = "No record found for the provided case_number, assigned_by, and assigned_to."
 
@@ -3455,7 +3511,7 @@ def update_remarks():
         }), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
@@ -3463,12 +3519,9 @@ def update_remarks():
 
     finally:
         # Clean up database connections and cursors
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn) # Properly return to the pool without removing it
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         notification_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
@@ -3485,7 +3538,7 @@ def get_notifications():
     try:
         # Connect to the databases
         notification_conn, notification_cursor = get_notification_db_connection()
-        log_db_conn, log_db_cursor = get_log_db_connection()
+        log_db_conn, log_db_cursor = get_log_pg_db_connection()
 
         view_role = request.form.get('view_role', type=int)
         user_name = request.form.get('username')
@@ -3529,19 +3582,15 @@ def get_notifications():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
 
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)  # Properly return to the pool without removing it
 
         if notification_cursor:
             notification_cursor.close()
@@ -3554,7 +3603,7 @@ def get_notifications():
 @require_api_key
 @validate_ownership
 def dist_response_time():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
@@ -3624,18 +3673,15 @@ def dist_response_time():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3645,7 +3691,7 @@ def dist_response_time():
 @require_api_key
 @validate_ownership
 def cm_ps_responsetime():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
@@ -3708,18 +3754,15 @@ def cm_ps_responsetime():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3729,7 +3772,7 @@ def cm_ps_responsetime():
 @require_api_key
 @validate_ownership
 def district_fir_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -3840,18 +3883,16 @@ def district_fir_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3861,7 +3902,7 @@ def district_fir_stats():
 @require_api_key
 @validate_ownership
 def ps_fir_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -3957,18 +3998,15 @@ def ps_fir_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3978,7 +4016,7 @@ def ps_fir_stats():
 @require_api_key
 @validate_ownership
 def conference_call_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -4054,18 +4092,15 @@ def conference_call_stats():
         return jsonify(district_response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -4075,7 +4110,7 @@ def conference_call_stats():
 @require_api_key
 @validate_ownership
 def response_time_alerts():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
         view_role = request.form.get('view_role', type=int)
@@ -4139,7 +4174,14 @@ def response_time_alerts():
             alerts_count.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1]})
 
         alerts_casenumbers = """
-                    SELECT district_id, string_agg(case_number::text, ',') AS case_numbers
+                    SELECT district_id, STRING_AGG(
+                           CONCAT('Case Number: ', case_number, 
+                                  ', District: ', district_id, 
+                                  ', Case Nature: ', level3_case_nature, 
+                                  ', Police Station: ', police_station
+                           ), 
+                           ' ; ' -- Separator for concatenation
+                       ) AS details
                     FROM response_time
                     WHERE date BETWEEN %s AND %s
                       AND response_time > 2100
@@ -4159,7 +4201,7 @@ def response_time_alerts():
 
         alerts_cases = []
         for i in alerts:
-            alerts_cases.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1].split(",")})
+            alerts_cases.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1].split(";")})
 
         if view_role == 5 and district_ids:
             additional_condition = (
@@ -4231,18 +4273,15 @@ def response_time_alerts():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -4252,7 +4291,7 @@ def response_time_alerts():
 @require_api_key
 @validate_ownership
 def police_vehicle_locations():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
         vehicle_status = request.form.get('status')
@@ -4322,18 +4361,15 @@ def police_vehicle_locations():
             {"status": "success", "data": data, "message": "Police Vehicles Data fetched successfully", }), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -4343,7 +4379,7 @@ def police_vehicle_locations():
 @require_api_key
 @validate_ownership
 def vwps_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     db_conn = db_config.get_vwps_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -4506,18 +4542,14 @@ def vwps_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)  # Properly return to the pool without removing it
 
 
 @app.route(configs.VCCS_STATS['ENDPOINT'], methods=[configs.VCCS_STATS['METHOD']])
@@ -4525,7 +4557,7 @@ def vwps_stats():
 @require_api_key
 @validate_ownership
 def vccs_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     db_conn = db_config.get_vccs_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -4688,18 +4720,14 @@ def vccs_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)  # Properly return to the pool without removing it
 
 
 @app.route(configs.VCM_STATS['ENDPOINT'], methods=[configs.VCM_STATS['METHOD']])
@@ -4707,7 +4735,7 @@ def vccs_stats():
 @require_api_key
 @validate_ownership
 def vcm_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     db_conn = db_config.get_vcm_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -4824,18 +4852,14 @@ def vcm_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)  # Properly return to the pool without removing it
 
 
 @app.route(configs.CRIME_TRENDS['ENDPOINT'], methods=[configs.CRIME_TRENDS['METHOD']])
@@ -4843,7 +4867,7 @@ def vcm_stats():
 @require_api_key
 @validate_ownership
 def crime_trends():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     master_db_connection = db_config.get_db_connection()
     try:
@@ -4852,7 +4876,7 @@ def crime_trends():
         selected_category = request.form.get('category')
         year = request.form.get('year')
         time_period = request.form.get('time_period')  # 'week' or 'month'
-        user_name = request.form.get('user_name')
+        user_name = request.form.get('username')
 
         police_stations = police_station_str.split(",") if (police_station_str and police_station_str != 'null') else []
 
@@ -4924,9 +4948,9 @@ def crime_trends():
             conditions.append("police_station = ANY(%(police_stations)s)")
             params['police_stations'] = police_stations
 
-        if year:
-            conditions.append("EXTRACT(YEAR FROM DATE(date)) = %(year)s")
-            params['year'] = year
+        # if year:
+        #     conditions.append("EXTRACT(YEAR FROM DATE(date)) = %(year)s")
+        #     params['year'] = year
 
         where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
 
@@ -5041,8 +5065,8 @@ def crime_trends():
         if police_station_str and police_station_str != 'null':
             fir_query += f" AND police_station = '{police_station_str}'"
 
-        if year:
-            fir_query += f" AND EXTRACT(YEAR FROM date::DATE) = {year}"
+        # if year:
+        #     fir_query += f" AND EXTRACT(YEAR FROM date::DATE) = {year}"
 
         fir_query += f"""
                 GROUP BY {time_grouping}
@@ -5076,19 +5100,16 @@ def crime_trends():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
 
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
         master_cursor.close()
@@ -5100,7 +5121,7 @@ def crime_trends():
 @require_api_key
 @validate_ownership
 def blood_donation():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     db_conn = db_config.get_blood_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -5229,18 +5250,15 @@ def blood_donation():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
 
 
 @app.route(configs.ESCALATED_CASES['ENDPOINT'], methods=[configs.ESCALATED_CASES['METHOD']])
@@ -5248,7 +5266,7 @@ def blood_donation():
 @require_api_key
 @validate_ownership
 def escalated_cases():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     vccs_conn = db_config.get_vccs_db_connection()
     vccs_cursor = vccs_conn.cursor()
     vwps_conn = db_config.get_vwps_db_connection()
@@ -5347,18 +5365,15 @@ def escalated_cases():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         vwps_cursor.close()
         vwps_conn.close()
         vccs_cursor.close()
@@ -5372,7 +5387,7 @@ def escalated_cases():
 @require_api_key
 @validate_ownership
 def crime_trend_cases():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
@@ -5443,18 +5458,15 @@ def crime_trend_cases():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -5680,7 +5692,7 @@ def crime_reoccurrence_case():
               When neither assigned parameter is provided, an additional key
               'assigned_by_users' lists all users to whom the current user has assigned the case.
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     db_conn = db_config.get_db_connection()
     db_cursor = db_conn.cursor()
@@ -5828,7 +5840,7 @@ def crime_reoccurrence_case():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': f'Internal server error: {e}',
@@ -5836,12 +5848,9 @@ def crime_reoccurrence_case():
         }), 500
 
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -5851,7 +5860,7 @@ def crime_reoccurrence_case():
 @require_api_key
 @validate_ownership
 def ps_conference_call_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
 
     try:
@@ -5902,18 +5911,15 @@ def ps_conference_call_stats():
                 "message": "Provide a Valid District."
             }), 500
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -5923,7 +5929,7 @@ def ps_conference_call_stats():
 @require_api_key
 @validate_ownership
 def caller_feedback_districtwise():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
@@ -5993,18 +5999,15 @@ def caller_feedback_districtwise():
 
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -6014,7 +6017,7 @@ def caller_feedback_districtwise():
 @require_api_key
 @validate_ownership
 def caller_feedback_pswise():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
@@ -6053,18 +6056,15 @@ def caller_feedback_pswise():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
             "message": "An unexpected error occurred. Please try again later."
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -6074,7 +6074,7 @@ def caller_feedback_pswise():
 @require_api_key
 @validate_ownership
 def negative_feedback_cases():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
@@ -6162,18 +6162,15 @@ def negative_feedback_cases():
 
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}'
         }), 400
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -6183,12 +6180,13 @@ def negative_feedback_cases():
 @require_api_key
 @validate_ownership
 def user_analytics():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     users_db_conn, usersdb_cursor = get_users_db_connection()
     try:
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
+        username = request.form.get('username')
 
         districts = district_str.split(",") if district_str else []
 
@@ -6246,8 +6244,21 @@ def user_analytics():
                 'offline': int(row[3]) if isinstance(row[3], Decimal) else row[3]
             })
 
-        query_users = "SELECT user_name_emergency FROM users where CAST(view_role_emergency AS INTEGER) > %s AND district is not null"
-        usersdb_cursor.execute(query_users, (view_role,))
+        query_users = """SELECT user_name_emergency
+                        FROM users
+                        WHERE 
+                            CAST(view_role_emergency AS INTEGER) > %s
+                            AND district IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM UNNEST(STRING_TO_ARRAY(district, ',')) AS user_district
+                                WHERE user_district = ANY (
+                                    SELECT UNNEST(STRING_TO_ARRAY(assigned_district_emergency, ','))
+                                    FROM users
+                                    WHERE user_name_emergency = %s
+                                                        )
+    );"""
+        usersdb_cursor.execute(query_users, (view_role,username))
 
         # all usernames
         usernames = [row[0] for row in usersdb_cursor.fetchall()]
@@ -6318,18 +6329,15 @@ def user_analytics():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}'
         }), 400
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
-
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        # Properly return to the pool without removing it
 
         usersdb_cursor.close()
         usersdb_pool.putconn(users_db_conn)

@@ -322,6 +322,7 @@ RESPONSE_TIME_STATS_RANGES = [
 ]
 
 """ PUNJAB EMERGENCY-i APIs ENDPOINTS AND METHODS"""
+REGISTER = {'ENDPOINT' : '/register', 'METHOD' : 'POST'}
 LOGIN = {'ENDPOINT': '/login', 'METHOD': 'POST'}
 DASHBOARD_PUNJAB = {'ENDPOINT': '/dashboard_punjab', 'METHOD': 'POST'}
 PUNJAB_MORE_INFO = {'ENDPOINT': '/punjab_more_info', 'METHOD': 'POST'}
@@ -808,3 +809,45 @@ district_eng_urdu = {
     "T.T. Singh": "ٹوبہ ٹیک سنگھ",
     "Vehari": "وہاڑی"
 }
+
+district_code_mapping = {
+                "swl": "sahiwal",
+                "lhr": "lahore",
+                "rwp": "rawalpindi",
+                "fsd": "faisalabad",
+                "mux": "multan",
+                "grw": "gujranwala",
+                "bwp": "bahawalpur",
+                "sgd": "sargodha",
+                "ryk": "rahimyar khan",
+                "skp": "sheikhupura",
+                "grt": "gujrat",
+                "skt": "sialkot",
+                "mzg": "muzaffargarh",
+                "ddb": "d.g. khan",
+                "ckl": "chakwal",
+                "bwn": "bahawalnagar",
+                "att": "attock",
+                "cot": "chiniot",
+                "dgk": "dgkhan",
+                "hfz": "hafizabad",
+                "jhg": "jhang",
+                "jm": "jhelum",
+                "ksr": "kasur",
+                "knw": "khanewal",
+                "ksb": "khushab",
+                "lya": "layyah",
+                "ldh": "lodhran",
+                "mbd": "mbdin",
+                "mwl": "mianwali",
+                "nrl": "narowal",
+                "nks": "nankana",
+                "oka": "okara",
+                "pp": "pakpatan",
+                "rjr": "rajanpur",
+                "tts": "ttsingh",
+                "vri": "vehari"
+            }
+
+IMAGE_FOLDER = "static/images"
+ALLOWED_IMG_EXTENSIONS = {"png", "jpg", "jpeg"}
