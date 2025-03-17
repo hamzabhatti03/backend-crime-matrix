@@ -3439,7 +3439,7 @@ def update_remarks():
             "cc": cc if cc else "",
             "name": name,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "image_url": image_path
+            "image_path": image_path
         }
 
         # Connect to the processed and log databases
@@ -4869,7 +4869,7 @@ def vcm_stats():
 def crime_trends():
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    master_db_connection = db_config.get_db_connection()
+    master_db_connection = get_users_db_connection()
     try:
         district_str = request.form.get('district')
         police_station_str = request.form.get('police_station')
@@ -4889,7 +4889,7 @@ def crime_trends():
         if district_str or police_station_str:
             user_query = """
                     SELECT assigned_district_emergency, assigned_ps_emergency 
-                    FROM 15_stats_users
+                    FROM users
                     WHERE user_name_emergency = %s
             """
             master_cursor = master_db_connection.cursor()
