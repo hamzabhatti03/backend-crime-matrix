@@ -5113,7 +5113,7 @@ def crime_trends():
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
         master_cursor.close()
-        master_db_connection.close()
+        usersdb_pool.putconn(master_db_connection)
 
 
 @app.route(configs.BLOOD_DONATION['ENDPOINT'], methods=[configs.BLOOD_DONATION['METHOD']])
