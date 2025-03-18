@@ -3940,6 +3940,7 @@ def ps_fir_stats():
                     AND district_id is not NULL
                     AND district_id = %s
                     {district_condition}
+                    AND police_station IS NOT NULL
                 GROUP BY 
                     police_station;
                  """
@@ -3963,6 +3964,7 @@ def ps_fir_stats():
                             date BETWEEN %s AND %s
                             AND district_id = %s
                             AND parent_id = 0
+                            AND police_station IS NOT NULL
                             AND district_id NOT IN ('0','41','42','43','44','45','46')
                             {district_condition}
                         GROUP BY 
@@ -5896,6 +5898,7 @@ def ps_conference_call_stats():
                         AND field3 IS NOT NULL
                         AND district_id = %s
                         AND parent_id = 0
+                        AND police_station is NOT NULL
                     GROUP BY 
                         police_station;
                      """

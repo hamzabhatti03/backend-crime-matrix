@@ -850,7 +850,8 @@ district_code_mapping = {
                 "mtn": "multan",
                 "vhr": "vehari",
                 "mzf": "muzaffargarh",
-                "hsn": "attock"
+                "hsn": "attock",
+                "rjp": "rajanpur"
             }
 
 IMAGE_FOLDER = "static/images"
