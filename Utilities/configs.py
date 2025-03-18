@@ -837,7 +837,7 @@ district_code_mapping = {
                 "knw": "khanewal",
                 "ksb": "khushab",
                 "lya": "layyah",
-                "ldh": "lodhran",
+                "ldh": "lodharan",
                 "mbd": "mbdin",
                 "mwl": "mianwali",
                 "nrl": "narowal",
@@ -851,3 +851,11 @@ district_code_mapping = {
 
 IMAGE_FOLDER = "static/images"
 ALLOWED_IMG_EXTENSIONS = {"png", "jpg", "jpeg"}
+
+HRMIS_API_1 = "https://hrapi2.punjabpolice.gov.pk/hrmis-apis/v3/sc/ofc-detail-sho"
+HRMIS_API_2 = "https://hrapi2.punjabpolice.gov.pk/hrmis-apis/v3/sc/ofc-detail"
+
+# API Header
+LOGIN_HEADERS = {
+    "Authorization": "Bearer syOTeA0OrszbsIau57SFppq0KrPCSfFmgWE3ekfpb83abaf1"
+}

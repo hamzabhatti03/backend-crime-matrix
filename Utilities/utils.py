@@ -1090,3 +1090,12 @@ def construct_homicide_fir_query(urdu_districts):
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in configs.ALLOWED_IMG_EXTENSIONS
+
+
+def fetch_officer_data(cnic):
+    """ Fetch officer data from external HRMIS APIs sequentially. """
+    for url in [configs.HRMIS_API_1, configs.HRMIS_API_2]:
+        response = requests.post(url, headers=configs.LOGIN_HEADERS, data={'cnic': cnic})
+        if response.status_code == 200 and response.json().get("success"):
+            return response.json().get("data")
+    return None  # No data found in both APIs

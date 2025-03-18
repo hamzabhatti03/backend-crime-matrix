@@ -4869,7 +4869,7 @@ def vcm_stats():
 def crime_trends():
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    master_db_connection = get_users_db_connection()
+    master_db_connection, master_cursor = get_users_db_connection()
     try:
         district_str = request.form.get('district')
         police_station_str = request.form.get('police_station')
@@ -4892,14 +4892,18 @@ def crime_trends():
                     FROM users
                     WHERE user_name_emergency = %s
             """
-            master_cursor = master_db_connection.cursor()
             master_cursor.execute(user_query, (user_name,))
             user = master_cursor.fetchone()
+            master_cursor.close()
+            usersdb_pool.putconn(master_db_connection)
 
             if user:
                 if isinstance(user[0], bytes):
                     districts = user[0].decode('utf-8')
-                    assigned_districts = districts.split(',')
+                else:
+                    districts = user[0]
+                assigned_districts = districts.split(',')
+
 
                 if district_str not in assigned_districts:
                     return jsonify({
@@ -5112,8 +5116,6 @@ def crime_trends():
         # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
-        master_cursor.close()
-        usersdb_pool.putconn(master_db_connection)
 
 
 @app.route(configs.BLOOD_DONATION['ENDPOINT'], methods=[configs.BLOOD_DONATION['METHOD']])

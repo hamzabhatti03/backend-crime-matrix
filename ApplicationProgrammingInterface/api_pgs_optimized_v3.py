@@ -339,7 +339,6 @@ def login():
     db_conn, db_cursor = get_log_pg_db_connection()
 
     try:
-        # Extracting request parameters
         username = request.form.get('username')
         password = request.form.get('password')
         cnic = request.form.get('cnic')
@@ -351,10 +350,8 @@ def login():
                 'data': None
             }), 400
 
-        # Hash the password for verification
         hashed_pass = hashlib.md5(password.encode()).hexdigest()
 
-        # Fetch user details from the database
         usersdb_cursor.execute("SELECT * FROM users WHERE user_name_emergency = %s", (username,))
         user = usersdb_cursor.fetchone()
 
@@ -364,89 +361,94 @@ def login():
                 'message': 'Incorrect Username or Password'
             }), 400
 
-        # Call external HRMIS API to verify CNIC
-        hrmis_api_url = "https://hrapi2.punjabpolice.gov.pk/hrmis-apis/v3/sc/ofc-detail-sho"
+        user_status = user[13]
 
-        headers = {
-            "Authorization": "Bearer syOTeA0OrszbsIau57SFppq0KrPCSfFmgWE3ekfpb83abaf1"
-        }
-
-        hrmis_response = requests.post(hrmis_api_url, headers=headers, data={'cnic': cnic})
-
-        if hrmis_response.status_code != 200:
+        if user_status.lower() == 'inactive':
             return jsonify({
                 'status': False,
-                'message': 'Failed to fetch details from HRMIS API'
-            }), 500
+                'message': 'Your account is inactive. Please contact the administrator.'
+            }), 403
 
-        hrmis_data = hrmis_response.json().get("data", {})
+        user_role = user[5]
 
-        # Extract required fields from API response
-        designation_name = hrmis_data.get("designation_name", "").strip()
-        ps_name_eng = hrmis_data.get("ps_name_eng", "").strip() if hrmis_data.get("ps_name_eng", "") else None
-        dst_name = hrmis_data.get("dst_name", "").split(' ')[0].strip().lower()
+        # **Skip Validation for Specific Roles**
+        if user_role == 1 or username.startswith("dig") or username.startswith("aig") or username.startswith('ig'):
+            access_token = create_access_token(identity=username)
 
+            usersdb_cursor.execute("""
+                UPDATE users
+                SET access_token = %s
+                WHERE user_name_emergency = %s
+            """, (access_token, username))
+            users_db_conn.commit()
+
+            return jsonify({
+                'data': {
+                    'username': user[3],
+                    'id': user[0],
+                    'name': f"{user[1]} {user[2]}",
+                    'role': user[10],
+                    'districts': user[7].decode('utf-8') if isinstance(user[7], bytes) else user[7],
+                    'police_stations': user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
+                },
+                'token': access_token,
+                'message': "Successfully created Access token",
+                'status': True
+            }), 200
+
+        # **Proceed with validation for other users**
+        officer_data = utils.fetch_officer_data(cnic)
+
+        if not officer_data:
+            return jsonify({'status': False, 'message': 'No officer data found for provided CNIC'}), 403
+
+        if 'exception' in officer_data:
+            designation_name = officer_data['original']['officer_details'].get("designation_name", "").strip()
+            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[
+                0].strip().lower() \
+                if officer_data['original']['officer_details'].get("posting_district", "") else None
+        else:
+            designation_name = officer_data.get("designation_name", "").strip()
+            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get(
+                'dst_name') else None
+
+        ps_name_eng = officer_data.get("ps_name_eng", "").strip().lower() if officer_data.get("ps_name_eng") else None
         cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace(" ", "").lower() if ps_name_eng else None
 
-        # Fetch assigned PS from the database for this user
         assigned_ps_emergency = user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
 
         if designation_name.startswith("DSP") or designation_name.startswith("SDPO"):
             extracted_ps_name = designation_name.replace("DSP", "").replace("SDPO", "").strip().split(",")[0].lower()
 
-            # ONLY if username doesn't start with 'sho.'
             if not username.startswith("sho."):
                 extracted_username_section = username.split("@")[0].split(".")[1].lower()
             else:
                 extracted_username_section = None
 
-            # Match extracted values
             if extracted_ps_name != extracted_username_section:
-                return jsonify({
-                    'status': False,
-                    'message': 'Authentication error: Designation mismatch'
-                }), 403
+                return jsonify({'status': False, 'message': 'Authentication error: Designation mismatch'}), 403
 
-        elif any(designation in designation_name for designation in ["DIG", "AIG", "SSP", "SP"]):
+        elif any(designation in designation_name for designation in ["SSP", "SP"]):
             extracted_district_code = username.split("@")[0].split(".")[2].lower()
-
-            # Convert district code to full name if present in mapping
             mapped_district = configs.district_code_mapping.get(extracted_district_code, "").lower()
 
-            # Match extracted district with API response district
             if mapped_district != dst_name:
-                return jsonify({
-                    'status': False,
-                    'message': 'Authentication error: District mismatch'
-                }), 403
+                return jsonify({'status': False, 'message': 'Authentication error: District mismatch'}), 403
 
-        # **District-Level Users Validation (DPO, RPO, AIG, DIG, SSP, SP)**
         elif any(designation in designation_name for designation in ["DPO", "RPO", "CPO", "CCPO"]):
-            # Extract district code from username
             extracted_district_code = username.split("@")[0].split(".")[1].lower()
-
-            # Convert district code to full name if present in mapping
             mapped_district = configs.district_code_mapping.get(extracted_district_code, "").lower()
 
-            # Match extracted district with API response district
             if mapped_district != dst_name:
-                return jsonify({
-                    'status': False,
-                    'message': 'Authentication error: District mismatch'
-                }), 403
+                return jsonify({'status': False, 'message': 'Authentication error: District mismatch'}), 403
 
-        # **Police Station-Level Users Validation (SHO)**
         elif designation_name.lower() == "sho":
             if cleaned_ps_name_eng != assigned_ps_emergency.lower():
-                return jsonify({
-                    'status': False,
-                    'message': 'Authentication error: User is not assigned to this police station'
-                }), 403
+                return jsonify({'status': False,
+                                'message': 'Authentication error: User is not assigned to this police station'}), 403
+
         else:
-            return jsonify({
-                'status': False,
-                'message': 'Authentication error: Invalid designation'
-            }), 403
+            return jsonify({'status': False, 'message': 'Authentication error: Invalid designation'}), 403
 
         # Generate access token
         access_token = create_access_token(identity=username)
@@ -465,7 +467,7 @@ def login():
                 'id': user[0],
                 'name': f"{user[1]} {user[2]}",
                 'role': user[10],
-                'districts': assigned_ps_emergency,
+                'districts': user[7].decode('utf-8') if isinstance(user[7], bytes) else user[7],
                 'police_stations': user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
             },
             'token': access_token,
@@ -477,7 +479,7 @@ def login():
         utils.log_to_pg_database(db_conn, db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
-            'message': f'Internal server error: {str(e)}'
+            'message': f'Internal server error, Please Try Again Later.'
         }), 500
     finally:
         db_cursor.close()
