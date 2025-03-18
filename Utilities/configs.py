@@ -824,7 +824,6 @@ district_code_mapping = {
                 "grt": "gujrat",
                 "skt": "sialkot",
                 "mzg": "muzaffargarh",
-                "ddb": "d.g. khan",
                 "ckl": "chakwal",
                 "bwn": "bahawalnagar",
                 "att": "attock",
@@ -846,7 +845,12 @@ district_code_mapping = {
                 "pp": "pakpatan",
                 "rjr": "rajanpur",
                 "tts": "ttsingh",
-                "vri": "vehari"
+                "vri": "vehari",
+                "shk": "sheikhupura",
+                "mtn": "multan",
+                "vhr": "vehari",
+                "mzf": "muzaffargarh",
+                "hsn": "attock"
             }
 
 IMAGE_FOLDER = "static/images"

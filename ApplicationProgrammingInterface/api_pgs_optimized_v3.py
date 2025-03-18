@@ -404,13 +404,11 @@ def login():
 
         if 'exception' in officer_data:
             designation_name = officer_data['original']['officer_details'].get("designation_name", "").strip()
-            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[
-                0].strip().lower() \
-                if officer_data['original']['officer_details'].get("posting_district", "") else None
+            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[0].strip().lower() \
+                            if officer_data['original']['officer_details'].get("posting_district", "") else None
         else:
             designation_name = officer_data.get("designation_name", "").strip()
-            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get(
-                'dst_name') else None
+            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get('dst_name') else None
 
         ps_name_eng = officer_data.get("ps_name_eng", "").strip().lower() if officer_data.get("ps_name_eng") else None
         cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace(" ", "").lower() if ps_name_eng else None
@@ -429,14 +427,14 @@ def login():
                 return jsonify({'status': False, 'message': 'Authentication error: Designation mismatch'}), 403
 
         elif any(designation in designation_name for designation in ["SSP", "SP"]):
-            extracted_district_code = username.split("@")[0].split(".")[2].lower()
+            extracted_district_code = username.split("@")[0].split(".")[-1].lower()
             mapped_district = configs.district_code_mapping.get(extracted_district_code, "").lower()
 
             if mapped_district != dst_name:
                 return jsonify({'status': False, 'message': 'Authentication error: District mismatch'}), 403
 
         elif any(designation in designation_name for designation in ["DPO", "RPO", "CPO", "CCPO"]):
-            extracted_district_code = username.split("@")[0].split(".")[1].lower()
+            extracted_district_code = username.split("@")[0].split(".")[-1].lower()
             mapped_district = configs.district_code_mapping.get(extracted_district_code, "").lower()
 
             if mapped_district != dst_name:
