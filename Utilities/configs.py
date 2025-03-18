@@ -91,9 +91,9 @@ DISTRICTS_MAPPING = [(1, "Sheikhupura"), (2, "Nankana Sb"), (3, "Kasur"), (4, "G
                      (24, "T.T. Singh"), (25, "Multan"), (27, "Lodhran"), (28, "Khanewal"), (29, "Vehari"),
                      (30, "Sahiwal"), (31, "Okara"), (32, "Pakpattan"), (33, "D.G. Khan"), (34, "Rajanpur"),
                      (35, "Muzaffargarh"), (36, "Layyah"), (37, "Bahawalpur"), (38, "Bahawalnagar"),
-                     (39, "Rahimyar Khan"), (40, "Lahore")]
+                     (39, "Rahimyar Khan"), (40, "Lahore"), (46, "Murree")]
 
-# , (41, "Lahore-Test"), (42, "Female-15"), (43, "Kot Addu"),(44, "Wazirabad"), (45, "Potohari-15"), (46, "Murree")
+# , (41, "Lahore-Test"), (42, "Female-15"), (43, "Kot Addu"),(44, "Wazirabad"), (45, "Potohari-15")
 
 DISTRICTS_DICTIONARY = {id: name for id, name in DISTRICTS_MAPPING}
 REVERSED_DISTRICTS_DICTIONARY = {name: id for id, name in DISTRICTS_MAPPING}
@@ -832,8 +832,10 @@ district_code_mapping = {
                 "hfz": "hafizabad",
                 "jhg": "jhang",
                 "jm": "jhelum",
+                "jhm": "jhelum",
                 "ksr": "kasur",
                 "knw": "khanewal",
+                "khl": "khanewal",
                 "ksb": "khushab",
                 "lya": "layyah",
                 "ldh": "lodharan",
@@ -851,7 +853,12 @@ district_code_mapping = {
                 "vhr": "vehari",
                 "mzf": "muzaffargarh",
                 "hsn": "attock",
-                "rjp": "rajanpur"
+                "rjp": "rajanpur",
+                "bkr": "bhakkar",
+                "cht": "chiniot",
+                "hfd": "hafizabad"
+
+
             }
 
 IMAGE_FOLDER = "static/images"

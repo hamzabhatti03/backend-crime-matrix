@@ -5969,6 +5969,7 @@ def caller_feedback_districtwise():
                             WHERE 
                                 date = %s
                             {district_condition}
+                            AND district_id is NOT NULL
                             Group By district_id
                         """, (currnt_date,))
 

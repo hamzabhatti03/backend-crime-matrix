@@ -372,7 +372,7 @@ def login():
         user_role = user[5]
 
         # **Skip Validation for Specific Roles**
-        if user_role == 1 or username.startswith("dig") or username.startswith("aig") or username.startswith('ig'):
+        if user_role == 1 or username.startswith("dig") or username.startswith("aig") or username.startswith('ig') or username.startswith('piftac'):
             access_token = create_access_token(identity=username)
 
             usersdb_cursor.execute("""
@@ -711,7 +711,7 @@ def punjab_stats_dashboard():
                 AND date BETWEEN %s AND %s
                 AND parent_id=0
                 AND response_time > 0
-                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
                 {district_condition};
         """
         category_query = category_query.format(district_condition=district_condition)
@@ -726,7 +726,7 @@ def punjab_stats_dashboard():
                 processed_data
             WHERE 
                 date BETWEEN %s AND %s
-                AND district_id NOT IN ('0','41','42','43','44','45','46')
+                AND district_id NOT IN ('0','41','42','43','44','45')
                 AND district_id IS NOT NULL
             {district_condition}
         """
@@ -745,7 +745,7 @@ def punjab_stats_dashboard():
                 SELECT region_category, AVG(response_time) AS avg_response_time
                 FROM response_time
                 WHERE region_category IS NOT NULL 
-                  AND district_id NOT IN ('0','41','42','43','44','45','46') 
+                  AND district_id NOT IN ('0','41','42','43','44','45') 
                   AND district_id IS NOT NULL 
                   AND parent_id = 0 
                   AND response_time IS NOT NULL 
@@ -1046,7 +1046,7 @@ def punjab_stats_dashboard():
                             AND response_time > 2100 
                             AND parent_id = 0
                             AND district_id IS NOT NULL
-                            AND district_id NOT IN ('0','41','42','43','44','45','46')
+                            AND district_id NOT IN ('0','41','42','43','44','45')
                             AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 
                             'Kiddnapping / Abduction', 'Murder', 'Terrorist Act')
                             {district_condition}
@@ -1367,7 +1367,7 @@ def punjab_more_info():
                           AND response_time IS NOT NULL
                           AND response_time > 0
                           AND police_station IS NOT NULL
-                          AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                          AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
                           {district_condition}
                     )
                     SELECT
@@ -1432,7 +1432,7 @@ def punjab_more_info():
                     AND police_station is not Null
                     AND response_time > 0
                     {district_condition}
-                    AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                    AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
             GROUP BY 
                 police_station_id, district_id, police_station
             HAVING 
@@ -1463,7 +1463,7 @@ def punjab_more_info():
         ps_cursor.execute(f"""
                     SELECT district_id, count(name) as count 
                     FROM police_stations 
-                    WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45', '46') 
+                    WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45') 
                         AND district_id is NOT NULL
                         {ps_condition}
                     GROUP BY district_id
@@ -1482,7 +1482,7 @@ def punjab_more_info():
                            description, first_arrival_time, response_time
                     FROM response_time
                     WHERE {condition}
-                        AND district_id NOT IN ('0','41','42','43','44','45','46')
+                        AND district_id NOT IN ('0','41','42','43','44','45')
                         AND police_station is not Null
                         AND response_time IS NOT NULL
                         AND date BETWEEN %s AND %s
@@ -1629,7 +1629,7 @@ def districtwise_counts():
             FROM 
                 response_time
             WHERE 
-                district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                district_id NOT IN ('0', '41', '42', '43', '44', '45')
                 AND (
                     level1_case_nature IN ('Crime Against Person', 'Crime Against Property') 
                     OR level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises')
@@ -1640,7 +1640,7 @@ def districtwise_counts():
                 AND parent_id = 0
                 AND response_time IS NOT NULL
                 AND response_time > 0
-                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
             GROUP BY 
                 district_id;
         """
@@ -1814,7 +1814,7 @@ def districtwise_more_info():
                     WHERE level3_case_nature IN ('Dacoity with Murder')
                 ) AS dacoity_with_murder
             FROM response_time
-            WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+            WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45')
               AND district_id IS NOT NULL
               AND (
                     level1_case_nature IN ('Crime Against Person', 'Crime Against Property') 
@@ -1876,7 +1876,7 @@ def districtwise_more_info():
                 response_time rt 
             ON 
                 ps.police_station_id = rt.police_station_id
-                AND rt.district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                AND rt.district_id NOT IN ('0', '41', '42', '43', '44', '45')
                 AND rt.date BETWEEN %s AND %s
                 {additional_condition}
                 AND (
@@ -2135,7 +2135,7 @@ def pswise_categories():
                 AND date BETWEEN %s AND %s
                 AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
-                AND district_id NOT IN ('0','41','42','43','44','45','46')
+                AND district_id NOT IN ('0','41','42','43','44','45')
                 AND police_station is not Null
                 AND parent_id = 0
         """
@@ -2545,7 +2545,7 @@ def district_category_details():
                 description, first_arrival_time, response_time
             FROM response_time
             WHERE {condition}
-                AND district_id NOT IN ('0','41','42','43','44','45','46')
+                AND district_id NOT IN ('0','41','42','43','44','45')
                 AND police_station is not Null
                 AND date BETWEEN %s AND %s
                 {district_condition}
@@ -3116,7 +3116,7 @@ def parse_timestamp(remarks):
 #                 FROM response_time
 #                 WHERE (level1_case_nature IN ('Crime Against Person', 'Crime Against Property') OR level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises'))
 #                       {district_condition}
-#                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+#                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
 #                   AND police_station IS NOT NULL
 #                   AND parent_id = 0
 #                   AND assignedto_remarks = %s
@@ -3136,7 +3136,7 @@ def parse_timestamp(remarks):
 #                 WHERE (level1_case_nature IN ('Crime Against Person', 'Crime Against Property') OR
 #                     level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises'))
 #                       {district_condition}
-#                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+#                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
 #                   AND police_station IS NOT NULL
 #                   AND parent_id = 0
 #                   AND  assignedby_remarks = %s
@@ -3312,7 +3312,7 @@ def get_remarks():
             FROM response_time rt
             JOIN remarks r ON rt.case_number = r.case_id
             WHERE 
-                  rt.district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                  rt.district_id NOT IN ('0', '41', '42', '43', '44', '45')
                   {district_condition}
                   AND rt.police_station IS NOT NULL
                   AND rt.parent_id = 0
@@ -3723,7 +3723,7 @@ def dist_response_time():
             district_condition = ""
 
         district_query = """SELECT district_id,avg(response_time) FROM response_time 
-                        WHERE district_id NOT IN ('0','41','42','43','44','45','46')
+                        WHERE district_id NOT IN ('0','41','42','43','44','45')
                         AND district_id IS NOT NULL 
                         AND date BETWEEN %s AND %s 
                         AND parent_id = 0
@@ -3802,7 +3802,7 @@ def cm_ps_responsetime():
         ps_responsetime_query = """
                         SELECT police_station, avg(response_time)
                         FROM response_time
-                        WHERE district_id NOT IN ('0','41','42','43','44','45','46')
+                        WHERE district_id NOT IN ('0','41','42','43','44','45')
                         AND district_id IS NOT NULL
                         AND date BETWEEN %s AND %s
                         AND parent_id = 0
@@ -3901,7 +3901,7 @@ def district_fir_stats():
                 WHERE 
                     date BETWEEN %s AND %s
                     AND district_id is not NULL
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND district_id NOT IN ('0','41','42','43','44','45')
                     {district_condition}
                 GROUP BY 
                     district;
@@ -3926,7 +3926,7 @@ def district_fir_stats():
                     date BETWEEN %s AND %s
                     AND district_id is not Null 
                     AND parent_id = 0
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND district_id NOT IN ('0','41','42','43','44','45')
                     {district_condition}
                 GROUP BY 
                     district_id
@@ -4041,7 +4041,7 @@ def ps_fir_stats():
                             date BETWEEN %s AND %s
                             AND district_id = %s
                             AND parent_id = 0
-                            AND district_id NOT IN ('0','41','42','43','44','45','46')
+                            AND district_id NOT IN ('0','41','42','43','44','45')
                             {district_condition}
                         GROUP BY 
                             police_station
@@ -4147,7 +4147,7 @@ def conference_call_stats():
                     date BETWEEN %s AND %s
                     AND field3 IS NOT NULL
                     AND district_id is not NULL
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND district_id NOT IN ('0','41','42','43','44','45')
                     AND parent_id = 0
                     {district_condition}
                 GROUP BY 
@@ -4236,7 +4236,7 @@ def response_time_alerts():
                     AND response_time > 2100 
                     AND parent_id = 0
                     AND district_id IS NOT NULL
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND district_id NOT IN ('0','41','42','43','44','45')
                     AND level3_case_nature NOT IN ('Other Help')
                     AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 'Kiddnapping / Abduction', 'Murder', 'Terrorist Act')
                     {district_condition}
@@ -4265,7 +4265,7 @@ def response_time_alerts():
                       AND response_time > 2100
                       AND parent_id = 0
                       AND district_id IS NOT NULL
-                      AND district_id NOT IN ('0','41','42','43','44','45','46')
+                      AND district_id NOT IN ('0','41','42','43','44','45')
                       AND level3_case_nature NOT IN ('Other Help')
                       AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 'Kiddnapping / Abduction', 'Murder', 'Terrorist Act')
                       {district_condition}
