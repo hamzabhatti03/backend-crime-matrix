@@ -5188,7 +5188,14 @@ def blood_donation():
         stats_array['total_requests'] = result[0]
         stats_array['blood_donated'] = result[1]
         stats_array['connected_to_donor'] = result[2]
-        stats_array['closed'] = result[1] + result[4]
+        if result[1] is not None and result[4] is not None:
+            stats_array['closed'] = result[1] + result[4]
+        elif result[1] is not None:
+            stats_array['closed'] = result[1]
+        elif result[4] is not None:
+            stats_array['closed'] = result[4]
+        else:
+            stats_array['closed'] = 0
         stats_array['pending'] = result[3]
         stats_array['withdrawn_by_caller'] = result[4]
         stats_array['today_request_recieved_count'] = result[5]
@@ -5953,11 +5960,23 @@ def caller_feedback_districtwise():
 
         districts = district_str.split(",") if district_str else []
 
+        district_ids = []
+        if districts:
+            for district in districts:
+                if district in configs.REVERSED_DISTRICTS_DICTIONARY:
+                    district_ids.append(configs.REVERSED_DISTRICTS_DICTIONARY[district])
+                else:
+                    return jsonify({
+                        'status': False,
+                        'message': f"Invalid district name: {district}",
+                        'data': None
+                    }), 400
+
         currnt_date = datetime.now().strftime(configs.YM_DATE)
 
         district_condition = ""
         if view_role in [3, 4]:
-            district_condition = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
+            district_condition = f""" AND district_id IN ({', '.join(map(str, district_ids))})"""
 
         processed_db_cursor.execute(f"""
                             SELECT district_id,
@@ -5969,7 +5988,6 @@ def caller_feedback_districtwise():
                             WHERE 
                                 date = %s
                             {district_condition}
-                            AND district_id is NOT NULL
                             Group By district_id
                         """, (currnt_date,))
 

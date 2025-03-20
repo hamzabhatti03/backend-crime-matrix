@@ -91,7 +91,7 @@ DISTRICTS_MAPPING = [(1, "Sheikhupura"), (2, "Nankana Sb"), (3, "Kasur"), (4, "G
                      (24, "T.T. Singh"), (25, "Multan"), (27, "Lodhran"), (28, "Khanewal"), (29, "Vehari"),
                      (30, "Sahiwal"), (31, "Okara"), (32, "Pakpattan"), (33, "D.G. Khan"), (34, "Rajanpur"),
                      (35, "Muzaffargarh"), (36, "Layyah"), (37, "Bahawalpur"), (38, "Bahawalnagar"),
-                     (39, "Rahimyar Khan"), (40, "Lahore"), (46, "Murree")]
+                     (39, "Rahimyar Khan"), (40, "Lahore"), (46, "Murree"), (43, "Kot Addu"),(44, "Wazirabad")]
 
 # , (41, "Lahore-Test"), (42, "Female-15"), (43, "Kot Addu"),(44, "Wazirabad"), (45, "Potohari-15")
 
@@ -856,8 +856,14 @@ district_code_mapping = {
                 "rjp": "rajanpur",
                 "bkr": "bhakkar",
                 "cht": "chiniot",
-                "hfd": "hafizabad"
-
+                "hfd": "hafizabad",
+                "khb": "khushab",
+                "nrw": "narowal",
+                "nsb": "nankana",
+                "pkt": "pakpatan",
+                "wab": "wazirabad",
+                "kta": "kotaddu",
+                "mur": "murree"
 
             }
 

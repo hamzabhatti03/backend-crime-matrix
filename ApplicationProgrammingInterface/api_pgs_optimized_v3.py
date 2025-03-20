@@ -298,6 +298,7 @@ def register():
         current_district = request.form.get('current_district', '')
         view_role = request.form.get('view_role', type=int)
         role_emergency = request.form.get('role_emergency', type=int)
+        cnic = request.form.get('cnic_required', type=int)
 
         # Check for missing fields
         if not all([first_name, last_name, username, password, view_role]):
@@ -313,14 +314,14 @@ def register():
         insert_query = """
             INSERT INTO users 
             (first_name_emergency, last_name_emergency, user_name_emergency, password_emergency, 
-            assigned_district_emergency, assigned_division_emergency, assigned_ps_emergency, view_role_emergency, district, role_emergency) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            assigned_district_emergency, assigned_division_emergency, assigned_ps_emergency, view_role_emergency, district, role_emergency,is_cnic_required) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         cursor.execute(insert_query, (first_name, last_name, username, password,
-                                      assigned_district, assigned_division, assigned_ps, view_role, current_district, role_emergency))
+                                      assigned_district, assigned_division, assigned_ps, view_role, current_district, role_emergency, cnic))
 
         conn.commit()
-        return jsonify({"message": "User registered successfully"}), 201
+        return jsonify({"message": "User registered successfully"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -372,7 +373,7 @@ def login():
         user_role = user[5]
 
         # **Skip Validation for Specific Roles**
-        if user_role == 1 or username.startswith("dig") or username.startswith("aig") or username.startswith('ig') or username.startswith('piftac'):
+        if user_role == 1 or user[17] == 0:
             access_token = create_access_token(identity=username)
 
             usersdb_cursor.execute("""
@@ -1200,9 +1201,9 @@ def punjab_stats_dashboard():
             'fir_count': fir_count,
             'total_calls': total_calls,
             'total_cases': total_cases,
-            'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time else 0,
-            'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses else 0,
-            'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses else 0,
+            'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time and response_time[0][0] is not None else 0,
+            'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses and regional_avg_responses[0][1] is not None else 0,
+            'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses and regional_avg_responses[1][1] is not None else 0,
             'police_encounter': 0,
             'environment_smog': 0,
             'negative_feedbacks': 0 if view_role == 5 else negative_feedback_count,
@@ -4947,7 +4948,7 @@ def vcm_stats():
 def crime_trends():
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    master_db_connection = db_config.get_db_connection()
+    master_db_connection, master_cursor = get_users_db_connection()
     try:
         district_str = request.form.get('district')
         police_station_str = request.form.get('police_station')
@@ -4967,17 +4968,18 @@ def crime_trends():
         if district_str or police_station_str:
             user_query = """
                     SELECT assigned_district_emergency, assigned_ps_emergency 
-                    FROM 15_stats_users
+                    FROM users
                     WHERE user_name_emergency = %s
             """
-            master_cursor = master_db_connection.cursor()
             master_cursor.execute(user_query, (user_name,))
             user = master_cursor.fetchone()
 
             if user:
                 if isinstance(user[0], bytes):
                     districts = user[0].decode('utf-8')
-                    assigned_districts = districts.split(',')
+                else:
+                    districts = user[0]
+                assigned_districts = districts.split(',')
 
                 if district_str not in assigned_districts:
                     return jsonify({
@@ -5190,8 +5192,9 @@ def crime_trends():
         # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
         master_cursor.close()
-        master_db_connection.close()
+        usersdb_pool.putconn(master_db_connection)
 
 
 @app.route(configs.BLOOD_DONATION['ENDPOINT'], methods=[configs.BLOOD_DONATION['METHOD']])
@@ -5262,7 +5265,14 @@ def blood_donation():
         stats_array['total_requests'] = result[0]
         stats_array['blood_donated'] = result[1]
         stats_array['connected_to_donor'] = result[2]
-        stats_array['closed'] = result[1] + result[4]
+        if result[1] is not None and result[4] is not None:
+            stats_array['closed'] = result[1] + result[4]
+        elif result[1] is not None:
+            stats_array['closed'] = result[1]
+        elif result[4] is not None:
+            stats_array['closed'] = result[4]
+        else:
+            stats_array['closed'] = 0
         stats_array['pending'] = result[3]
         stats_array['withdrawn_by_caller'] = result[4]
         stats_array['today_request_recieved_count'] = result[5]
@@ -6026,11 +6036,23 @@ def caller_feedback_districtwise():
 
         districts = district_str.split(",") if district_str else []
 
+        district_ids = []
+        if districts:
+            for district in districts:
+                if district in configs.REVERSED_DISTRICTS_DICTIONARY:
+                    district_ids.append(configs.REVERSED_DISTRICTS_DICTIONARY[district])
+                else:
+                    return jsonify({
+                        'status': False,
+                        'message': f"Invalid district name: {district}",
+                        'data': None
+                    }), 400
+
         currnt_date = datetime.now().strftime(configs.YM_DATE)
 
         district_condition = ""
         if view_role in [3, 4]:
-            district_condition = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
+            district_condition = f""" AND district_id IN ({', '.join(map(str, district_ids))})"""
 
         processed_db_cursor.execute(f"""
                             SELECT district_id,
@@ -6436,4 +6458,4 @@ def user_analytics():
 
 
 if __name__ == '__main__':
-    app.run(host=configs.HOST, port=configs.PORT, debug=False)  # configs.DEBUG_
+    app.run(host=configs.HOST, port=5035, debug=False)  # configs.DEBUG_
