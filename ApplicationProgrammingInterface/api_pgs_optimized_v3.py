@@ -34,11 +34,8 @@ load_dotenv()
 
 '''
 Api code return PUNJAB TODAY Data from CENTRALIZED POSTGRESQL DB
-Latest file before this file is api_psg_optimized.py, This file includes the changes i.e.,
-1) PS wise conference calls integrated
-2) Caller feedback in response time logic updated to return the same response but with good fetching speed
-3) User activity logs mechanism implemented
-4) Removed Firebase
+Latest file before this file is api_psg_optimized_v2.py, This file includes the changes i.e.,
+1) LOGIN with HRMIS API
 '''
 
 # try:
@@ -301,6 +298,7 @@ def register():
         current_district = request.form.get('current_district', '')
         view_role = request.form.get('view_role', type=int)
         role_emergency = request.form.get('role_emergency', type=int)
+        cnic = request.form.get('cnic_required', type=int)
 
         # Check for missing fields
         if not all([first_name, last_name, username, password, view_role]):
@@ -316,14 +314,14 @@ def register():
         insert_query = """
             INSERT INTO users 
             (first_name_emergency, last_name_emergency, user_name_emergency, password_emergency, 
-            assigned_district_emergency, assigned_division_emergency, assigned_ps_emergency, view_role_emergency, district, role_emergency) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            assigned_district_emergency, assigned_division_emergency, assigned_ps_emergency, view_role_emergency, district, role_emergency,is_cnic_required) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         cursor.execute(insert_query, (first_name, last_name, username, password,
-                                      assigned_district, assigned_division, assigned_ps, view_role, current_district, role_emergency))
+                                      assigned_district, assigned_division, assigned_ps, view_role, current_district, role_emergency, cnic))
 
         conn.commit()
-        return jsonify({"message": "User registered successfully"}), 201
+        return jsonify({"message": "User registered successfully"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -340,15 +338,16 @@ def register():
 def login():
     users_db_conn, usersdb_cursor = get_users_db_connection()
     db_conn, db_cursor = get_log_pg_db_connection()
+
     try:
         username = request.form.get('username')
         password = request.form.get('password')
-        fcm_token = request.form.get('fcm_token')
+        cnic = request.form.get('cnic')
 
-        if not (username or password):
+        if not (username and password and cnic):
             return jsonify({
                 'status': False,
-                'message': 'Required Username or Password.',
+                'message': 'Required Username, Password, and CNIC.',
                 'data': None
             }), 400
 
@@ -357,35 +356,115 @@ def login():
         usersdb_cursor.execute("SELECT * FROM users WHERE user_name_emergency = %s", (username,))
         user = usersdb_cursor.fetchone()
 
-        access_token = None
+        if not user or user[4] != hashed_pass:
+            return jsonify({
+                'status': False,
+                'message': 'Incorrect Username or Password'
+            }), 400
 
-        if user and user[4] == hashed_pass:
+        user_status = user[13]
+
+        if user_status.lower() == 'inactive':
+            return jsonify({
+                'status': False,
+                'message': 'Your account is inactive. Please contact the administrator.'
+            }), 403
+
+        user_role = user[5]
+
+        # **Skip Validation for Specific Roles**
+        if user_role == 1 or user[17] == 0:
             access_token = create_access_token(identity=username)
 
             usersdb_cursor.execute("""
-                                UPDATE users
-                                SET access_token = %s
-                                WHERE user_name_emergency = %s
-                            """, (access_token, username))
+                UPDATE users
+                SET access_token = %s
+                WHERE user_name_emergency = %s
+            """, (access_token, username))
             users_db_conn.commit()
 
-            # sanitized_topic = username.replace("@", "_at_").replace(".", "_dot_")
-            #
-            # try:
-            #     messaging.subscribe_to_topic([fcm_token], sanitized_topic)
-            # except Exception as e:
-            #     print(f"Error subscribing to topic: {str(e)}")
-        else:
             return jsonify({
-                'status': False,
-                'message': 'Incorrect Password OR user_name'
-            }), 400
+                'data': {
+                    'username': user[3],
+                    'id': user[0],
+                    'name': f"{user[1]} {user[2]}",
+                    'role': user[10],
+                    'districts': user[7].decode('utf-8') if isinstance(user[7], bytes) else user[7],
+                    'police_stations': user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
+                },
+                'token': access_token,
+                'message': "Successfully created Access token",
+                'status': True
+            }), 200
+
+        # **Proceed with validation for other users**
+        officer_data = utils.fetch_officer_data(cnic)
+
+        if not officer_data:
+            return jsonify({'status': False, 'message': 'No officer data found for provided CNIC'}), 403
+
+        if 'exception' in officer_data:
+            designation_name = officer_data['original']['officer_details'].get("designation_name", "").strip()
+            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[0].strip().lower() \
+                            if officer_data['original']['officer_details'].get("posting_district", "") else None
+        else:
+            designation_name = officer_data.get("designation_name", "").strip()
+            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get('dst_name') else None
+
+        ps_name_eng = officer_data.get("ps_name_eng", "").strip().lower() if officer_data.get("ps_name_eng") else None
+        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace(" ", "").lower() if ps_name_eng else None
+
+        assigned_ps_emergency = user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
+
+        if designation_name.startswith("DSP") or designation_name.startswith("SDPO"):
+            extracted_ps_name = designation_name.replace("DSP", "").replace("SDPO", "").strip().split(",")[0].lower()
+
+            if not username.startswith("sho."):
+                extracted_username_section = username.split("@")[0].split(".")[1].lower()
+            else:
+                extracted_username_section = None
+
+            if extracted_ps_name != extracted_username_section:
+                return jsonify({'status': False, 'message': 'Authentication error: Designation mismatch'}), 403
+
+        elif any(designation in designation_name for designation in ["SSP", "SP"]):
+            extracted_district_code = username.split("@")[0].split(".")[-1].lower()
+            mapped_district = configs.district_code_mapping.get(extracted_district_code, "").lower()
+
+            if mapped_district != dst_name:
+                return jsonify({'status': False, 'message': 'Authentication error: District mismatch'}), 403
+
+        elif any(designation in designation_name for designation in ["DPO", "RPO", "CPO", "CCPO"]):
+            extracted_district_code = username.split("@")[0].split(".")[-1].lower()
+            mapped_district = configs.district_code_mapping.get(extracted_district_code, "").lower()
+
+            if mapped_district != dst_name:
+                return jsonify({'status': False, 'message': 'Authentication error: District mismatch'}), 403
+
+        elif designation_name.lower() == "sho":
+            if cleaned_ps_name_eng != assigned_ps_emergency.lower():
+                return jsonify({'status': False,
+                                'message': 'Authentication error: User is not assigned to this police station'}), 403
+
+        else:
+            return jsonify({'status': False, 'message': 'Authentication error: Invalid designation'}), 403
+
+        # Generate access token
+        access_token = create_access_token(identity=username)
+
+        # Store access token in the database
+        usersdb_cursor.execute("""
+            UPDATE users
+            SET access_token = %s
+            WHERE user_name_emergency = %s
+        """, (access_token, username))
+        users_db_conn.commit()
 
         return jsonify({
             'data': {
                 'username': user[3],
                 'id': user[0],
-                'name': user[1] + ' ' + user[2],
+                'name': f"{user[1]} {user[2]}",
                 'role': user[10],
                 'districts': user[7].decode('utf-8') if isinstance(user[7], bytes) else user[7],
                 'police_stations': user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
@@ -399,8 +478,8 @@ def login():
         utils.log_to_pg_database(db_conn, db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
-            'message': f'Internal server error {e}'
-        }), 400
+            'message': f'Internal server error, Please Try Again Later.'
+        }), 500
     finally:
         db_cursor.close()
         log_db_pool.putconn(db_conn)
@@ -633,7 +712,7 @@ def punjab_stats_dashboard():
                 AND date BETWEEN %s AND %s
                 AND parent_id=0
                 AND response_time > 0
-                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
                 {district_condition};
         """
         category_query = category_query.format(district_condition=district_condition)
@@ -648,7 +727,7 @@ def punjab_stats_dashboard():
                 processed_data
             WHERE 
                 date BETWEEN %s AND %s
-                AND district_id NOT IN ('0','41','42','43','44','45','46')
+                AND district_id NOT IN ('0','41','42','43','44','45')
                 AND district_id IS NOT NULL
             {district_condition}
         """
@@ -667,7 +746,7 @@ def punjab_stats_dashboard():
                 SELECT region_category, AVG(response_time) AS avg_response_time
                 FROM response_time
                 WHERE region_category IS NOT NULL 
-                  AND district_id NOT IN ('0','41','42','43','44','45','46') 
+                  AND district_id NOT IN ('0','41','42','43','44','45') 
                   AND district_id IS NOT NULL 
                   AND parent_id = 0 
                   AND response_time IS NOT NULL 
@@ -968,7 +1047,7 @@ def punjab_stats_dashboard():
                             AND response_time > 2100 
                             AND parent_id = 0
                             AND district_id IS NOT NULL
-                            AND district_id NOT IN ('0','41','42','43','44','45','46')
+                            AND district_id NOT IN ('0','41','42','43','44','45')
                             AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 
                             'Kiddnapping / Abduction', 'Murder', 'Terrorist Act')
                             {district_condition}
@@ -1122,9 +1201,9 @@ def punjab_stats_dashboard():
             'fir_count': fir_count,
             'total_calls': total_calls,
             'total_cases': total_cases,
-            'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time else 0,
-            'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses else 0,
-            'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses else 0,
+            'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time and response_time[0][0] is not None else 0,
+            'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses and regional_avg_responses[0][1] is not None else 0,
+            'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses and regional_avg_responses[1][1] is not None else 0,
             'police_encounter': 0,
             'environment_smog': 0,
             'negative_feedbacks': 0 if view_role == 5 else negative_feedback_count,
@@ -1289,7 +1368,7 @@ def punjab_more_info():
                           AND response_time IS NOT NULL
                           AND response_time > 0
                           AND police_station IS NOT NULL
-                          AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                          AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
                           {district_condition}
                     )
                     SELECT
@@ -1354,7 +1433,7 @@ def punjab_more_info():
                     AND police_station is not Null
                     AND response_time > 0
                     {district_condition}
-                    AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                    AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
             GROUP BY 
                 police_station_id, district_id, police_station
             HAVING 
@@ -1385,7 +1464,7 @@ def punjab_more_info():
         ps_cursor.execute(f"""
                     SELECT district_id, count(name) as count 
                     FROM police_stations 
-                    WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45', '46') 
+                    WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45') 
                         AND district_id is NOT NULL
                         {ps_condition}
                     GROUP BY district_id
@@ -1404,7 +1483,7 @@ def punjab_more_info():
                            description, first_arrival_time, response_time
                     FROM response_time
                     WHERE {condition}
-                        AND district_id NOT IN ('0','41','42','43','44','45','46')
+                        AND district_id NOT IN ('0','41','42','43','44','45')
                         AND police_station is not Null
                         AND response_time IS NOT NULL
                         AND date BETWEEN %s AND %s
@@ -1551,7 +1630,7 @@ def districtwise_counts():
             FROM 
                 response_time
             WHERE 
-                district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                district_id NOT IN ('0', '41', '42', '43', '44', '45')
                 AND (
                     level1_case_nature IN ('Crime Against Person', 'Crime Against Property') 
                     OR level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises')
@@ -1562,7 +1641,7 @@ def districtwise_counts():
                 AND parent_id = 0
                 AND response_time IS NOT NULL
                 AND response_time > 0
-                AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
             GROUP BY 
                 district_id;
         """
@@ -1736,7 +1815,7 @@ def districtwise_more_info():
                     WHERE level3_case_nature IN ('Dacoity with Murder')
                 ) AS dacoity_with_murder
             FROM response_time
-            WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+            WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45')
               AND district_id IS NOT NULL
               AND (
                     level1_case_nature IN ('Crime Against Person', 'Crime Against Property') 
@@ -1798,7 +1877,7 @@ def districtwise_more_info():
                 response_time rt 
             ON 
                 ps.police_station_id = rt.police_station_id
-                AND rt.district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                AND rt.district_id NOT IN ('0', '41', '42', '43', '44', '45')
                 AND rt.date BETWEEN %s AND %s
                 {additional_condition}
                 AND (
@@ -2057,7 +2136,7 @@ def pswise_categories():
                 AND date BETWEEN %s AND %s
                 AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
-                AND district_id NOT IN ('0','41','42','43','44','45','46')
+                AND district_id NOT IN ('0','41','42','43','44','45')
                 AND police_station is not Null
                 AND parent_id = 0
         """
@@ -2467,7 +2546,7 @@ def district_category_details():
                 description, first_arrival_time, response_time
             FROM response_time
             WHERE {condition}
-                AND district_id NOT IN ('0','41','42','43','44','45','46')
+                AND district_id NOT IN ('0','41','42','43','44','45')
                 AND police_station is not Null
                 AND date BETWEEN %s AND %s
                 {district_condition}
@@ -3038,7 +3117,7 @@ def parse_timestamp(remarks):
 #                 FROM response_time
 #                 WHERE (level1_case_nature IN ('Crime Against Person', 'Crime Against Property') OR level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises'))
 #                       {district_condition}
-#                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+#                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
 #                   AND police_station IS NOT NULL
 #                   AND parent_id = 0
 #                   AND assignedto_remarks = %s
@@ -3058,7 +3137,7 @@ def parse_timestamp(remarks):
 #                 WHERE (level1_case_nature IN ('Crime Against Person', 'Crime Against Property') OR
 #                     level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises'))
 #                       {district_condition}
-#                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+#                   AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
 #                   AND police_station IS NOT NULL
 #                   AND parent_id = 0
 #                   AND  assignedby_remarks = %s
@@ -3234,7 +3313,7 @@ def get_remarks():
             FROM response_time rt
             JOIN remarks r ON rt.case_number = r.case_id
             WHERE 
-                  rt.district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                  rt.district_id NOT IN ('0', '41', '42', '43', '44', '45')
                   {district_condition}
                   AND rt.police_station IS NOT NULL
                   AND rt.parent_id = 0
@@ -3439,7 +3518,7 @@ def update_remarks():
             "cc": cc if cc else "",
             "name": name,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "image_path": image_path
+            "image_url": image_path
         }
 
         # Connect to the processed and log databases
@@ -3645,7 +3724,7 @@ def dist_response_time():
             district_condition = ""
 
         district_query = """SELECT district_id,avg(response_time) FROM response_time 
-                        WHERE district_id NOT IN ('0','41','42','43','44','45','46')
+                        WHERE district_id NOT IN ('0','41','42','43','44','45')
                         AND district_id IS NOT NULL 
                         AND date BETWEEN %s AND %s 
                         AND parent_id = 0
@@ -3724,7 +3803,7 @@ def cm_ps_responsetime():
         ps_responsetime_query = """
                         SELECT police_station, avg(response_time)
                         FROM response_time
-                        WHERE district_id NOT IN ('0','41','42','43','44','45','46')
+                        WHERE district_id NOT IN ('0','41','42','43','44','45')
                         AND district_id IS NOT NULL
                         AND date BETWEEN %s AND %s
                         AND parent_id = 0
@@ -3823,7 +3902,7 @@ def district_fir_stats():
                 WHERE 
                     date BETWEEN %s AND %s
                     AND district_id is not NULL
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND district_id NOT IN ('0','41','42','43','44','45')
                     {district_condition}
                 GROUP BY 
                     district;
@@ -3848,7 +3927,7 @@ def district_fir_stats():
                     date BETWEEN %s AND %s
                     AND district_id is not Null 
                     AND parent_id = 0
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND district_id NOT IN ('0','41','42','43','44','45')
                     {district_condition}
                 GROUP BY 
                     district_id
@@ -3940,7 +4019,6 @@ def ps_fir_stats():
                     AND district_id is not NULL
                     AND district_id = %s
                     {district_condition}
-                    AND police_station IS NOT NULL
                 GROUP BY 
                     police_station;
                  """
@@ -3964,8 +4042,7 @@ def ps_fir_stats():
                             date BETWEEN %s AND %s
                             AND district_id = %s
                             AND parent_id = 0
-                            AND police_station IS NOT NULL
-                            AND district_id NOT IN ('0','41','42','43','44','45','46')
+                            AND district_id NOT IN ('0','41','42','43','44','45')
                             {district_condition}
                         GROUP BY 
                             police_station
@@ -4071,7 +4148,7 @@ def conference_call_stats():
                     date BETWEEN %s AND %s
                     AND field3 IS NOT NULL
                     AND district_id is not NULL
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND district_id NOT IN ('0','41','42','43','44','45')
                     AND parent_id = 0
                     {district_condition}
                 GROUP BY 
@@ -4160,7 +4237,7 @@ def response_time_alerts():
                     AND response_time > 2100 
                     AND parent_id = 0
                     AND district_id IS NOT NULL
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND district_id NOT IN ('0','41','42','43','44','45')
                     AND level3_case_nature NOT IN ('Other Help')
                     AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 'Kiddnapping / Abduction', 'Murder', 'Terrorist Act')
                     {district_condition}
@@ -4189,7 +4266,7 @@ def response_time_alerts():
                       AND response_time > 2100
                       AND parent_id = 0
                       AND district_id IS NOT NULL
-                      AND district_id NOT IN ('0','41','42','43','44','45','46')
+                      AND district_id NOT IN ('0','41','42','43','44','45')
                       AND level3_case_nature NOT IN ('Other Help')
                       AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 'Kiddnapping / Abduction', 'Murder', 'Terrorist Act')
                       {district_condition}
@@ -4896,8 +4973,6 @@ def crime_trends():
             """
             master_cursor.execute(user_query, (user_name,))
             user = master_cursor.fetchone()
-            master_cursor.close()
-            usersdb_pool.putconn(master_db_connection)
 
             if user:
                 if isinstance(user[0], bytes):
@@ -4905,7 +4980,6 @@ def crime_trends():
                 else:
                     districts = user[0]
                 assigned_districts = districts.split(',')
-
 
                 if district_str not in assigned_districts:
                     return jsonify({
@@ -5118,6 +5192,9 @@ def crime_trends():
         # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+        master_cursor.close()
+        usersdb_pool.putconn(master_db_connection)
 
 
 @app.route(configs.BLOOD_DONATION['ENDPOINT'], methods=[configs.BLOOD_DONATION['METHOD']])
@@ -5905,7 +5982,6 @@ def ps_conference_call_stats():
                         AND field3 IS NOT NULL
                         AND district_id = %s
                         AND parent_id = 0
-                        AND police_station is NOT NULL
                     GROUP BY 
                         police_station;
                      """
@@ -6382,4 +6458,4 @@ def user_analytics():
 
 
 if __name__ == '__main__':
-    app.run(host=configs.HOST, port=configs.PORT, debug=False)  # configs.DEBUG_
+    app.run(host=configs.HOST, port=5035, debug=False)  # configs.DEBUG_
