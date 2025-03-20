@@ -329,6 +329,15 @@ def register():
     finally:
         cursor.close()
         usersdb_pool.putconn(conn)
+import re
+def clean_string(text):
+    # Convert to lowercase
+    text = text.lower()
+    # Remove spaces
+    text = text.replace(" ", "")
+    # Remove unwanted punctuation or characters (optional, depending on your data)
+    text = re.sub(r'[^\w\s]', '', text)
+    return text.strip()
 
 
 @app.route(configs.LOGIN['ENDPOINT'], methods=[configs.LOGIN['METHOD']])
@@ -412,7 +421,7 @@ def login():
             dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get('dst_name') else None
 
         ps_name_eng = officer_data.get("ps_name_eng", "").strip().lower() if officer_data.get("ps_name_eng") else None
-        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace(" ", "").lower() if ps_name_eng else None
+        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace("ps.", "").replace(" ", "").lower() if ps_name_eng else None
 
         assigned_ps_emergency = user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
 
@@ -442,7 +451,9 @@ def login():
                 return jsonify({'status': False, 'message': 'Authentication error: District mismatch'}), 403
 
         elif designation_name.lower() == "sho":
-            if cleaned_ps_name_eng != assigned_ps_emergency.lower():
+            cleaned_ps_name_eng_normalized = clean_string(cleaned_ps_name_eng)
+            assigned_ps_emergency_normalized = clean_string(assigned_ps_emergency)
+            if cleaned_ps_name_eng_normalized != assigned_ps_emergency_normalized:
                 return jsonify({'status': False,
                                 'message': 'Authentication error: User is not assigned to this police station'}), 403
 
