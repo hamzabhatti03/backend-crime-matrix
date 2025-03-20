@@ -45,7 +45,11 @@ district_short_forms = {
     "Shiekhupura": "SHK",
     "Sialkot": "SKT",
     "T.T. Singh": "TTS",
-    "Vehari": "VHR"
+    "Vehari": "VHR",
+    "Murree": "MUR",
+    "Kot Addu": "KTA",
+    "Wazirabad": "WAB",
+
 }
 
 # Mapping of district names to match database records
@@ -77,6 +81,13 @@ def clean_text(text):
 def to_camel_case(text):
     """Convert text to Camel Case."""
     return " ".join(word.capitalize() for word in text.split())
+
+
+# Function to fetch the last user_id_emergency
+def get_last_user_id(cursor):
+    cursor.execute("SELECT MAX(user_id_emergency) FROM users_by_agent;")
+    last_id = cursor.fetchone()[0]
+    return last_id if last_id else 3000  # If no users exist, start from 2000
 
 
 def fetch_assigned_division(cursor, station, district):
@@ -176,12 +187,18 @@ try:
     )
     """)
 
+    # Get the last user_id_emergency
+    # last_user_id = get_last_user_id(cursor)
+    last_user_id = 3000
+
     data = []
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for _, row in df.iterrows():
         if row["Designation"].strip().lower() not in {"sho"}:  # Define allowed designations
             continue
+
+        last_user_id += 1  # Increment unique ID for each user
 
         username = generate_username(row["Designation"], row["Police station"], row["District"])
         view_role = get_view_role(row["Designation"])
@@ -191,6 +208,7 @@ try:
         assigned_division = ""
 
         data.append((
+            last_user_id,
             to_upper_case(row["Designation"].strip()),
             last_name,
             username,
@@ -209,12 +227,12 @@ try:
             row["District"].strip()
         ))
     cursor.executemany("""
-    INSERT INTO users_by_agent (
-        first_name_emergency, last_name_emergency, user_name_emergency, password_emergency, role_emergency, 
-        jwt_token_emergency, assigned_district_emergency, assigned_division_emergency, 
+    INSERT INTO users (
+        user_id_emergency, first_name_emergency, last_name_emergency, user_name_emergency, password_emergency, 
+        role_emergency, jwt_token_emergency, assigned_district_emergency, assigned_division_emergency, 
         assigned_ps_emergency, view_role_emergency, access_token, last_password_change, 
         status, is_field_officer, lastseen, district
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, data)
     db_conn.commit()
     print("Users successfully added to PostgreSQL database.")
