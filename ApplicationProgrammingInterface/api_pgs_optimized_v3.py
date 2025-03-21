@@ -50,10 +50,11 @@ mysql_pool = None
 notification_pool = None
 usersdb_pool = None
 log_db_pool = None
+predictive_db_pool = None
 
 
 def initialize_pools():
-    global postgresql_pool, mysql_pool, notification_pool, usersdb_pool, log_db_pool
+    global postgresql_pool, mysql_pool, notification_pool, usersdb_pool, log_db_pool, predictive_db_pool
     try:
         # PostgreSQL connection pool
         postgresql_pool = pg_pool.SimpleConnectionPool(
@@ -106,6 +107,16 @@ def initialize_pools():
             port=os.getenv('PG_PORT')
         )
 
+        predictive_db_pool = pg_pool.SimpleConnectionPool(
+            minconn=1,  # Minimum number of connections
+            maxconn=50,  # Maximum number of connections
+            dbname=os.getenv('PG_DB_PREDICTIVE'),
+            user=os.getenv('PG_USER_PREDICTIVE'),
+            password=os.getenv('PG_PASSWORD_PREDICTIVE'),
+            host=os.getenv('PG_HOST_PREDICTIVE'),
+            port=os.getenv('PG_PORT_PREDICTIVE')
+        )
+
         print("Connection pools initialized successfully.")
     except Exception as e:
         print(f"Error initializing connection pools: {e}")
@@ -151,7 +162,7 @@ app = Flask(__name__)
 initialize_pools()
 
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET")
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(seconds=3600)  # 1 Hour
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(seconds=604800)  # Initially 1 Hour, now 7 Days
 
 jwt = JWTManager(app)
 
@@ -197,6 +208,13 @@ def get_log_pg_db_connection():
     log_db_conn = log_db_pool.getconn()
     log_db_cursor = log_db_conn.cursor()
     return log_db_conn, log_db_cursor
+
+
+def get_db_pg_predictive():
+    predicive_conn = predictive_db_pool.getconn()
+    predictive_cursor = predicive_conn.cursor()
+    return predicive_conn, predictive_cursor
+
 
 @app.after_request
 def set_security_headers(response):
@@ -330,14 +348,11 @@ def register():
         cursor.close()
         usersdb_pool.putconn(conn)
 import re
-def clean_string(text):
-    # Convert to lowercase
-    text = text.lower()
-    # Remove spaces
-    text = text.replace(" ", "")
-    # Remove unwanted punctuation or characters (optional, depending on your data)
-    text = re.sub(r'[^\w\s]', '', text)
-    return text.strip()
+from thefuzz import fuzz
+
+def are_names_similar(name1, name2, threshold=80):
+    similarity = fuzz.ratio(name1.lower(), name2.lower())
+    return similarity >= threshold
 
 
 @app.route(configs.LOGIN['ENDPOINT'], methods=[configs.LOGIN['METHOD']])
@@ -451,9 +466,12 @@ def login():
                 return jsonify({'status': False, 'message': 'Authentication error: District mismatch'}), 403
 
         elif designation_name.lower() == "sho":
-            cleaned_ps_name_eng_normalized = clean_string(cleaned_ps_name_eng)
-            assigned_ps_emergency_normalized = clean_string(assigned_ps_emergency)
-            if cleaned_ps_name_eng_normalized != assigned_ps_emergency_normalized:
+            # cleaned_ps_name_eng_normalized = clean_string(cleaned_ps_name_eng)
+            # assigned_ps_emergency_normalized = clean_string(assigned_ps_emergency)
+            # if cleaned_ps_name_eng_normalized != assigned_ps_emergency_normalized:
+            if assigned_ps_emergency == 'J.P. Bhattian':
+                assigned_ps_emergency = 'JALAL PUR BHATTIAN'
+            if not are_names_similar(cleaned_ps_name_eng, assigned_ps_emergency):
                 return jsonify({'status': False,
                                 'message': 'Authentication error: User is not assigned to this police station'}), 403
 
@@ -2677,11 +2695,12 @@ def district_category_details():
 def forcast_predictive_policing():
     try:
         log_db_conn, log_db_cursor = get_log_pg_db_connection()
+        pg_conn, pg_cursor = get_db_pg_predictive()
 
         ps = request.form.get('police_station')
         district = request.form.get('district')
-        forecast = yesterday_forecast(ps, district)
-        dashboard_data = get_category_data(ps, district)
+        forecast = yesterday_forecast(ps, district,pg_conn)
+        dashboard_data = get_category_data(ps, district,pg_conn)
 
         data = {**forecast, **dashboard_data}
 
@@ -2701,12 +2720,11 @@ def forcast_predictive_policing():
             'data': None
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        pg_cursor.close()
+        predictive_db_pool.putconn(pg_conn)
 
 
 @app.route(configs.DATEWISE_FORECAST['ENDPOINT'], methods=[configs.DATEWISE_FORECAST['METHOD']])
@@ -2716,6 +2734,7 @@ def forcast_predictive_policing():
 def forecast_datewise():
     try:
         log_db_conn, log_db_cursor = get_log_pg_db_connection()
+        pg_conn, pg_cursor = get_db_pg_predictive()
 
         ps = request.form.get('police_station')
         district = request.form.get('district')
@@ -2728,7 +2747,7 @@ def forecast_datewise():
         start_date = datetime.strptime(start_date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
         end_date = datetime.strptime(end_date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
 
-        data = forecast_date(ps, district, start_date, end_date)
+        data = forecast_date(ps, district, start_date, end_date, pg_conn)
 
         response = {
             'status': True,
@@ -2745,12 +2764,11 @@ def forecast_datewise():
             'data': None
         }), 500
     finally:
-        if log_db_cursor:
-            log_db_cursor.close()
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn) # Properly return to the pool without removing it
 
-        if log_db_conn:
-            log_db_conn.rollback()  # Rollback any uncommitted transactions
-            log_db_conn.close()  # Properly return to the pool without removing it
+        pg_cursor.close()
+        predictive_db_pool.putconn(pg_conn)
 
 
 @app.route(configs.EMERGENCY_15_INTEGRATION['ENDPOINT'], methods=[configs.EMERGENCY_15_INTEGRATION['METHOD']])
