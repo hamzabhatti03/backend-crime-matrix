@@ -616,7 +616,7 @@ def punjab_stats_dashboard():
         JSON: Dashboard statistics with standardized response format
     """
 
-    predpol_db_conn, predpol_db_cursor = get_log_db_connection()
+    predpol_db_conn, predpol_db_cursor = get_db_pg_predictive()
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     users_db_conn, usersdb_cursor = get_users_db_connection()
@@ -1096,13 +1096,14 @@ def punjab_stats_dashboard():
 
         response_time_alerts = {"response_time_alerts": total_alerts}
 
+        quoted_districts = [f"'{d}'" for d in district_ids]
         if view_role == 5 and district_ids:
             additional_condition = (
-                f"  AND district IN ({', '.join(map(str, district_ids))}) "
+                f"  AND district IN ({', '.join(map(str, quoted_districts))}) "
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
         elif view_role in [3, 4]:
-            additional_condition = f" AND district IN ({', '.join(map(str, district_ids))})"
+            additional_condition = f" AND district IN ({', '.join(quoted_districts)})"
         else:
             additional_condition = ""
 
@@ -1110,7 +1111,7 @@ def punjab_stats_dashboard():
 
         predpol_db_cursor.execute(f"""
                     SELECT count(*)
-                    FROM pred_pol_crimes_hotspot 
+                    FROM crime_hotspot 
                     WHERE case_number IS NOT null
                     AND case_nature in ('Highway/Road/Street Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 'Any Other Robbery', 
                     'Snatching/Jhapatta', 'House Robbery', 'Cattle Robbery', 'Robbery with Murder', 'Bank/Money Exchange/ ATM Robbery', 
@@ -1277,10 +1278,8 @@ def punjab_stats_dashboard():
         utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify(error_response), 500
     finally:
-        if predpol_db_cursor:
-            predpol_db_cursor.close()
-        if predpol_db_conn:
-            predpol_db_conn.close()
+        predpol_db_cursor.close()
+        predictive_db_pool.putconn(predpol_db_conn)
 
         log_db_cursor.close()
         log_db_pool.putconn(log_db_conn)
@@ -4220,6 +4219,7 @@ def conference_call_stats():
 def response_time_alerts():
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    predpol_conn, predpol_cursor = get_db_pg_predictive()
     try:
         view_role = request.form.get('view_role', type=int)
         district_str = request.form.get('district')
@@ -4311,32 +4311,30 @@ def response_time_alerts():
         for i in alerts:
             alerts_cases.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1].split(";")})
 
+        quoted_districts = [f"'{d}'" for d in district_ids]
         if view_role == 5 and district_ids:
             additional_condition = (
-                f"  AND district IN ({', '.join(map(str, district_ids))}) "
+                f"  AND district IN ({', '.join(map(str, quoted_districts))}) "
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
         elif view_role in [3, 4]:
-            additional_condition = f" AND district IN ({', '.join(map(str, district_ids))})"
+            additional_condition = f" AND district IN ({', '.join(map(str, quoted_districts))})"
         else:
             additional_condition = ""
-
-        db_conn = db_config.get_db_connection()
-        db_cursor = db_conn.cursor()
 
         current_date = datetime.now()
 
         current_date_str = current_date.strftime("%Y-%m-%d")
 
-        db_cursor.execute(f"""
-                    SELECT district, GROUP_CONCAT(
+        predpol_cursor.execute(f"""
+                    SELECT district, STRING_AGG(
                         CONCAT('Case Number: ', case_number, 
                                ', District: ', district, 
                                ', Case Nature: ', case_nature,
-                               ', Police Station: ',police_station)
-                        SEPARATOR ' ; '
+                               ', Police Station: ',police_station),
+                                 ' ; ' --separator
                     ) AS details 
-                    FROM pred_pol_crimes_hotspot 
+                    FROM crime_hotspot 
                     WHERE case_number IS NOT null
                     AND date = %s
                     AND case_nature in ('Highway/Road/Street Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 'Any Other Robbery', 
@@ -4350,7 +4348,7 @@ def response_time_alerts():
                     {additional_condition}
                     Group By district
         """, (current_date.strftime('%d-%m-%Y'),))
-        re_occurrences_cases = db_cursor.fetchall()
+        re_occurrences_cases = predpol_cursor.fetchall()
 
         crime_occurence = []
         for row in re_occurrences_cases:
@@ -4392,6 +4390,9 @@ def response_time_alerts():
         # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+        predpol_cursor.close()
+        predictive_db_pool.putconn(predpol_conn)
 
 
 @app.route(configs.VEHICLE_LOCATIONS['ENDPOINT'], methods=[configs.VEHICLE_LOCATIONS['METHOD']])
@@ -5811,8 +5812,7 @@ def crime_reoccurrence_case():
     """
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    db_conn = db_config.get_db_connection()
-    db_cursor = db_conn.cursor()
+    db_conn, db_cursor = get_db_pg_predictive()
 
     try:
         username = get_jwt_identity()
@@ -5900,7 +5900,7 @@ def crime_reoccurrence_case():
 
         db_cursor.execute(f"""
                             SELECT matched_coordinates, related_cases 
-                            FROM pred_pol_crimes_hotspot 
+                            FROM crime_hotspot 
                             WHERE case_number = %s
                 """, (case_number,))
         re_occurrences_cases = db_cursor.fetchone()
@@ -5981,6 +5981,9 @@ def crime_reoccurrence_case():
         # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+        db_cursor.close()
+        predictive_db_pool.putconn(db_conn)
 
 
 @app.route(configs.PS_CONFERENCE_CALL_STATS['ENDPOINT'], methods=[configs.PS_CONFERENCE_CALL_STATS['METHOD']])
