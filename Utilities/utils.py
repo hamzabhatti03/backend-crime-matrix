@@ -1099,3 +1099,10 @@ def fetch_officer_data(cnic):
         if response.status_code == 200 and response.json().get("success"):
             return response.json().get("data")
     return None  # No data found in both APIs
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # This gets the Utilities folder path
+CONFIG_FILE_PATH = os.path.join(BASE_DIR, "configs.json")
+
+def load_version_config():
+    with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as file:
+        return json.load(file)

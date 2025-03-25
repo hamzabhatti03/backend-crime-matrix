@@ -317,6 +317,7 @@ def register():
         view_role = request.form.get('view_role', type=int)
         role_emergency = request.form.get('role_emergency', type=int)
         cnic = request.form.get('cnic_required', type=int)
+        field_officer = request.form.get('is_field_officer', type=int, default=1)
 
         # Check for missing fields
         if not all([first_name, last_name, username, password, view_role]):
@@ -332,12 +333,12 @@ def register():
         insert_query = """
             INSERT INTO users 
             (first_name_emergency, last_name_emergency, user_name_emergency, password_emergency, 
-            assigned_district_emergency, assigned_division_emergency, assigned_ps_emergency, view_role_emergency, district, role_emergency,is_cnic_required) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            assigned_district_emergency, assigned_division_emergency, assigned_ps_emergency, view_role_emergency, district, role_emergency,is_cnic_required,is_field_officer) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         cursor.execute(insert_query, (first_name, last_name, username, password,
                                       assigned_district, assigned_division, assigned_ps, view_role, current_district,
-                                      role_emergency, cnic))
+                                      role_emergency, cnic,field_officer))
 
         conn.commit()
         return jsonify({"message": "User registered successfully"}), 200
@@ -359,6 +360,12 @@ def are_names_similar(name1, name2, threshold=80):
     return similarity >= threshold
 
 
+@app.route('/static/apk/<path:filename>', methods=['GET'])
+def serve_apk(filename):
+    apk_directory = os.path.join(os.getenv('STATIC_FOLDER'), 'apk')
+    return send_from_directory(apk_directory, filename), 200
+
+
 @app.route(configs.LOGIN['ENDPOINT'], methods=[configs.LOGIN['METHOD']])
 @require_api_key
 @require_login_key
@@ -371,6 +378,7 @@ def login():
         username = request.form.get('username')
         password = request.form.get('password')
         cnic = request.form.get('cnic')
+        app_version = request.form.get('version')
 
         if not (username and password and cnic):
             return jsonify({
@@ -378,6 +386,21 @@ def login():
                 'message': 'Required Username, Password, and CNIC.',
                 'data': None
             }), 400
+
+        version_config = utils.load_version_config()
+        latest_version = version_config.get("latest_version")
+        apk_file = version_config.get("apk_file")
+
+        if app_version != latest_version:
+            # Construct APK Download Link
+            apk_download_url = request.host_url + 'static/apk/' + apk_file
+            return jsonify({
+                'status': False,
+                'message': f'New version {latest_version} available. Please update the app.',
+                'update_required': True,
+                'download_url': apk_download_url
+            }), 426  # HTTP 426: Upgrade Required
+
 
         hashed_pass = hashlib.md5(password.encode()).hexdigest()
 
@@ -433,17 +456,14 @@ def login():
 
         if 'exception' in officer_data:
             designation_name = officer_data['original']['officer_details'].get("designation_name", "").strip()
-            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[
-                0].strip().lower() \
-                if officer_data['original']['officer_details'].get("posting_district", "") else None
+            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[0].strip().lower() \
+                            if officer_data['original']['officer_details'].get("posting_district", "") else None
         else:
             designation_name = officer_data.get("designation_name", "").strip()
-            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get(
-                'dst_name') else None
+            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get('dst_name') else None
 
         ps_name_eng = officer_data.get("ps_name_eng", "").strip().lower() if officer_data.get("ps_name_eng") else None
-        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace("ps.", "").replace(" ",
-                                                                                         "").lower() if ps_name_eng else None
+        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace("ps.", "").replace(" ", "").lower() if ps_name_eng else None
 
         assigned_ps_emergency = user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
 
