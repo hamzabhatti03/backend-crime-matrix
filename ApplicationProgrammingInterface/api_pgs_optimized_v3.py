@@ -5682,7 +5682,7 @@ def get_filtered_users(user_name, view_role, district, police_station):
                     'last_name': user[2],
                     'user_name': user[3]
                 })
-            elif view_role == 2 and user_role not in (2,3):
+            elif view_role == 2 and user_role not in (2, 3):
                 filtered_users.append({
                     'user_id': user[0],
                     'first_name': user[1],
@@ -5792,7 +5792,14 @@ def get_chat_users(user_name, view_role, district, police_station):
                     'last_name': user[2],
                     'user_name': user[3]
                 })
-            elif view_role == 2 and user_role not in 2:
+            elif view_role == 2 and "addlig" in user_name and user_role != 2:
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+            elif view_role == 2 and user_role not in (2, 3):
                 filtered_users.append({
                     'user_id': user[0],
                     'first_name': user[1],
