@@ -338,7 +338,7 @@ def register():
         """
         cursor.execute(insert_query, (first_name, last_name, username, password,
                                       assigned_district, assigned_division, assigned_ps, view_role, current_district,
-                                      role_emergency, cnic,field_officer))
+                                      role_emergency, cnic, field_officer))
 
         conn.commit()
         return jsonify({"message": "User registered successfully"}), 200
@@ -378,7 +378,7 @@ def login():
         username = request.form.get('username')
         password = request.form.get('password')
         cnic = request.form.get('cnic')
-        app_version = request.form.get('version')
+        app_version = request.form.get('version', default="1.1.0")
 
         if not (username and password and cnic):
             return jsonify({
@@ -400,7 +400,6 @@ def login():
                 'update_required': True,
                 'download_url': apk_download_url
             }), 426  # HTTP 426: Upgrade Required
-
 
         hashed_pass = hashlib.md5(password.encode()).hexdigest()
 
@@ -456,14 +455,17 @@ def login():
 
         if 'exception' in officer_data:
             designation_name = officer_data['original']['officer_details'].get("designation_name", "").strip()
-            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[0].strip().lower() \
-                            if officer_data['original']['officer_details'].get("posting_district", "") else None
+            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[
+                0].strip().lower() \
+                if officer_data['original']['officer_details'].get("posting_district", "") else None
         else:
             designation_name = officer_data.get("designation_name", "").strip()
-            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get('dst_name') else None
+            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get(
+                'dst_name') else None
 
         ps_name_eng = officer_data.get("ps_name_eng", "").strip().lower() if officer_data.get("ps_name_eng") else None
-        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace("ps.", "").replace(" ", "").lower() if ps_name_eng else None
+        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace("ps.", "").replace(" ",
+                                                                                         "").lower() if ps_name_eng else None
 
         assigned_ps_emergency = user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
 
@@ -5626,7 +5628,7 @@ def crime_trend_cases():
         postgresql_pool.putconn(processed_db_conn)
 
 
-def get_filtered_users(view_role, district, police_station):
+def get_filtered_users(user_name, view_role, district, police_station):
     try:
 
         users_db_conn, usersdb_cursor = get_users_db_connection()
@@ -5666,13 +5668,28 @@ def get_filtered_users(view_role, district, police_station):
                 user_role = None
 
             # Role-based filtering
-            if view_role == 2:
+            if view_role == 2 and "ig.punjab" in user_name:
                 filtered_users.append({
                     'user_id': user[0],
                     'first_name': user[1],
                     'last_name': user[2],
                     'user_name': user[3]
                 })
+            elif view_role == 2 and "addlig" in user_name and user_role != 2:
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+            elif view_role == 2 and user_role not in (2,3):
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+
             elif view_role == 3 and user_role not in (2, 3):
                 filtered_users.append({
                     'user_id': user[0],
@@ -5721,7 +5738,7 @@ def get_users():
             return jsonify({"error": "Missing required fields."}), 400
 
         # Get filtered users
-        filtered_users = get_filtered_users(view_role, district, police_station)
+        filtered_users = get_filtered_users(user_name, view_role, district, police_station)
 
         return jsonify(filtered_users), 200
 
@@ -5729,7 +5746,7 @@ def get_users():
         return jsonify({"error": str(e)}), 500
 
 
-def get_chat_users(view_role, district, police_station):
+def get_chat_users(user_name, view_role, district, police_station):
     try:
         users_db_conn, usersdb_cursor = get_users_db_connection()
 
@@ -5768,7 +5785,14 @@ def get_chat_users(view_role, district, police_station):
                 user_role = None
 
             # Role-based filtering
-            if view_role == 2:
+            if view_role == 2 and "ig.punjab" in user_name:
+                filtered_users.append({
+                    'user_id': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'user_name': user[3]
+                })
+            elif view_role == 2 and user_role not in 2:
                 filtered_users.append({
                     'user_id': user[0],
                     'first_name': user[1],
@@ -5823,7 +5847,7 @@ def get_chat_user():
             return jsonify({"error": "Missing required fields."}), 400
 
         # Get filtered users
-        filtered_users = get_chat_users(view_role, district, police_station)
+        filtered_users = get_chat_users(user_name, view_role, district, police_station)
 
         return jsonify(filtered_users), 200
 
