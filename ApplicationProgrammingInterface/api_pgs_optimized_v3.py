@@ -304,7 +304,7 @@ def validate_ownership(fn):
 @require_login_key
 @limiter.limit(configs.LIMITER)
 def register():
-    conn,cursor = get_users_db_connection()
+    conn, cursor = get_users_db_connection()
     try:
         first_name = request.form.get('first_name')
         last_name = request.form.get('last_name')
@@ -336,7 +336,8 @@ def register():
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         cursor.execute(insert_query, (first_name, last_name, username, password,
-                                      assigned_district, assigned_division, assigned_ps, view_role, current_district, role_emergency, cnic))
+                                      assigned_district, assigned_division, assigned_ps, view_role, current_district,
+                                      role_emergency, cnic))
 
         conn.commit()
         return jsonify({"message": "User registered successfully"}), 200
@@ -347,8 +348,11 @@ def register():
     finally:
         cursor.close()
         usersdb_pool.putconn(conn)
+
+
 import re
 from thefuzz import fuzz
+
 
 def are_names_similar(name1, name2, threshold=80):
     similarity = fuzz.ratio(name1.lower(), name2.lower())
@@ -429,14 +433,17 @@ def login():
 
         if 'exception' in officer_data:
             designation_name = officer_data['original']['officer_details'].get("designation_name", "").strip()
-            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[0].strip().lower() \
-                            if officer_data['original']['officer_details'].get("posting_district", "") else None
+            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[
+                0].strip().lower() \
+                if officer_data['original']['officer_details'].get("posting_district", "") else None
         else:
             designation_name = officer_data.get("designation_name", "").strip()
-            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get('dst_name') else None
+            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get(
+                'dst_name') else None
 
         ps_name_eng = officer_data.get("ps_name_eng", "").strip().lower() if officer_data.get("ps_name_eng") else None
-        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace("ps.", "").replace(" ", "").lower() if ps_name_eng else None
+        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace("ps.", "").replace(" ",
+                                                                                         "").lower() if ps_name_eng else None
 
         assigned_ps_emergency = user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
 
@@ -1231,9 +1238,18 @@ def punjab_stats_dashboard():
             'fir_count': fir_count,
             'total_calls': total_calls,
             'total_cases': total_cases,
-            'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time and response_time[0][0] is not None else 0,
-            'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses and regional_avg_responses[0][1] is not None else 0,
-            'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses and regional_avg_responses[1][1] is not None else 0,
+            'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time and
+                                                                                                            response_time[
+                                                                                                                0][
+                                                                                                                0] is not None else 0,
+            'rural_response_time': f"{int(regional_avg_responses[0][1] // 60)}:{int(regional_avg_responses[0][1] % 60):02d}" if regional_avg_responses and
+                                                                                                                                regional_avg_responses[
+                                                                                                                                    0][
+                                                                                                                                    1] is not None else 0,
+            'urban_response_time': f"{int(regional_avg_responses[1][1] // 60)}:{int(regional_avg_responses[1][1] % 60):02d}" if regional_avg_responses and
+                                                                                                                                regional_avg_responses[
+                                                                                                                                    1][
+                                                                                                                                    1] is not None else 0,
             'police_encounter': 0,
             'environment_smog': 0,
             'negative_feedbacks': 0 if view_role == 5 else negative_feedback_count,
@@ -2698,8 +2714,8 @@ def forcast_predictive_policing():
 
         ps = request.form.get('police_station')
         district = request.form.get('district')
-        forecast = yesterday_forecast(ps, district,pg_conn)
-        dashboard_data = get_category_data(ps, district,pg_conn)
+        forecast = yesterday_forecast(ps, district, pg_conn)
+        dashboard_data = get_category_data(ps, district, pg_conn)
 
         data = {**forecast, **dashboard_data}
 
@@ -2764,7 +2780,7 @@ def forecast_datewise():
         }), 500
     finally:
         log_db_cursor.close()
-        log_db_pool.putconn(log_db_conn) # Properly return to the pool without removing it
+        log_db_pool.putconn(log_db_conn)  # Properly return to the pool without removing it
 
         pg_cursor.close()
         predictive_db_pool.putconn(pg_conn)
@@ -2979,7 +2995,7 @@ def emergency_15_integration():
     finally:
         log_db_cursor.close()
         log_db_pool.putconn(log_db_conn)
-         # Properly return to the pool without removing it
+        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -3014,7 +3030,8 @@ def add_remarks():
         row = processed_db_cursor.fetchone()
 
         if row and row[0]:
-            return jsonify({"success": True, "message": "Remarks already exist for this case_number, assigned_by, and assigned_to."}), 200
+            return jsonify({"success": True,
+                            "message": "Remarks already exist for this case_number, assigned_by, and assigned_to."}), 200
 
         image_path = None  # Default: No image
         if "image" in request.files:
@@ -3366,7 +3383,7 @@ def get_remarks():
         for row in my_followups_rows:
             (case_number, level3_case_nature, caller_name, caller_number, created_time,
              police_station, district_id, time_id, description, reached_time, response_time,
-             assigned_by, assigned_to, cc, remark_text, time_stamp,image_path) = row
+             assigned_by, assigned_to, cc, remark_text, time_stamp, image_path) = row
 
             status_flag, priority_flag = utils.get_remark_flags(remark_text, time_id)
 
@@ -3388,7 +3405,7 @@ def get_remarks():
                 "priority_flag": priority_flag,
                 "status_flag": status_flag,
                 "last_timestamp": time_stamp,
-                "image_url" : (os.getenv('BASE_URL') + image_path ) if image_path else None
+                "image_url": (os.getenv('BASE_URL') + image_path) if image_path else None
             })
 
         current_time = datetime.now()
@@ -3396,7 +3413,7 @@ def get_remarks():
         for row in followups_needed_rows:
             (case_number, level3_case_nature, caller_name, caller_number, created_time,
              police_station, district_id, time_id, description, reached_time, response_time,
-             assigned_by, assigned_to, cc, remark_text, time_stamp,image_path) = row
+             assigned_by, assigned_to, cc, remark_text, time_stamp, image_path) = row
 
             status_flag, priority_flag = utils.get_remark_flags(remark_text, time_id)
 
@@ -3424,7 +3441,7 @@ def get_remarks():
                     else 0
                 ),
                 "last_timestamp": time_stamp,
-                "image_url": (os.getenv('BASE_URL') + image_path ) if image_path else None
+                "image_url": (os.getenv('BASE_URL') + image_path) if image_path else None
             })
 
         cc_followups_list = []
@@ -3454,7 +3471,7 @@ def get_remarks():
                 "priority_flag": priority_flag,
                 "status_flag": status_flag,
                 "last_timestamp": time_stamp,
-                "image_url" : (os.getenv('BASE_URL') + image_path ) if image_path else None
+                "image_url": (os.getenv('BASE_URL') + image_path) if image_path else None
             })
 
         # sorted lists by timestamp (newest first)
@@ -3495,10 +3512,10 @@ def get_remarks():
         postgresql_pool.putconn(processed_db_conn)
 
 
-@app.route('/static/images/<path:filename>',methods = ['GET'])
+@app.route('/static/images/<path:filename>', methods=['GET'])
 def serve_static(filename):
     images_directory = os.path.join(os.getenv('STATIC_FOLDER'), 'images')
-    return send_from_directory(images_directory, filename),200
+    return send_from_directory(images_directory, filename), 200
 
 
 @app.route(configs.UPDATE_REMARKS['ENDPOINT'], methods=[configs.UPDATE_REMARKS['METHOD']])
@@ -3627,7 +3644,7 @@ def update_remarks():
     finally:
         # Clean up database connections and cursors
         log_db_cursor.close()
-        log_db_pool.putconn(log_db_conn) # Properly return to the pool without removing it
+        log_db_pool.putconn(log_db_conn)  # Properly return to the pool without removing it
 
         processed_db_cursor.close()
         notification_cursor.close()
@@ -5599,7 +5616,9 @@ def get_filtered_users(view_role, district, police_station):
                SELECT user_id_emergency, first_name_emergency, last_name_emergency, user_name_emergency, view_role_emergency
                 FROM users
                 WHERE
-                    EXISTS (
+                status = 'active'
+                AND is_field_officer = 1
+                AND EXISTS (
                         SELECT 1
                         FROM regexp_split_to_table(assigned_district_emergency, ',') AS district
                         WHERE district = %s
@@ -5699,7 +5718,9 @@ def get_chat_users(view_role, district, police_station):
                SELECT user_id_emergency, first_name_emergency, last_name_emergency, user_name_emergency, view_role_emergency
                 FROM users
                 WHERE
-                    EXISTS (
+                status = 'active'
+                AND is_field_officer = 1
+                AND EXISTS (
                         SELECT 1
                         FROM regexp_split_to_table(assigned_district_emergency, ',') AS district
                         WHERE district = %s
@@ -6401,7 +6422,7 @@ def user_analytics():
                                     WHERE user_name_emergency = %s
                                                         )
     );"""
-        usersdb_cursor.execute(query_users, (view_role,username))
+        usersdb_cursor.execute(query_users, (view_role, username))
 
         # all usernames
         usernames = [row[0] for row in usersdb_cursor.fetchall()]
