@@ -777,6 +777,24 @@ def punjab_stats_dashboard():
         processed_db_cursor.execute(category_query, [from_date_str, to_date_str])
         category_stats = processed_db_cursor.fetchone()
 
+        vcm_query = f"""
+                    SELECT
+                    COUNT(*) AS total_vcm
+                    FROM case_final_status
+                    WHERE created_at BETWEEN %s AND %s
+                    AND district_id IS NOT NULL
+                    {district_condition}
+                """
+        db_conn = db_config.get_vcm_db_connection()
+        db_cursor = db_conn.cursor()
+        from_date_obj = datetime.strptime(from_date_str, '%Y-%m-%d')
+        to_date_obj = datetime.strptime(to_date_str, '%Y-%m-%d')
+        db_cursor.execute(vcm_query,
+                          (from_date_obj.strftime('%Y-%m-%d 00:00:00'), to_date_obj.strftime('%Y-%m-%d 23:59:59')))
+        minorities_values = db_cursor.fetchone()
+        db_cursor.close()
+        db_conn.close()
+
         calls_cases_query = """
             SELECT 
                 SUM(total_calls) AS total_calls,
@@ -873,6 +891,8 @@ def punjab_stats_dashboard():
         (terrorism, murder, firing, women_harrasment, kidnapping, child_abuse,
          others_person, dacoity, robbery_snatching, theft, motorcycle_theft,
          car_theft, others_property, minorities, burglary, dacoity_with_murder) = category_stats
+        # Code updated to return count of vcm database results instead of psca_15 minoroies queue
+        minorities = minorities_values[0]
 
         category_regional_response_query = """
                     WITH categorized_data AS (
@@ -1240,10 +1260,12 @@ def punjab_stats_dashboard():
                                                                               '00:00')},
             'minorities': {'count': minorities, 'fir': minorities_fir,
                            'fake/other': 0,
-                           'response_times': category_regional_response_dict.get('minorities',
-                                                                                 {'urban': '00:00', 'rural': '00:00'}),
-                           'avg_response_time': category_avg_response_dict.get('minorities',
-                                                                               '00:00')},
+                           'response_times': '00:00', 'avg_response_time': '00:00'},
+            # uncomment it after change
+            # 'response_times': category_regional_response_dict.get('minorities',
+            #                                                       {'urban': '00:00', 'rural': '00:00'}),
+            # 'avg_response_time': category_avg_response_dict.get('minorities',
+            #                                                     '00:00')},
             'burglary': {'count': burglary, 'fir': burglary_fir,
                          'fake/other': 0,
                          'response_times': category_regional_response_dict.get('burglary',
@@ -1589,6 +1611,12 @@ def punjab_more_info():
             for case_number, level3_case_nature, caller_name, caller_number, created_time,
             police_station, district_id, time_id, description, reached_time, response_time in cases
         ]
+
+        # uncomment it after change
+        if category == 'minorities':
+            cases_list = []
+            ps_response_obj = []
+            district_response_obj = []
 
         response = {
             'status': True,
