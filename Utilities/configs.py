@@ -16,8 +16,9 @@ WHITE_LISTED_IPS = ['10.22.15.235', '10.20.170.151', '10.20.170.219', '10.20.170
                     '10.20.12.157', '10.21.63.149', '10.22.16.245']  # '10.22.15.91'
 
 """API REQUEST LIMITER"""
-DEFAULT_LIMITER = ["500000 per day", "50000 per hour"]
+DEFAULT_LIMITER = ["5000000 per day", "500000 per hour"]
 LIMITER = "1500 per minute"
+NOTIFICATIONS_LIMITER = "15000 per minute"
 
 """CACHE CONFIGS"""
 CACHE_CONFIGS = {'CACHE_TYPE': 'simple'}

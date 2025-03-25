@@ -3653,7 +3653,7 @@ def update_remarks():
 
 
 @app.route(configs.GET_NOTIFICATIONS['ENDPOINT'], methods=[configs.GET_NOTIFICATIONS['METHOD']])
-@limiter.limit(configs.LIMITER)
+@limiter.limit(configs.NOTIFICATIONS_LIMITER)
 @require_api_key
 @validate_ownership
 def get_notifications():
