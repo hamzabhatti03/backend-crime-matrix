@@ -5788,9 +5788,9 @@ def get_chat_users(view_role, district, police_station):
 
 
 @app.route('/get_chat_user', methods=['POST'])
-# @limiter.limit(configs.LIMITER)
-# @require_api_key
-# @jwt_required()
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@jwt_required()
 def get_chat_user():
     try:
         # Extract input parameters from form data
@@ -6372,11 +6372,11 @@ def user_analytics():
                     SUM(CASE WHEN DATE(lastseen) = CURRENT_DATE AND district IS NOT NULL THEN 1 ELSE 0 END) AS online,
                     SUM(CASE WHEN DATE(lastseen) <> CURRENT_DATE AND district IS NOT NULL THEN 1 ELSE 0 END) AS offline
                 FROM users
-                Where 1=1
+                Where CAST(view_role_emergency AS INTEGER) > %s AND status = 'active'
                  {district_condition};
 
                 """
-        usersdb_cursor.execute(user_status_query, )
+        usersdb_cursor.execute(user_status_query, (view_role,))
         row = usersdb_cursor.fetchone()
 
         if row:
@@ -6392,11 +6392,11 @@ def user_analytics():
                   SUM(CASE WHEN DATE(lastseen) = CURRENT_DATE AND district IS NOT NULL THEN 1 ELSE 0 END) AS online,
                   SUM(CASE WHEN DATE(lastseen) <> CURRENT_DATE AND district IS NOT NULL THEN 1 ELSE 0 END) AS offline
                 FROM users
-                WHERE district IS NOT NULL
+                WHERE CAST(view_role_emergency AS INTEGER) > %s AND status = 'active' AND district IS NOT NULL
                 {district_condition}
                 GROUP BY district;
         """
-        usersdb_cursor.execute(district_query)
+        usersdb_cursor.execute(district_query, (view_role,))
         district_data = usersdb_cursor.fetchall()
 
         district_results = []
@@ -6412,6 +6412,7 @@ def user_analytics():
                         FROM users
                         WHERE 
                             CAST(view_role_emergency AS INTEGER) > %s
+                            AND status = 'active'
                             AND district IS NOT NULL
                             AND EXISTS (
                                 SELECT 1
@@ -6442,10 +6443,12 @@ def user_analytics():
                 SELECT first_name_emergency, last_name_emergency, lastseen, district
                 FROM users
                 WHERE DATE(lastseen) <> CURRENT_DATE
+                AND CAST(view_role_emergency AS INTEGER) > %s
+                AND status = 'active'
                 AND district is NOT NULL
                 {district_condition};
         """
-        usersdb_cursor.execute(offline_users_query)
+        usersdb_cursor.execute(offline_users_query, (view_role,))
         offline = usersdb_cursor.fetchall()
 
         offline_users_activity = [
@@ -6461,10 +6464,12 @@ def user_analytics():
                 SELECT first_name_emergency, last_name_emergency, lastseen , district
                 FROM users
                 WHERE DATE(lastseen) = CURRENT_DATE
+                AND CAST(view_role_emergency AS INTEGER) > %s
+                AND status = 'active'
                 AND district is NOT NULL
                 {district_condition};
         """
-        usersdb_cursor.execute(online_users_query)
+        usersdb_cursor.execute(online_users_query, (view_role,))
         online = usersdb_cursor.fetchall()
 
         online_users_activity = [
