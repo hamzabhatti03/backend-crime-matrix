@@ -779,7 +779,7 @@ def punjab_stats_dashboard():
 
         vcm_query = f"""
                     SELECT
-                    COUNT(*) AS total_vcm
+                    lead_id
                     FROM case_final_status
                     WHERE created_at BETWEEN %s AND %s
                     AND district_id IS NOT NULL
@@ -793,9 +793,31 @@ def punjab_stats_dashboard():
             vcm_query = vcm_query.replace("police_station", "pucar_police_station")
         db_cursor.execute(vcm_query,
                           (from_date_obj.strftime('%Y-%m-%d 00:00:00'), to_date_obj.strftime('%Y-%m-%d 23:59:59')))
-        minorities_values = db_cursor.fetchone()
+        minorities_values = db_cursor.fetchall()
         db_cursor.close()
         db_conn.close()
+
+        lead_ids_list = [str(row[0]) for row in minorities_values]
+
+        if lead_ids_list:
+            # Create an IN clause list of lead_ids.
+            in_clause = ", ".join(lead_ids_list)
+            query_lead_avg = f"""
+                SELECT AVG(response_time) AS avg_response_time
+                FROM response_time
+                WHERE lead_id IN ({in_clause})
+                  AND response_time IS NOT NULL
+                  AND response_time > 0
+            """
+            processed_db_cursor.execute(query_lead_avg)
+            lead_avg_result = processed_db_cursor.fetchone()
+            if lead_avg_result and lead_avg_result[0] is not None:
+                avg_response_time = lead_avg_result[0]
+                minorities_avg_time = f"{int(avg_response_time // 60)}:{int(avg_response_time % 60):02d}"
+            else:
+                minorities_avg_time = "0:00"
+        else:
+            minorities_avg_time = "0:00"
 
         calls_cases_query = """
             SELECT 
@@ -894,7 +916,7 @@ def punjab_stats_dashboard():
          others_person, dacoity, robbery_snatching, theft, motorcycle_theft,
          car_theft, others_property, minorities, burglary, dacoity_with_murder) = category_stats
         # Code updated to return count of vcm database results instead of psca_15 minoroies queue
-        minorities = minorities_values[0]
+        minorities = len(lead_ids_list) if lead_ids_list else 0
 
         category_regional_response_query = """
                     WITH categorized_data AS (
@@ -1038,6 +1060,8 @@ def punjab_stats_dashboard():
             if category not in category_avg_response_dict:
                 category_avg_response_dict[category] = {}
             category_avg_response_dict[category] = f"{int(avg_time // 60)}:{int(avg_time % 60):02d}"
+
+        category_avg_response_dict['minorities'] = minorities_avg_time
 
         where_cond = ""
         if view_role in [3, 4]:
@@ -1262,8 +1286,9 @@ def punjab_stats_dashboard():
                                                                               '00:00')},
             'minorities': {'count': minorities, 'fir': minorities_fir,
                            'fake/other': 0,
-                           'response_times': '00:00', 'avg_response_time': '00:00'},
-            # uncomment it after change
+                           'response_times': '00:00', 'avg_response_time': category_avg_response_dict.get('minorities',
+                                                                                                          '00:00')},
+            # previous logic for getting minorities records from
             # 'response_times': category_regional_response_dict.get('minorities',
             #                                                       {'urban': '00:00', 'rural': '00:00'}),
             # 'avg_response_time': category_avg_response_dict.get('minorities',
@@ -1365,10 +1390,10 @@ def punjab_more_info():
     {
         "fromDate": "YYYY-MM-DD",  # Optional
         "toDate": "YYYY-MM-DD",   # Optional
-        "category" : str          # Case Nature
+        "category": str,          # Case Nature
         "view_role": int,         # User role ID (2 = All data, 3,4 = District-specific data & 5 = PS specific Data)
-        "district":  str          # String of districts
-        "police_station" : str    # String of police_stations
+        "district":  str,         # String of districts
+        "police_station": str     # String of police_stations
     }
 
     Returns:
@@ -1376,11 +1401,11 @@ def punjab_more_info():
     """
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    db_conn = db_config.get_vcm_db_connection()
+    db_cursor = db_conn.cursor()
 
     try:
-        # Get and validate request body
-        # Use request.form to get parameters from form body
-
+        # Get and validate request body from form data
         category = request.form.get('category')
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
@@ -1395,11 +1420,11 @@ def punjab_more_info():
                 'data': None
             }), 400
 
-        # Handle category mappings
+        # Handle category mappings for consistency
         category = "rape" if category == "women_harrassment" else category
         category = "aerial_firing" if category == "firing" else category
 
-        # Handle special categories
+        # Special handling for categories with no available data
         if category in ['police_encounter', 'environment_smog_issues']:
             return jsonify({
                 'status': True,
@@ -1434,8 +1459,9 @@ def punjab_more_info():
                         'data': None
                     }), 400
 
+        # Build district condition if required
         district_condition = ""
-        if (view_role == 3 or view_role == 4) and district_ids:
+        if (view_role in [3, 4]) and district_ids:
             district_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
         elif view_role == 5 and district_ids:
             district_condition = (
@@ -1443,183 +1469,308 @@ def punjab_more_info():
                 f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
             )
 
-        district_query = """
-                    WITH categorized_data AS (
-                        SELECT
-                            district_id,
-                            CASE
-                                WHEN {where_condition}
-                                THEN '{category}'
-                                ELSE NULL
-                            END AS category
-                        FROM response_time
-                        WHERE date BETWEEN %s AND %s
-                          AND parent_id = 0
-                          AND response_time IS NOT NULL
-                          AND response_time > 0
-                          AND police_station IS NOT NULL
-                          AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
-                          {district_condition}
-                    )
+        additional_condition = ""
+        if view_role == 5 and district_ids:
+            additional_condition = (
+                f"  AND district_id IN ({', '.join(map(str, district_ids))}) "
+                f"AND pucar_police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        elif view_role in [3, 4]:
+            additional_condition = f" AND district_id IN ({', '.join(map(str, district_ids))})"
+
+        # ---------------------------
+        # Minority-specific query branch
+        # ---------------------------
+        if category == 'minorities':
+            # Example: Adjust conditions and column names as per your case_final_status table.
+            # District-wise aggregation from case_final_status
+
+            from_date_obj = datetime.strptime(from_date, '%Y-%m-%d')
+            to_date_obj = datetime.strptime(to_date, '%Y-%m-%d')
+
+            current_date_str = from_date_obj.strftime('%Y-%m-%d 00:00:00')
+            to_date_str = to_date_obj.strftime('%Y-%m-%d 23:59:59')
+
+            district_query = """
+                SELECT
+                    district_id,
+                    COUNT(*) AS count
+                FROM case_final_status
+                WHERE created_at BETWEEN %s AND %s
+                  {district_condition}
+                  AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
+                GROUP BY district_id
+                HAVING COUNT(*) > 0;
+            """
+            district_query = district_query.format(district_condition=additional_condition)
+            query_params = [current_date_str, to_date_str]
+            db_cursor.execute(district_query, query_params)
+            district_response = db_cursor.fetchall()
+
+            district_response_obj = {
+                configs.DISTRICTS_DICTIONARY.get(int(district_id)): count
+                for district_id, count in district_response
+            }
+
+            # Police station-wise aggregation from case_final_status
+            ps_query = """
+                SELECT
+                    district_id,
+                    pucar_police_station_id,
+                    pucar_police_station,
+                    COUNT(*) AS count
+                FROM case_final_status
+                WHERE created_at BETWEEN %s AND %s
+                  {district_condition}
+                GROUP BY district_id, pucar_police_station
+                HAVING COUNT(*) > 0;
+            """
+            ps_query = ps_query.format(district_condition=additional_condition)
+            db_cursor.execute(ps_query, query_params)
+            ps_response = db_cursor.fetchall()
+
+            ps_response_obj = {
+                ps: {
+                    configs.DISTRICTS_DICTIONARY.get(district): count
+                }
+                for district, ps_id, ps, count in ps_response
+            }
+
+            # Get police station count from the main police stations table remains same if applicable
+            ps_conn = utils.get_db_connection(configs.POLICE_STATIONS_MAIN)
+            ps_cursor = ps_conn.cursor()
+            ps_condition = ""
+            if view_role in [3, 4, 5]:
+                ps_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
+
+            ps_cursor.execute(f"""
+                        SELECT district_id, count(name) as count 
+                        FROM police_stations 
+                        WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45') 
+                            AND district_id is NOT NULL
+                            {ps_condition}
+                        GROUP BY district_id
+                        HAVING count > 1
+                    """)
+            ps_count = ps_cursor.fetchall()
+            ps_count_obj = {
+                configs.DISTRICTS_DICTIONARY.get(int(district_id)): count
+                for district_id, count in ps_count
+            }
+
+            # Case details from case_final_status
+            cases_query = """
+                SELECT
+                    pucar_case_number, 
+                    level3_case_nature,   
+                    pucar_caller_name,
+                    pucar_accepted_time,
+                    pucar_cli, 
+                    pucar_police_station,
+                    district_id,
+                    created_at,
+                    pucar_cro_comments
+                FROM case_final_status
+                WHERE created_at BETWEEN %s AND %s
+                  {district_condition}
+            """
+            cases_query = cases_query.format(district_condition=additional_condition)
+            db_cursor.execute(cases_query, query_params)
+            cases = db_cursor.fetchall()
+
+            # Map the results to the expected output format. Adjust the mapping if column names differ.
+            cases_list = [
+                {
+                    "case_number": case_no,
+                    "case_nature": case_nature,
+                    "caller_name": caller_name,
+                    "assigned_time": datetime.fromtimestamp(int(accepted_time)).strftime(
+                        configs.YMD_HMS) if accepted_time else None,
+                    "cli": caller_number,
+                    "police_station": police_station,
+                    "status": 'Completed',
+                    "district": configs.DISTRICTS_DICTIONARY.get(district_id),
+                    "time_id": time_id if time_id else None,
+                    "description": description,
+                    "reached_time": None,
+                    "response_time": None
+                }
+                for case_no, case_nature, caller_name, accepted_time, caller_number,
+                police_station, district_id, time_id, description in cases
+            ]
+            if ps_cursor:
+                ps_cursor.close()
+            if db_cursor:
+                db_cursor.close()
+        else:
+            # Build where conditions based on the category
+            if category == 'minorities':
+                where_condition = "queue = 'minorities-15'"
+                query_params = [from_date, to_date]
+            else:
+                level3_values = configs.CATEGORIES.get(category, [])
+                level3_list = ", ".join(f"'{val}'" for val in level3_values)
+                where_condition = f"level3_case_nature IN ({level3_list})"
+                query_params = [from_date, to_date]
+
+            # District query for response_time table
+            district_query = """
+                WITH categorized_data AS (
                     SELECT
                         district_id,
-                        COUNT(*) AS count
-                    FROM categorized_data
-                    WHERE category = '{category}'
-                    GROUP BY district_id
-                    HAVING COUNT(*) > 0;
-                """
+                        CASE
+                            WHEN {where_condition}
+                            THEN '{category}'
+                            ELSE NULL
+                        END AS category
+                    FROM response_time
+                    WHERE date BETWEEN %s AND %s
+                      AND parent_id = 0
+                      AND response_time IS NOT NULL
+                      AND response_time > 0
+                      AND police_station IS NOT NULL
+                      AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
+                      {district_condition}
+                )
+                SELECT
+                    district_id,
+                    COUNT(*) AS count
+                FROM categorized_data
+                WHERE category = '{category}'
+                GROUP BY district_id
+                HAVING COUNT(*) > 0;
+            """
+            district_query = district_query.format(
+                where_condition=where_condition,
+                category=category,
+                district_condition=district_condition
+            )
+            processed_db_cursor.execute(district_query, query_params)
+            district_response = processed_db_cursor.fetchall()
 
-        # Handling 'minorities' category separately
-        if category == 'minorities':
-            where_condition = "queue = 'minorities-15'"
-            query_params = [from_date, to_date]
-        else:
-            level3_values = configs.CATEGORIES.get(category, [])
-            level3_list = ", ".join(f"'{val}'" for val in level3_values)
-            where_condition = f"level3_case_nature IN ({level3_list})"
-            query_params = [from_date, to_date]
+            district_response_obj = {
+                configs.DISTRICTS_DICTIONARY[int(district_id)]: count
+                for district_id, count in district_response
+            }
 
-        # Formatting the query with appropriate conditions
-        district_query = district_query.format(
-            where_condition=where_condition,
-            category=category,
-            district_condition=district_condition
-        )
+            # Police station query for response_time table
+            if category == 'minorities':
+                where_condition = "queue = 'minorities-15'"
+                query_params = [from_date, to_date]
+            else:
+                categories = configs.CATEGORIES.get(category)
+                where_condition = f"level3_case_nature IN ({','.join(['%s'] * len(categories))})"
+                query_params = categories + [from_date, to_date] + categories
 
-        # Executing the query
-        processed_db_cursor.execute(district_query, query_params)
-        district_response = processed_db_cursor.fetchall()
-
-        district_response_obj = {
-            configs.DISTRICTS_DICTIONARY[int(district_id)]: count
-            for district_id, count in district_response
-        }
-
-        if category == 'minorities':
-            where_condition = "queue = 'minorities-15'"
-            query_params = [from_date, to_date]
-        else:
-            categories = configs.CATEGORIES.get(category)
-            where_condition = f"level3_case_nature IN ({','.join(['%s'] * len(categories))})"
-            query_params = categories + [from_date, to_date] + categories
-
-        ps_query = """
-            SELECT
-                district_id,
-                police_station_id,
-                police_station,
-                COUNT(
-                    CASE 
-                        WHEN {where_condition} THEN 'cc'
-                    END
-                ) AS count
-            FROM 
-                response_time
-            WHERE 
-                date BETWEEN %s AND %s
+            ps_query = """
+                SELECT
+                    district_id,
+                    police_station_id,
+                    police_station,
+                    COUNT(
+                        CASE 
+                            WHEN {where_condition} THEN 'cc'
+                        END
+                    ) AS count
+                FROM 
+                    response_time
+                WHERE 
+                    date BETWEEN %s AND %s
                     AND parent_id = 0
                     AND response_time IS NOT NULL
                     AND police_station is not Null
                     AND response_time > 0
                     {district_condition}
                     AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
-            GROUP BY 
-                police_station_id, district_id, police_station
-            HAVING 
-                COUNT(
-                    CASE 
-                        WHEN {where_condition} THEN 'cc'
-                    END
-                ) > 0;
-        """
-        ps_query = ps_query.format(where_condition=where_condition, district_condition=district_condition)
+                GROUP BY 
+                    police_station_id, district_id, police_station
+                HAVING 
+                    COUNT(
+                        CASE 
+                            WHEN {where_condition} THEN 'cc'
+                        END
+                    ) > 0;
+            """
+            ps_query = ps_query.format(where_condition=where_condition, district_condition=district_condition)
+            processed_db_cursor.execute(ps_query, query_params)
+            ps_response = processed_db_cursor.fetchall()
 
-        processed_db_cursor.execute(ps_query, query_params)
-        ps_response = processed_db_cursor.fetchall()
-
-        ps_response_obj = {
-            ps: {
-                configs.DISTRICTS_DICTIONARY.get(district): count}
-            for district, ps_id, ps, count in ps_response
-        }
-
-        ps_conn = utils.get_db_connection(configs.POLICE_STATIONS_MAIN)
-        ps_cursor = ps_conn.cursor()
-
-        ps_condition = ""
-        if view_role == 3 or view_role == 4 or view_role == 5:
-            ps_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
-
-        ps_cursor.execute(f"""
-                    SELECT district_id, count(name) as count 
-                    FROM police_stations 
-                    WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45') 
-                        AND district_id is NOT NULL
-                        {ps_condition}
-                    GROUP BY district_id
-                    HAVING count > 1
-                """)
-        ps_count = ps_cursor.fetchall()
-        ps_count_obj = {
-            configs.DISTRICTS_DICTIONARY.get(int(district_id)): count
-            for district_id, count in ps_count
-        }
-
-        # Get case details
-        base_query = """
-                    SELECT case_number, level3_case_nature, caller_name, caller_number, 
-                           accepted_time, police_station, district_id, time_id, 
-                           description, first_arrival_time, response_time
-                    FROM response_time
-                    WHERE {condition}
-                        AND district_id NOT IN ('0','41','42','43','44','45')
-                        AND police_station is not Null
-                        AND response_time IS NOT NULL
-                        AND date BETWEEN %s AND %s
-                        AND parent_id=0
-                        AND response_time > 0
-                        {district_condition}
-
-                """
-        if category == 'minorities':
-            where_condition = "queue = 'minorities-15'"
-            query_params = [from_date, to_date]
-        else:
-            categories = configs.CATEGORIES.get(category)
-            where_condition = f"level3_case_nature IN ({','.join(['%s'] * len(categories))})"
-            query_params = categories + [from_date, to_date]
-
-        cases_query = base_query.format(condition=where_condition, district_condition=district_condition)
-        processed_db_cursor.execute(cases_query, query_params)
-        cases = processed_db_cursor.fetchall()
-
-        cases_list = [
-            {
-                "case_number": case_number,
-                "case_nature": level3_case_nature,
-                "caller_name": caller_name,
-                "assigned_time": created_time,
-                "cli": caller_number,
-                "police_station": police_station,
-                "status": 'Completed',
-                "district": configs.DISTRICTS_DICTIONARY.get(district_id),
-                "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
-                "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
-                    configs.YMD_HMS) if reached_time else None,
-                "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else 0
+            ps_response_obj = {
+                ps: {
+                    configs.DISTRICTS_DICTIONARY.get(district): count
+                }
+                for district, ps_id, ps, count in ps_response
             }
-            for case_number, level3_case_nature, caller_name, caller_number, created_time,
-            police_station, district_id, time_id, description, reached_time, response_time in cases
-        ]
 
-        # uncomment it after change
-        if category == 'minorities':
-            cases_list = []
-            ps_response_obj = []
-            district_response_obj = []
+            # Police stations count remains the same as above
+            ps_conn = utils.get_db_connection(configs.POLICE_STATIONS_MAIN)
+            ps_cursor = ps_conn.cursor()
+            ps_condition = ""
+            if view_role in [3, 4, 5]:
+                ps_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
+            ps_cursor.execute(f"""
+                        SELECT district_id, count(name) as count 
+                        FROM police_stations 
+                        WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45') 
+                            AND district_id is NOT NULL
+                            {ps_condition}
+                        GROUP BY district_id
+                        HAVING count > 1
+                    """)
+            ps_count = ps_cursor.fetchall()
+            ps_count_obj = {
+                configs.DISTRICTS_DICTIONARY.get(int(district_id)): count
+                for district_id, count in ps_count
+            }
 
+            # Cases query for response_time table
+            base_query = """
+                SELECT case_number, level3_case_nature, caller_name, caller_number, 
+                       accepted_time, police_station, district_id, time_id, 
+                       description, reached_time, response_time
+                FROM response_time
+                WHERE {condition}
+                    AND district_id NOT IN ('0','41','42','43','44','45')
+                    AND police_station is not Null
+                    AND response_time IS NOT NULL
+                    AND date BETWEEN %s AND %s
+                    AND parent_id=0
+                    AND response_time > 0
+                    {district_condition}
+            """
+            if category == 'minorities':
+                where_condition = "queue = 'minorities-15'"
+                query_params = [from_date, to_date]
+            else:
+                categories = configs.CATEGORIES.get(category)
+                where_condition = f"level3_case_nature IN ({','.join(['%s'] * len(categories))})"
+                query_params = categories + [from_date, to_date]
+
+            cases_query = base_query.format(condition=where_condition, district_condition=district_condition)
+            processed_db_cursor.execute(cases_query, query_params)
+            cases = processed_db_cursor.fetchall()
+
+            cases_list = [
+                {
+                    "case_number": case_number,
+                    "case_nature": level3_case_nature,
+                    "caller_name": caller_name,
+                    "assigned_time": accepted_time,
+                    "cli": caller_number,
+                    "police_station": police_station,
+                    "status": 'Completed',
+                    "district": configs.DISTRICTS_DICTIONARY.get(district_id),
+                    "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS) if time_id else None,
+                    "description": description,
+                    "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+                        configs.YMD_HMS) if reached_time else None,
+                    "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else "0:00"
+                }
+                for case_number, level3_case_nature, caller_name, caller_number, accepted_time,
+                police_station, district_id, time_id, description, reached_time, response_time in cases
+            ]
+
+        # Build final response object
         response = {
             'status': True,
             'message': 'Data fetched successfully',
@@ -1645,6 +1796,9 @@ def punjab_more_info():
 
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+        ps_conn.close()
+        db_conn.close()
 
 
 @app.route(configs.DISTRICTWISE_STATS['ENDPOINT'], methods=[configs.DISTRICTWISE_STATS['METHOD']])
@@ -1732,13 +1886,14 @@ def districtwise_counts():
                     OR level3_case_nature IN ('Aerial Firing', 'Attempt to Illegal Possession of Land/ Premises')
                 )
                 AND district_id IS NOT NULL
+                AND queue NOT IN ('minorities-15')
                 AND date BETWEEN %s AND %s
                 {district_condition}
                 AND parent_id = 0
                 AND response_time IS NOT NULL
                 AND response_time > 0
                 AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
-            GROUP BY 
+            GROUP BY
                 district_id;
         """
         cases_query = cases_query.format(district_condition=district_condition)
@@ -1751,10 +1906,60 @@ def districtwise_counts():
             for district_id, count in cases_summary
         }
 
+        if view_role == 5 and district_ids:
+            additional_condition = (
+                f"  AND district_id IN ({', '.join(map(str, district_ids))}) "
+                f"AND pucar_police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        elif view_role in [3, 4]:
+            additional_condition = f" AND district_id IN ({', '.join(map(str, district_ids))})"
+        else:
+            additional_condition = ""
+
+        db_conn = db_config.get_vcm_db_connection()
+        db_cursor = db_conn.cursor()
+
+        from_date_obj = datetime.strptime(from_date, '%Y-%m-%d')
+        to_date_obj = datetime.strptime(to_date, '%Y-%m-%d')
+
+        current_date_str = from_date_obj.strftime('%Y-%m-%d 00:00:00')
+        to_date_str = to_date_obj.strftime('%Y-%m-%d 23:59:59')
+
+        vcm_query = f"""
+                        SELECT
+                        district_id,
+                        count(*)
+                        FROM case_final_status
+                        WHERE created_at BETWEEN %s AND %s
+                        AND district_id IS NOT NULL
+                        {additional_condition}
+                        group by district_id
+                        """
+
+        db_cursor.execute(vcm_query, (current_date_str, to_date_str))
+        values = db_cursor.fetchall()
+
+        db_cursor.close()
+        district_stats_vcm = {
+            configs.DISTRICTS_DICTIONARY.get(int(district_id)): count
+            for district_id, count in values
+        }
+
+        total_district_stats = {}
+        # Add counts from the response_time table first.
+        for district, count in district_stats.items():
+            total_district_stats[district] = count
+        # Merge counts from case_final_status table by summing values if a district exists in both
+        for district, count in district_stats_vcm.items():
+            if district in total_district_stats:
+                total_district_stats[district] += count
+            else:
+                total_district_stats[district] = count
+
         response = {
             'status': True,
             'message': 'District-wise statistics fetched successfully',
-            'data': district_stats
+            'data': total_district_stats
         }
 
         return jsonify(response), 200
@@ -1772,6 +1977,8 @@ def districtwise_counts():
 
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+        db_conn.close()
 
 
 @app.route(configs.DISTRICTWISE_MORE_INFO['ENDPOINT'], methods=['POST'])  # Changed to POST
