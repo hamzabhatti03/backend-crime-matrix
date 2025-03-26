@@ -827,7 +827,7 @@ def main(start_date, end_date, start):
             if log_db_cursor:
                 log_db_cursor.close()
             db_conn.close()
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
 if __name__ == '__main__':

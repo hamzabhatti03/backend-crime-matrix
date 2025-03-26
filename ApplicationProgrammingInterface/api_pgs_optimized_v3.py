@@ -789,6 +789,8 @@ def punjab_stats_dashboard():
         db_cursor = db_conn.cursor()
         from_date_obj = datetime.strptime(from_date_str, '%Y-%m-%d')
         to_date_obj = datetime.strptime(to_date_str, '%Y-%m-%d')
+        if 'police_station' in vcm_query:
+            vcm_query = vcm_query.replace("police_station", "pucar_police_station")
         db_cursor.execute(vcm_query,
                           (from_date_obj.strftime('%Y-%m-%d 00:00:00'), to_date_obj.strftime('%Y-%m-%d 23:59:59')))
         minorities_values = db_cursor.fetchone()
