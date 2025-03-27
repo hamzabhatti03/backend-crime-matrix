@@ -1600,8 +1600,10 @@ def punjab_more_info():
             ]
             if ps_cursor:
                 ps_cursor.close()
+            ps_conn.close()
             if db_cursor:
                 db_cursor.close()
+            db_conn.close()
         else:
             # Build where conditions based on the category
             if category == 'minorities':
@@ -1760,16 +1762,17 @@ def punjab_more_info():
                     "police_station": police_station,
                     "status": 'Completed',
                     "district": configs.DISTRICTS_DICTIONARY.get(district_id),
-                    "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS) if time_id else None,
+                    "time_id": datetime.fromtimestamp(int(float(time_id))).strftime(configs.YMD_HMS),
                     "description": description,
-                    "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
+                    "reached_time": datetime.fromtimestamp(int(float(reached_time))).strftime(
                         configs.YMD_HMS) if reached_time else None,
-                    "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else "0:00"
+                    "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else 0
                 }
                 for case_number, level3_case_nature, caller_name, caller_number, accepted_time,
                 police_station, district_id, time_id, description, reached_time, response_time in cases
             ]
-
+            ps_conn.close()
+            db_conn.close()
         # Build final response object
         response = {
             'status': True,
@@ -1796,9 +1799,6 @@ def punjab_more_info():
 
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
-
-        ps_conn.close()
-        db_conn.close()
 
 
 @app.route(configs.DISTRICTWISE_STATS['ENDPOINT'], methods=[configs.DISTRICTWISE_STATS['METHOD']])
@@ -2970,13 +2970,22 @@ def forcast_predictive_policing():
     try:
         log_db_conn, log_db_cursor = get_log_pg_db_connection()
         pg_conn, pg_cursor = get_db_pg_predictive()
+        users_db_conn, usersdb_cursor = get_users_db_connection()
 
         ps = request.form.get('police_station')
         district = request.form.get('district')
+        username = request.form.get('username')
         forecast = yesterday_forecast(ps, district, pg_conn)
         dashboard_data = get_category_data(ps, district, pg_conn)
 
         data = {**forecast, **dashboard_data}
+        user_update_query = """
+                        UPDATE users 
+                        SET lastseen = %s
+                        WHERE user_name_emergency = %s;
+                                """
+        usersdb_cursor.execute(user_update_query, (datetime.now(), username))
+        users_db_conn.commit()
 
         response = {
             'status': True,
@@ -2996,9 +3005,11 @@ def forcast_predictive_policing():
     finally:
         log_db_cursor.close()
         log_db_pool.putconn(log_db_conn)
-
         pg_cursor.close()
         predictive_db_pool.putconn(pg_conn)
+        usersdb_cursor.close()
+        usersdb_pool.putconn(users_db_conn)
+
 
 
 @app.route(configs.DATEWISE_FORECAST['ENDPOINT'], methods=[configs.DATEWISE_FORECAST['METHOD']])
@@ -3052,12 +3063,14 @@ def forecast_datewise():
 def emergency_15_integration():
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    users_db_conn, usersdb_cursor = get_users_db_connection()
     try:
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
         police_station_str = request.form.get('police_station')
+        username = request.form.get('username')
 
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
@@ -3232,6 +3245,14 @@ def emergency_15_integration():
         # Convert query results into a list of [latitude, longitude] pairs
         district_lat_long = [[row[0], row[1]] for row in lat_long_records]
 
+        user_update_query = """
+                                UPDATE users 
+                                SET lastseen = %s
+                                WHERE user_name_emergency = %s;
+                                        """
+        usersdb_cursor.execute(user_update_query, (datetime.now(), username))
+        users_db_conn.commit()
+
         response = {
             'status': True,
             'message': 'Integrated Emergency 15 Dashboard details fetched successfully',
@@ -3254,9 +3275,10 @@ def emergency_15_integration():
     finally:
         log_db_cursor.close()
         log_db_pool.putconn(log_db_conn)
-        # Properly return to the pool without removing it
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+        usersdb_cursor.close()
+        usersdb_pool.putconn(users_db_conn)
 
 
 @app.route(configs.ADD_REMARKS['ENDPOINT'], methods=[configs.ADD_REMARKS['METHOD']])
@@ -5474,6 +5496,14 @@ def crime_trends():
                 'percentage_change': change
             })
 
+        user_update_query = """
+                        UPDATE users 
+                        SET lastseen = %s
+                        WHERE user_name_emergency = %s;
+                                """
+        master_cursor.execute(user_update_query, (datetime.now(), user_name))
+        master_db_connection.commit()
+
         response = {
             "data": {
                 'crime_trends': result_crime_trends,
@@ -6639,9 +6669,24 @@ def user_analytics():
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
         username = request.form.get('username')
+        period = request.form.get('period', 'today')
+
+        valid_periods = ['today', 'week', 'month']
+        if period not in valid_periods:
+            return jsonify({
+                'status': False,
+                'message': 'Invalid period specified. Must be one of: today, week, month',
+                'data': None
+            }), 400
+
+        if period == 'today':
+            period_start = 'CURRENT_DATE'
+        elif period == 'week':
+            period_start = "CURRENT_DATE - INTERVAL '7 days'"
+        elif period == 'month':
+            period_start = "CURRENT_DATE - INTERVAL '30 days'"
 
         districts = district_str.split(",") if district_str else []
-
         if view_role not in [1, 2, 3, 4]:
             return jsonify({
                 'status': False,
@@ -6657,12 +6702,12 @@ def user_analytics():
         user_status_query = f"""
                 SELECT
                     SUM(CASE WHEN district IS NOT NULL THEN 1 ELSE 0 END) AS total_users,
-                    SUM(CASE WHEN DATE(lastseen) = CURRENT_DATE AND district IS NOT NULL THEN 1 ELSE 0 END) AS online,
-                    SUM(CASE WHEN DATE(lastseen) <> CURRENT_DATE AND district IS NOT NULL THEN 1 ELSE 0 END) AS offline
+                    SUM(CASE WHEN DATE(lastseen) >= {period_start} THEN 1 ELSE 0 END) AS online,
+                    SUM(CASE WHEN DATE(lastseen) < {period_start} THEN 1 ELSE 0 END) AS offline
                 FROM users
                 Where CAST(view_role_emergency AS INTEGER) > %s AND status = 'active'
+                AND district IS NOT NULL
                  {district_condition};
-
                 """
         usersdb_cursor.execute(user_status_query, (view_role,))
         row = usersdb_cursor.fetchone()
@@ -6677,8 +6722,8 @@ def user_analytics():
                 SELECT 
                   district,
                   SUM(CASE WHEN district IS NOT NULL THEN 1 ELSE 0 END) AS total_users,
-                  SUM(CASE WHEN DATE(lastseen) = CURRENT_DATE AND district IS NOT NULL THEN 1 ELSE 0 END) AS online,
-                  SUM(CASE WHEN DATE(lastseen) <> CURRENT_DATE AND district IS NOT NULL THEN 1 ELSE 0 END) AS offline
+                  SUM(CASE WHEN DATE(lastseen) >= {period_start} THEN 1 ELSE 0 END) AS online,
+                  SUM(CASE WHEN DATE(lastseen) < {period_start} THEN 1 ELSE 0 END) AS offline
                 FROM users
                 WHERE CAST(view_role_emergency AS INTEGER) > %s AND status = 'active' AND district IS NOT NULL
                 {district_condition}
@@ -6719,7 +6764,8 @@ def user_analytics():
 
         query_remarks = (
             f"SELECT assigned_by , assigned_to , case_id FROM remarks "
-            f"WHERE assigned_by IN ({placeholders}) AND time_stamp::date = CURRENT_DATE"
+            f"WHERE assigned_by IN ({placeholders}) "
+            f"AND DATE(time_stamp) >= {period_start}"
         )
         processed_db_cursor.execute(query_remarks, tuple(usernames))
         remarks_data = processed_db_cursor.fetchall()
@@ -6730,7 +6776,7 @@ def user_analytics():
         offline_users_query = f"""
                 SELECT first_name_emergency, last_name_emergency, lastseen, district
                 FROM users
-                WHERE DATE(lastseen) <> CURRENT_DATE
+                WHERE DATE(lastseen) < {period_start}
                 AND CAST(view_role_emergency AS INTEGER) > %s
                 AND status = 'active'
                 AND district is NOT NULL
@@ -6751,7 +6797,7 @@ def user_analytics():
         online_users_query = f"""
                 SELECT first_name_emergency, last_name_emergency, lastseen , district
                 FROM users
-                WHERE DATE(lastseen) = CURRENT_DATE
+                WHERE DATE(lastseen) >= {period_start}
                 AND CAST(view_role_emergency AS INTEGER) > %s
                 AND status = 'active'
                 AND district is NOT NULL
@@ -6794,11 +6840,8 @@ def user_analytics():
     finally:
         log_db_cursor.close()
         log_db_pool.putconn(log_db_conn)
-        # Properly return to the pool without removing it
-
         usersdb_cursor.close()
         usersdb_pool.putconn(users_db_conn)
-
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
