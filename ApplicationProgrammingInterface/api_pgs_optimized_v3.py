@@ -1763,6 +1763,7 @@ def punjab_more_info():
                     "status": 'Completed',
                     "district": configs.DISTRICTS_DICTIONARY.get(district_id),
                     "time_id": datetime.fromtimestamp(int(float(time_id))).strftime(configs.YMD_HMS),
+                    "time": datetime.fromtimestamp(int(float(time_id))).strftime(configs.TIME_HMS),
                     "description": description,
                     "reached_time": datetime.fromtimestamp(int(float(reached_time))).strftime(
                         configs.YMD_HMS) if reached_time else None,
@@ -2217,7 +2218,10 @@ def districtwise_more_info():
                 if police_station == 'Sabzazar':
                     police_division = 'Iqbal Town Division'
                 else:
-                    police_division = configs.LAHORE_DIVISION_MAPPING[police_circle]
+                    if police_circle in configs.LAHORE_DIVISION_MAPPING:
+                        police_division = configs.LAHORE_DIVISION_MAPPING[police_circle]
+                    else:
+                        continue
             elif district_str == 'Rawalpindi':
                 if police_circle in configs.RAWALPINDI_DIVISION_MAPPING:
                     police_division = configs.RAWALPINDI_DIVISION_MAPPING[police_circle]
@@ -2558,7 +2562,7 @@ def pswise_categories():
         vehicles_location_data = [dict(zip(column_names, vehicle)) for vehicle in vehicles_location]
 
         crime_hotspots_query = """
-                            Select district_id ,police_station, level2_case_nature , reached_lat, reached_long
+                            Select district_id ,police_station, level3_case_nature , reached_lat, reached_long
                             FROM response_time
                             WHERE district_id = %s
                             AND police_station = %s
@@ -2577,9 +2581,10 @@ def pswise_categories():
             # Extract the latitude and longitude values from the result
             reached_lat = result[3]
             reached_long = result[4]
+            case_nature = result[2]
 
             # Append the coordinates as a list to the coordinates list
-            coordinates.append([float(reached_lat), float(reached_long)])
+            coordinates.append([float(reached_lat), float(reached_long),case_nature])
 
         # successful response
         response = {
@@ -4147,7 +4152,7 @@ def cm_ps_responsetime():
 
         ps_response_time = {
             ps[0]: f"{int(ps[1] // 60)}:{int(ps[1] % 60):02d}"
-            for ps in ps_results
+            for ps in ps_results  if ps[0] is not None
         }
 
         response = {
@@ -4355,7 +4360,7 @@ def ps_fir_stats():
 
         ps_fir_response = {
             ps[0]: ps[1]
-            for ps in ps_fir_data
+            for ps in ps_fir_data if ps[0] is not None
         }
 
         cases_query = """
@@ -4381,7 +4386,7 @@ def ps_fir_stats():
 
         cases_response = {
             case[0]: case[1]
-            for case in cases
+            for case in cases if case[0] is not None
         }
 
         unregistered_fir = {}
@@ -4906,7 +4911,7 @@ def vwps_stats():
             police_station_condition = f" AND pucar_police_station IN ({', '.join(police_station_names)})"
 
         crime_hotspots_query = f"""
-            Select district_id ,pucar_police_station, pucar_level2_case_nature , pucar_lat, pucar_long
+            Select district_id ,pucar_police_station, level3_case_nature , pucar_lat, pucar_long
             FROM case_final_status
             WHERE pucar_lat is NOT NULL
             AND pucar_long is NOT NULL
@@ -4927,9 +4932,10 @@ def vwps_stats():
             # Extract the latitude and longitude values from the result
             reached_lat = result[3]
             reached_long = result[4]
+            case_nature = result[2]
 
             # Append the coordinates as a list to the coordinates list
-            coordinates.append([float(reached_lat), float(reached_long)])
+            coordinates.append([float(reached_lat), float(reached_long),case_nature])
 
         response = {"status": "success",
                     "data": {
@@ -4975,7 +4981,7 @@ def vccs_stats():
         to_date = request.form.get('toDate')
         category = request.form.get('category')
 
-        districts = district_str.split(",") if district_str else []
+        districts = district_str.split(",") if district_str and district_str != 'null' else []
         police_stations = police_station_str.split(",") if police_station_str else []
         category = category.split(",") if category else []
 
@@ -5084,7 +5090,7 @@ def vccs_stats():
             police_station_condition = f" AND pucar_police_station IN ({', '.join(police_station_names)})"
 
         crime_hotspots_query = f"""
-            Select district_id ,pucar_police_station, pucar_level2_case_nature , pucar_lat, pucar_long
+            Select district_id ,pucar_police_station, level3_case_nature , pucar_lat, pucar_long
             FROM case_final_status
             WHERE pucar_lat is NOT NULL
             AND pucar_long is NOT NULL
@@ -5105,9 +5111,10 @@ def vccs_stats():
             # Extract the latitude and longitude values from the result
             reached_lat = result[3]
             reached_long = result[4]
+            case_nature = result[2]
 
             # Append the coordinates as a list to the coordinates list
-            coordinates.append([float(reached_lat), float(reached_long)])
+            coordinates.append([float(reached_lat), float(reached_long),case_nature])
 
         response = {"status": "success",
                     "data": {
@@ -6259,9 +6266,9 @@ def crime_reoccurrence_case():
                     (related_case,)
                 )
                 accepted_time_record = processed_db_cursor.fetchone()
-                accepted_time = accepted_time_record[0] if accepted_time_record else None
+                reoccur_case_accepted_time = accepted_time_record[0] if accepted_time_record else None
                 # Append the accepted_time as the third element to the coordinate list.
-                updated_coordinates.append(coordinate + [accepted_time])
+                updated_coordinates.append(coordinate + [reoccur_case_accepted_time])
             matched_coordinates = updated_coordinates
         else:
             # Handle the case where no data is returned
@@ -6365,7 +6372,7 @@ def ps_conference_call_stats():
                     'successful': ps[1],
                     'unsuccessful': ps[2]
                 }
-                for ps in dist_conf_results
+                for ps in dist_conf_results if ps[0] is not None
             }
 
             response = {
@@ -6384,7 +6391,7 @@ def ps_conference_call_stats():
         utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             "success": False,
-            "message": "An unexpected error occurred. Please try again later."
+            "message": f"An unexpected error occurred. Please try again later. {e}"
         }), 500
     finally:
         log_db_cursor.close()
@@ -6525,7 +6532,7 @@ def caller_feedback_pswise():
 
         existing_stats = [{"police_station": row[0], "positive": row[1],
                            "negative": row[2], "not_responding": row[3]}
-                          for row in district_feedback_stats]
+                          for row in district_feedback_stats if row[0] is not None]
 
         processed_db_conn.close()
 

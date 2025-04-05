@@ -147,10 +147,11 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
 
-"""DATE_FORMATS"""
+"""DATE AND TIME FORMATS"""
 YM_DATE = '%Y-%m-%d'
 YMD_TIME = '%Y-%m-%d 00:00:00'
 YMD_HMS = '%Y-%m-%d %H:%M:%S'
+TIME_HMS = '%H:%M:%S'
 
 """INTERNAL SERVER ERROR"""
 INTERNAL_ERROR_MESSAGE = {"error": "Internal Server Error"}
@@ -779,7 +780,7 @@ district_eng_urdu = {
     "Bhakkar": "بھکر",
     "Chakwal": "چکوال",
     "Chiniot": " چنیوٹ",
-    "D. G. Khan": "ڈیرہ غازی خان",
+    "D.G. Khan": "ڈیرہ غازی خان",
     "Faisalabad": "فیصل آباد",
     "Gujranwala": "گوجرانوالہ",
     "Gujrat": "گجرات",

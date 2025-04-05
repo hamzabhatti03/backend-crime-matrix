@@ -550,7 +550,7 @@ def get_district_cases(district_id, fromDate, toDate, shift):
 #         print(f"Database Error: {err}")
 
 
-def log_to_pg_database(log_conn, log_cursor, level, message, client_ip):
+def log_to_pg_database(log_conn, log_cursor, level, message, client_ip=SYS_IP):
     query = """
         INSERT INTO emergency_i_logs (status, time_date, description, host_ip_address, client_ip_address) 
         VALUES (%s, %s, %s, %s, %s)
@@ -754,6 +754,21 @@ def get_processed_db_connection(database=configs.POSTGRES_PROCESSED_STATS_MAIN):
         raise
 
 
+def get_prod_db_connection():
+    try:
+        conn = psycopg2.connect(
+            dbname=os.getenv('PG_PROD_DB'),
+            user=os.getenv('PG_PROD_USER'),
+            password=os.getenv('PG_PROD_PASSWORD'),
+            host=os.getenv('PG_PROD_HOST'),
+            port=os.getenv('PG_PROD_PORT')
+        )
+        return conn
+    except Exception as e:
+        print(e)
+        raise
+
+
 def get_new_processed_db_connection():
     try:
         conn = psycopg2.connect(
@@ -907,7 +922,7 @@ def is_within_punjab(lat, lon):
     return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
 
 district_boundaries = {
-            "Sialkot": (31.3, 32.2, 73.8, 75.7),
+    "Sialkot": (31.3, 32.2, 73.8, 75.7),
     "Lahore": (31.2, 31.9, 73.8, 75.2),
     "Gujranwala": (31.3, 32.2, 73.3, 74.7),
     "Bahawalpur": (29.3, 30.7, 71.3, 73.2),
@@ -943,7 +958,7 @@ district_boundaries = {
     "Bhakkar": (30.8, 31.7, 71.3, 72.7),
     "Lodhran": (29.3, 30.2, 71.3, 72.7),
     "Jhelum": (31.8, 33.2, 72.3, 73.7)
-    }
+}
 
 
 def district_bounding_box(district):
@@ -997,31 +1012,31 @@ def filter_lat_longs(lat_longs, districts=None):
 
     filtered = []
 
-    if districts:
+    if districts and districts != 'null':
         # Check if the districts parameter is a single district or multiple districts
         district_list = [district.strip() for district in districts.split(',')] if ',' in districts else [
             districts.strip()]
 
         # If we have a single district, filter based on that district
         if len(district_list) == 1:
-            for lat, lon in lat_longs:
+            for lat, lon, _ in lat_longs:
                 if is_within_district(lat, lon, district_list[0]):
-                    filtered.append((lat, lon))
+                    filtered.append((lat, lon, _))
         else:
             # If no district is specified, check if the coordinates are within any district's bounding box
-            for lat, lon in lat_longs:
+            for lat, lon, _ in lat_longs:
                 # Check if the coordinates fall within any district
                 for district in district_list:
                     if is_within_district(lat, lon, district):
-                        filtered.append((lat, lon))
+                        filtered.append((lat, lon, _))
                         break  # If the point is within one district, no need to check further districts
     else:
         # If no district is specified, check if the coordinates are within any district's bounding box
-        for lat, lon in lat_longs:
+        for lat, lon, _ in lat_longs:
             # Check if the coordinates fall within any district
             for district in district_boundaries:
                 if is_within_district(lat, lon, district):
-                    filtered.append((lat, lon))
+                    filtered.append((lat, lon, _))
                     break  # If the point is within one district, no need to check further districts
 
     return filtered

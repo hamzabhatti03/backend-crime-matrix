@@ -124,3 +124,16 @@ def get_notification_db_connection():
     except Exception as e:
         print(e)
         raise
+
+def get_pg_logdb_connection():
+    try:
+        connection = psycopg2.connect(
+            host=os.getenv('PG_PROD_HOST'),
+            database=os.getenv('LOGS_DB_NAME'),
+            user=os.getenv('PG_PROD_USER'),
+            password=os.getenv('PG_PROD_PASSWORD')
+        )
+        return connection
+    except psycopg2.Error as err:
+        print(f"Production PostgreSQL Connection Error: {err}")
+        return None

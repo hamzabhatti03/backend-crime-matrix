@@ -21,6 +21,13 @@ ProcessingAgents/users_migration.py
 ProcessingAgents/fetch_data_vwps.py
 ProcessingAgents/fetch_data_vccs.py
 ProcessingAgents/fetch and insert_users.py
+ProcessingAgents/users_migration_prod.py
+ProcessingAgents/police_vehicle_locations_pgs_prod.py
+ProcessingAgents/scrape_feedbacks_pgs_prod.py
+ProcessingAgents/fir_scraper_pgs_prod.py
+ProcessingAgents/fir_scraper_pgs_v1.py
+ProcessingAgents/pgs_processing_script_v4.py
+ApplicationProgrammingInterface/api_pgs_optimized_v4_prod_copy.py
 firebase
 firebase/*
 static/*
