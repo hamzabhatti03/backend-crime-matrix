@@ -119,7 +119,7 @@ def process_date(db_connection, log_db_cursor, start_timestamp, end_timestamp):
 
         return results
     except Exception as e:
-        utils.log_to_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
 
 
 def insert_results(db_connection, log_db_cursor, results, date):
@@ -204,7 +204,7 @@ def insert_results(db_connection, log_db_cursor, results, date):
 
         db_connection.commit()
     except Exception as e:
-        utils.log_to_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
 
 
 def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp):
@@ -265,7 +265,7 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
             d.reached_lat,
             d.reached_long,
             l.caller_feedback,
-            l.feedback_comments
+            l.feedback_comment
         FROM 
             `15_preprocessed` l
         LEFT JOIN 
@@ -278,7 +278,7 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
         GROUP BY 
             l.lead_id, l.time_id, l.case_number, l.first_arrival_time, l.cli, 
             l.district_id, l.police_station_id,
-            l.accepted_time, l.level1_case_nature, l.level2_case_nature, l.level3_case_nature, l.field3,l.caller_feedback, l.feedback_comments;
+            l.accepted_time, l.level1_case_nature, l.level2_case_nature, l.level3_case_nature, l.field3,l.caller_feedback, l.feedback_comment;
         """
 
         primary_cursor.execute(query, (start_timestamp, end_timestamp))
@@ -339,10 +339,10 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
         processed_conn.commit()
 
     except psycopg2.Error as db_error:
-        utils.log_to_database(primary_conn, log_db_cursor, "DB_ERROR", str(db_error))
+        utils.log_to_pg_database(primary_conn, log_db_cursor, "DB_ERROR", str(db_error))
         raise
     except Exception as e:
-        utils.log_to_database(primary_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(primary_conn, log_db_cursor, "ERROR", traceback.format_exc())
         raise
 
 
@@ -476,7 +476,7 @@ def process_fir_cases(db_conn, processed_conn, start_timestamp, end_timestamp, d
         processed_conn.commit()
 
     except Exception as e:
-        utils.log_to_database(processed_conn, None, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(processed_conn, None, "ERROR", traceback.format_exc())
 
 
 def fir_trends_processing(db_conn, log_db_cursor):
@@ -550,7 +550,7 @@ def fir_trends_processing(db_conn, log_db_cursor):
         return results
 
     except Exception as e:
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
 def insert_fir_trends(db_connection, log_db_cursor, results):
@@ -618,7 +618,7 @@ def insert_fir_trends(db_connection, log_db_cursor, results):
 
         db_connection.commit()
     except Exception as e:
-        utils.log_to_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
         db_connection.rollback()
     finally:
         cursor.close()
