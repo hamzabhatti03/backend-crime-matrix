@@ -310,7 +310,7 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
             caller_feedback = EXCLUDED.caller_feedback,
             feedback_comments = EXCLUDED.feedback_comments;
         """).format(
-            placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(39))
+            placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(40))
         )
 
         for row in rows:
@@ -327,8 +327,8 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
                 else:
                     processed_row.append(col)
 
-            if len(processed_row) != 39:
-                raise ValueError(f"Expected 39 values, got {len(processed_row)}: {processed_row}")
+            if len(processed_row) != 40:
+                raise ValueError(f"Expected 40 values, got {len(processed_row)}: {processed_row}")
 
             try:
                 processed_cursor.execute(insert_query, processed_row)
