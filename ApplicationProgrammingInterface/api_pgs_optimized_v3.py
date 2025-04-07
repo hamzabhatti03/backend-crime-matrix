@@ -406,12 +406,6 @@ def login():
         usersdb_cursor.execute("SELECT * FROM users WHERE user_name_emergency = %s", (username,))
         user = usersdb_cursor.fetchone()
 
-        if not user or user[4] != hashed_pass:
-            return jsonify({
-                'status': False,
-                'message': 'Incorrect Username or Password'
-            }), 400
-
         user_status = user[13]
 
         if user_status.lower() == 'inactive':
@@ -419,6 +413,12 @@ def login():
                 'status': False,
                 'message': 'Your account is inactive. Please contact the administrator.'
             }), 403
+
+        if not user or user[4] != hashed_pass:
+            return jsonify({
+                'status': False,
+                'message': 'Incorrect Username or Password'
+            }), 400
 
         user_role = user[5]
 
@@ -545,7 +545,7 @@ def login():
         usersdb_pool.putconn(users_db_conn)
 
 
-@app.route(configs.UPDATE_PASSWORD['ENDPOINT'], methods=[configs.UPDATE_PASSWORD['METHOD']])
+@app.route(configs.UPDATE_PASSWORD['ENDPOINT'], methods=['PUT'])
 @limiter.limit(configs.LIMITER)
 @require_api_key
 @validate_ownership
@@ -2657,7 +2657,7 @@ def punjab_case_details():
                 district_id, region_category, caller_name,
                 caller_number, caller_location, level3_case_nature, 
                 dispatched_time, first_arrival_time,lat, long, 
-                responder_lat, responder_long
+                responder_lat, responder_long,reached_time,feedback_comments
             FROM response_time
             WHERE case_number = %s
         """
@@ -2675,7 +2675,19 @@ def punjab_case_details():
         (case_number, description, response_time, responder_id, accepted_time, police_station,
          district_id, region_category, caller_name, caller_number, caller_location,
          level3_case_nature, dispatched_time, first_arrival_time,
-         lat, long, responder_lat, responder_long) = case_details
+         lat, long, responder_lat, responder_long, reached_time,feedback) = case_details
+
+        responder_name = None
+        if responder_id:
+            db_conn = db_config.get_db_connection()
+            db_cursor = db_conn.cursor()
+            responder_query = """
+                            Select name from field_live_location_preprocessed 
+                            where id = %s
+            """
+            db_cursor.execute(responder_query,(responder_id,))
+            result = db_cursor.fetchone()
+            responder_name = result[0].decode('utf-8')
 
         # Query remarks (if applicable) or get assigned users list ---
         # Initialize variables that will be used in the response.
@@ -2731,7 +2743,7 @@ def punjab_case_details():
             'case_number': case_number,
             'description': description,
             'response_time': f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else "0:00",
-            'responder_id': responder_id,
+            'responder_id': responder_name if responder_name is not None else (responder_id if responder_id is not None else ''),
             'accepted_time': accepted_time,
             'police_station': police_station,
             'district_id': configs.DISTRICTS_DICTIONARY.get(district_id),
@@ -2745,12 +2757,12 @@ def punjab_case_details():
             'assigned_to': new_assignedto,
             'dispatched_time': (datetime.fromtimestamp(int(dispatched_time)).strftime("%d %b %Y %H:%M:%S")
                                 if dispatched_time is not None else 'N/A'),
-            'first_arrival_time': (datetime.fromtimestamp(int(first_arrival_time)).strftime("%d %b %Y %H:%M:%S")
-                                   if first_arrival_time is not None else 'N/A'),
+            'first_arrival_time': utils.get_reached_time(first_arrival_time, reached_time, accepted_time),
             'lat': lat,
             'long': long,
             'responder_lat': responder_lat,
-            'responder_long': responder_long
+            'responder_long': responder_long,
+            'feedback' : feedback
         }
 
         # incase assigned_by and assigned_to are not provided
@@ -4801,6 +4813,10 @@ def vwps_stats():
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
         category = request.form.get('category')
+        # page = int(request.form.get('page', 1))
+        # pagesize = int(request.form.get('pagesize', 10))
+        #
+        # offset = (page - 1) * pagesize
 
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
@@ -4880,6 +4896,8 @@ def vwps_stats():
                     FROM case_final_status
                     WHERE created_at BETWEEN %s AND %s
                     {district_condition}
+                    -- ORDER BY created_at DESC
+                    -- LIMIT %s OFFSET %s
                 """
         db_cursor.execute(cases_query, (current_date_str, to_date_str))
         cases = db_cursor.fetchall()

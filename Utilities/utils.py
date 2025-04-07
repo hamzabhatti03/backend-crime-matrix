@@ -1121,3 +1121,14 @@ CONFIG_FILE_PATH = os.path.join(BASE_DIR, "configs.json")
 def load_version_config():
     with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def get_reached_time(first_arrival_time, reached_time, accepted_time):
+    if (reached_time is None or reached_time < accepted_time) and first_arrival_time:
+        used_time = first_arrival_time
+    elif reached_time and reached_time >= accepted_time:
+        used_time = reached_time
+    else:
+        return 'N/A'
+
+    return datetime.fromtimestamp(int(used_time)).strftime("%d %b %Y %H:%M:%S")
