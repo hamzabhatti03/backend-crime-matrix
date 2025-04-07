@@ -17,6 +17,7 @@ Latest file before this file for processing is pgs_processing_script_v2.py, whic
 3) User activity logs mechanism updated
 '''
 
+
 def process_date(db_connection, log_db_cursor, start_timestamp, end_timestamp):
     try:
         cursor = db_connection.cursor()
@@ -263,7 +264,8 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
             l.long,
             d.reached_lat,
             d.reached_long,
-            l.caller_feedback
+            l.caller_feedback,
+            l.feedback_comments
         FROM 
             `15_preprocessed` l
         LEFT JOIN 
@@ -276,7 +278,7 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
         GROUP BY 
             l.lead_id, l.time_id, l.case_number, l.first_arrival_time, l.cli, 
             l.district_id, l.police_station_id,
-            l.accepted_time, l.level1_case_nature, l.level2_case_nature, l.level3_case_nature, l.field3,l.caller_feedback;
+            l.accepted_time, l.level1_case_nature, l.level2_case_nature, l.level3_case_nature, l.field3,l.caller_feedback, l.feedback_comments;
         """
 
         primary_cursor.execute(query, (start_timestamp, end_timestamp))
@@ -291,7 +293,7 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
             queue, district_id, region_category, created_time, tab, completed_time, caller_name, caller_number,
             job_status, caller_location, complete_by, level1_case_nature, level2_case_nature,
             level3_case_nature, responder_lat, responder_long, field3, lat, long, reached_lat, reached_long,
-            caller_feedback
+            caller_feedback,feedback_comments
         ) VALUES (
             {placeholders}
         )
@@ -304,7 +306,8 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
             dispatched_time = EXCLUDED.dispatched_time,
             start_time = EXCLUDED.start_time,
             completed_time = EXCLUDED.completed_time,
-            caller_feedback = EXCLUDED.caller_feedback;
+            caller_feedback = EXCLUDED.caller_feedback,
+            feedback_comments = EXCLUDED.feedback_comments;
         """).format(
             placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(39))
         )
@@ -696,7 +699,8 @@ def main(start_date, end_date, start):
                                 long TEXT,
                                 reached_lat TEXT,
                                 reached_long TEXT,
-                                caller_feedback TEXT
+                                caller_feedback TEXT,
+                                feedback_comments TEXT
                             )
                         ''')
 
