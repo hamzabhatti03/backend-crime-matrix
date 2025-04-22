@@ -46,6 +46,7 @@ Latest file before this file is api_psg_optimized_v2.py, This file includes the 
 
 # Initialize connection pools
 postgresql_pool = None
+realtime15_pool = None
 mysql_pool = None
 notification_pool = None
 usersdb_pool = None
@@ -54,7 +55,7 @@ predictive_db_pool = None
 
 
 def initialize_pools():
-    global postgresql_pool, mysql_pool, notification_pool, usersdb_pool, log_db_pool, predictive_db_pool
+    global postgresql_pool, mysql_pool, notification_pool, usersdb_pool, log_db_pool, predictive_db_pool, realtime15_pool
     try:
         # PostgreSQL connection pool
         postgresql_pool = pg_pool.SimpleConnectionPool(
@@ -66,7 +67,16 @@ def initialize_pools():
             host=configs.POSTGRES_PROCESSED_STATS_MAIN['host'],
             port=configs.POSTGRES_PROCESSED_STATS_MAIN['port']
         )
-
+        # PostgreSQL connection pool using environment variables
+        realtime15_pool = pg_pool.SimpleConnectionPool(
+            minconn=1,
+            maxconn=2,
+            user=os.getenv("PG_USER"),
+            password=os.getenv("PG_PASSWORD"),
+            host=os.getenv("PG_HOST", "localhost"),
+            port=os.getenv("PG_PORT", "5432"),
+            database=os.getenv("REALTIME15_DATABASE")
+        )
         # MySQL connection pool
         mysql_pool = sql_pool.MySQLConnectionPool(
             pool_name="mysql_pool",
@@ -214,6 +224,11 @@ def get_db_pg_predictive():
     predicive_conn = predictive_db_pool.getconn()
     predictive_cursor = predicive_conn.cursor()
     return predicive_conn, predictive_cursor
+
+def get_db_realtime15():
+    realtime15_conn = realtime15_pool.getconn()
+    realtime15_cursor = realtime15_conn.cursor()
+    return realtime15_conn, realtime15_cursor
 
 
 @app.after_request
@@ -646,6 +661,7 @@ def punjab_stats_dashboard():
     """
 
     predpol_db_conn, predpol_db_cursor = get_db_pg_predictive()
+    realtime15_conn, realtime15_cursor = get_db_realtime15()
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     users_db_conn, usersdb_cursor = get_users_db_connection()
@@ -835,6 +851,29 @@ def punjab_stats_dashboard():
 
         processed_db_cursor.execute(calls_cases_query, [from_date_str, to_date_str])
         total_calls, total_cases = processed_db_cursor.fetchone()
+        is_realtime = 0
+        realtime_data = {}
+        if (datetime.strptime(from_date_str, "%Y-%m-%d").date() == datetime.now().date()) and username == "15_supervisor":
+            is_realtime = 1
+            # Fetch latest realtime data from PostgreSQL
+            realtime15_cursor.execute("""
+                SELECT emergency15_calls, blood_bank_calls, supervisor_calls, traffic_calls,
+                       child_safety_calls, female_calls
+                FROM realtime15
+                ORDER BY time DESC
+                LIMIT 1
+            """)
+            realtime_data_row = realtime15_cursor.fetchone()
+            realtime_data = {
+                "total_calls": realtime_data_row[0] + realtime_data_row[3] + realtime_data_row[4] + realtime_data_row[
+                    5],
+                "emergency15_calls": realtime_data_row[0],
+                # "blook_bank_calls": realtime_data_row[1],
+                # "supervisor_calls": realtime_data_row[2],
+                "traffic-15_count": realtime_data_row[3],
+                "vccs-15_count": realtime_data_row[4],
+                "female-15_count": realtime_data_row[5],
+            } if realtime_data_row else {}
 
         regional_response_query = """
                     WITH RegionCategories AS (
@@ -1309,6 +1348,8 @@ def punjab_stats_dashboard():
             'fir_count': fir_count,
             'total_calls': total_calls,
             'total_cases': total_cases,
+            'is_realtime': is_realtime,
+            'realtime_data': realtime_data,
             'avg_response_time': f"{int(response_time[0][0] // 60)}:{int(response_time[0][0] % 60):02d}" if response_time and
                                                                                                             response_time[
                                                                                                                 0][
@@ -1377,6 +1418,9 @@ def punjab_stats_dashboard():
 
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+        realtime15_cursor.close()
+        realtime15_pool.putconn(realtime15_conn)
 
 
 @app.route(configs.PUNJAB_MORE_INFO['ENDPOINT'], methods=[configs.PUNJAB_MORE_INFO['METHOD']])
@@ -2584,7 +2628,7 @@ def pswise_categories():
             case_nature = result[2]
 
             # Append the coordinates as a list to the coordinates list
-            coordinates.append([float(reached_lat), float(reached_long),case_nature])
+            coordinates.append([float(reached_lat), float(reached_long), case_nature])
 
         # successful response
         response = {
@@ -2675,7 +2719,7 @@ def punjab_case_details():
         (case_number, description, response_time, responder_id, accepted_time, police_station,
          district_id, region_category, caller_name, caller_number, caller_location,
          level3_case_nature, dispatched_time, first_arrival_time,
-         lat, long, responder_lat, responder_long, reached_time,feedback) = case_details
+         lat, long, responder_lat, responder_long, reached_time, feedback) = case_details
 
         responder_name = None
         if responder_id:
@@ -2685,7 +2729,7 @@ def punjab_case_details():
                             Select name from field_live_location_preprocessed 
                             where id = %s
             """
-            db_cursor.execute(responder_query,(responder_id,))
+            db_cursor.execute(responder_query, (responder_id,))
             result = db_cursor.fetchone()
             responder_name = result[0].decode('utf-8')
 
@@ -2743,7 +2787,8 @@ def punjab_case_details():
             'case_number': case_number,
             'description': description,
             'response_time': f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else "0:00",
-            'responder_id': responder_name if responder_name is not None else (responder_id if responder_id is not None else ''),
+            'responder_id': responder_name if responder_name is not None else (
+                responder_id if responder_id is not None else ''),
             'accepted_time': accepted_time,
             'police_station': police_station,
             'district_id': configs.DISTRICTS_DICTIONARY.get(district_id),
@@ -2762,7 +2807,7 @@ def punjab_case_details():
             'long': long,
             'responder_lat': responder_lat,
             'responder_long': responder_long,
-            'feedback' : feedback
+            'feedback': feedback
         }
 
         # incase assigned_by and assigned_to are not provided
@@ -3026,7 +3071,6 @@ def forcast_predictive_policing():
         predictive_db_pool.putconn(pg_conn)
         usersdb_cursor.close()
         usersdb_pool.putconn(users_db_conn)
-
 
 
 @app.route(configs.DATEWISE_FORECAST['ENDPOINT'], methods=[configs.DATEWISE_FORECAST['METHOD']])
@@ -4164,7 +4208,7 @@ def cm_ps_responsetime():
 
         ps_response_time = {
             ps[0]: f"{int(ps[1] // 60)}:{int(ps[1] % 60):02d}"
-            for ps in ps_results  if ps[0] is not None
+            for ps in ps_results if ps[0] is not None
         }
 
         response = {
@@ -4953,7 +4997,7 @@ def vwps_stats():
             case_nature = result[2]
 
             # Append the coordinates as a list to the coordinates list
-            coordinates.append([float(reached_lat), float(reached_long),case_nature])
+            coordinates.append([float(reached_lat), float(reached_long), case_nature])
 
         response = {"status": "success",
                     "data": {
@@ -5132,7 +5176,7 @@ def vccs_stats():
             case_nature = result[2]
 
             # Append the coordinates as a list to the coordinates list
-            coordinates.append([float(reached_lat), float(reached_long),case_nature])
+            coordinates.append([float(reached_lat), float(reached_long), case_nature])
 
         response = {"status": "success",
                     "data": {
