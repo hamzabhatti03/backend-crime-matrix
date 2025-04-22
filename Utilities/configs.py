@@ -195,7 +195,7 @@ PROCESSED_COLUMNS = [
 # Base query for processed_data table
 BASE_PROCESSED_DATA_QUERY = """
 SELECT {columns}
-FROM processed_data
+FROM leads_in_counts
 WHERE district_id NOT IN ('0','41','42','43','44','45','46')
 AND district_id IS NOT NULL
 {additional_conditions}
@@ -366,6 +366,8 @@ CRIME_REOCCURENCE_CASE = {'ENDPOINT': '/crime_reoccurence_case', 'METHOD': 'POST
 PS_CONFERENCE_CALL_STATS = {'ENDPOINT': '/ps_conferencecall_stats', 'METHOD': 'POST'}
 CALLER_FEEBACK_PSWISE = {'ENDPOINT': '/caller_feedback_pswise', 'METHOD': 'POST'}
 USER_ANALYTICS = {'ENDPOINT': '/user_analytics', 'METHOD': 'POST'}
+MDT_LOCATIONS = {'ENDPOINT': '/live_mdt_locations', 'METHOD': 'POST'}
+INSIGHTS_TAB = {'ENDPOINT': '/igp_insights', 'METHOD': 'POST'}
 
 
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API

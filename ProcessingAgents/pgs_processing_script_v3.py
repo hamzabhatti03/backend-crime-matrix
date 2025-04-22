@@ -24,101 +24,100 @@ def process_date(db_connection, log_db_cursor, start_timestamp, end_timestamp):
 
         queries = {
             'total_calls': """
-                SELECT 
-                    district_id, 
-                    police_station,
-                    HOUR(FROM_UNIXTIME(time_id)) AS hour, 
-                    COUNT(*) AS count
-                FROM 15_preprocessed
-                WHERE
-                    time_id BETWEEN %s AND %s
-                    AND district_id IS NOT NULL
-                    AND status NOT IN ('IVR DROP', 'QUEUE', 'test')
-                GROUP BY district_id, police_station, hour;
-            """,
+                        SELECT 
+                            district_id, 
+                            police_station,
+                            COUNT(*) AS count
+                        FROM 15_preprocessed
+                        WHERE
+                            status NOT IN ('IVR DROP')
+                            AND queue NOT IN ('lahore-15-test','Pucar-Test',
+                                    'Gujranwala-15','Multan','hoax-list')
+                            AND time_id BETWEEN %s AND %s
+                        GROUP BY district_id, police_station;
+                    """,
             'counts': """
-                SELECT 
-                    district_id,
-                    police_station,
-                    HOUR(FROM_UNIXTIME(time_id)) AS hour,
-                    SUM(CASE WHEN selected_option = 'siraiki-15' THEN 1 ELSE 0 END) AS siraiki_count,
-                    SUM(CASE WHEN selected_option = 'punjabi-15' THEN 1 ELSE 0 END) AS punjabi_count,
-                    SUM(CASE WHEN selected_option = 'potohari-15' THEN 1 ELSE 0 END) AS potohari_count,
-                    SUM(CASE WHEN selected_option = 'female-15' THEN 1 ELSE 0 END) AS vwps_count,
-                    SUM(CASE WHEN selected_option = 'traffic-15' THEN 1 ELSE 0 END) AS traffic_count,
-                    SUM(CASE WHEN selected_option = 'english-15' THEN 1 ELSE 0 END) AS english_count,
-                    SUM(CASE WHEN disconnection_cause = 'TRANSFER' THEN 1 ELSE 0 END) AS transfered_count,
-                    SUM(CASE WHEN call_type = 'manual' THEN 1 ELSE 0 END) AS call_backs_count,
-                    SUM(CASE WHEN queue = 'child-safety-15' THEN 1 ELSE 0 END) AS vccs_count,
-                    SUM(CASE WHEN queue = 'minorities-15' THEN 1 ELSE 0 END) AS vcm_count,
-                    SUM(CASE WHEN (status = 'CompCa' AND parent_id = 0) THEN 1 ELSE 0 END) AS generated_cases_count 
-                FROM 15_preprocessed
-                WHERE 
-                    district_id IS NOT NULL
-                    AND time_id BETWEEN %s AND %s
-                    AND (
-                        selected_option IN ('siraiki-15', 'punjabi-15', 'potohari-15', 'female-15', 'traffic-15', 'english-15') 
-                        OR disconnection_cause = 'TRANSFER' 
-                        OR call_type = 'manual' 
-                        OR queue IN ('child-safety-15', 'minorities-15')
-                        OR status = 'CompCa'
-                    )
-                GROUP BY district_id, police_station, hour;
-            """,
+                        SELECT 
+                            district_id,
+                            police_station,
+                            SUM(CASE WHEN selected_option = 'siraiki-15' THEN 1 ELSE 0 END) AS siraiki_count,
+                            SUM(CASE WHEN selected_option = 'punjabi-15' THEN 1 ELSE 0 END) AS punjabi_count,
+                            SUM(CASE WHEN selected_option = 'potohari-15' THEN 1 ELSE 0 END) AS potohari_count,
+                            SUM(CASE WHEN selected_option = 'female-15' THEN 1 ELSE 0 END) AS vwps_count,
+                            SUM(CASE WHEN selected_option = 'traffic-15' THEN 1 ELSE 0 END) AS traffic_count,
+                            SUM(CASE WHEN selected_option = 'english-15' THEN 1 ELSE 0 END) AS english_count,
+                            SUM(CASE WHEN disconnection_cause = 'TRANSFER' THEN 1 ELSE 0 END) AS transfered_count,
+                            SUM(CASE WHEN call_type = 'manual' THEN 1 ELSE 0 END) AS call_backs_count,
+                            SUM(CASE WHEN queue = 'child-safety-15' THEN 1 ELSE 0 END) AS vccs_count,
+                            SUM(CASE WHEN queue = 'minorities-15' THEN 1 ELSE 0 END) AS vcm_count,
+                            SUM(CASE WHEN (status = 'CompCa' AND parent_id = 0) THEN 1 ELSE 0 END) AS generated_cases_count 
+                        FROM 15_preprocessed
+                        WHERE 
+                            district_id IS NOT NULL
+                            AND time_id BETWEEN %s AND %s
+                            AND (
+                                selected_option IN ('siraiki-15', 'punjabi-15', 'potohari-15', 'female-15', 'traffic-15', 'english-15') 
+                                OR disconnection_cause = 'TRANSFER' 
+                                OR call_type = 'manual' 
+                                OR queue IN ('child-safety-15', 'minorities-15')
+                                OR status = 'CompCa'
+                            )
+                        GROUP BY district_id, police_station;
+                    """,
             'conference_calls': """
-                SELECT
-                    l.district_id,
-                    l.police_station,
-                    HOUR(FROM_UNIXTIME(l.time_id)) AS hour,
-                    COUNT(CASE WHEN l.field3 = 'Successful Conference call' THEN 1 END) AS successful_calls,
-                    COUNT(CASE WHEN l.field3 = 'FO did not attend the call' THEN 1 END) AS unsuccessful_calls
-                FROM 
-                    15_preprocessed l
-                WHERE 
-                    l.district_id IS NOT NULL 
-                    AND l.time_id BETWEEN %s AND %s
-                    AND l.field3 IS NOT NULL
-                GROUP BY 
-                    l.district_id, l.police_station, hour;
-            """
+                        SELECT
+                            l.district_id,
+                            l.police_station,
+                            COUNT(CASE WHEN l.field3 = 'Successful Conference call' THEN 1 END) AS successful_calls,
+                            COUNT(CASE WHEN l.field3 = 'FO did not attend the call' THEN 1 END) AS unsuccessful_calls
+                        FROM 
+                            15_preprocessed l
+                        WHERE 
+                            l.district_id IS NOT NULL 
+                            AND l.time_id BETWEEN %s AND %s
+                            AND l.field3 IS NOT NULL
+                        GROUP BY l.district_id, l.police_station;
+                    """
         }
 
         results = {}
 
+        # Loop through each query and update the results dictionary accordingly.
         for key, query in queries.items():
             cursor.execute(query, (start_timestamp, end_timestamp))
-
             for row in cursor.fetchall():
-                district_id, police_station, hour = row[:3]
+                district_id, police_station = row[:2]
 
-                # Decode byte values if applicable
+                # Decode byte values if applicable.
                 if isinstance(district_id, bytes):
                     district_id = district_id.decode('utf-8')
                 if isinstance(police_station, bytes):
                     police_station = police_station.decode('utf-8')
 
-                if (district_id, police_station, hour) not in results:
-                    results[(district_id, police_station, hour)] = {}
+                key_tuple = (district_id, police_station)
+                if key_tuple not in results:
+                    results[key_tuple] = {}
 
                 if key == 'total_calls':
-                    results[(district_id, police_station, hour)]['total_calls'] = row[3]
+                    results[key_tuple]['total_calls'] = row[2]
                 elif key == 'counts':
                     counts_keys = [
                         'siraiki', 'punjabi', 'potohari', 'vwps', 'traffic', 'english',
                         'transfered', 'call_backs', 'vccs', 'vcm', 'generated_cases'
                     ]
-                    results[(district_id, police_station, hour)].update({
-                        counts_keys[i]: int(row[i + 3]) if isinstance(row[i + 3], Decimal) else row[i + 3]
+                    results[key_tuple].update({
+                        counts_keys[i]: int(row[i + 2]) if hasattr(row[i + 2], 'as_integer_ratio') else row[i + 2]
                         for i in range(len(counts_keys))
                     })
                 elif key == 'conference_calls':
-                    results[(district_id, police_station, hour)].update({
-                        'succ_conf_calls': row[3],
-                        'unsucc_conf_calls': row[4]
+                    results[key_tuple].update({
+                        'succ_conf_calls': row[2],
+                        'unsucc_conf_calls': row[3]
                     })
 
         return results
     except Exception as e:
+        # Ensure you have the required `traceback` and `utils` modules imported in your context.
         utils.log_to_pg_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
 
 
@@ -127,13 +126,14 @@ def insert_results(db_connection, log_db_cursor, results, date):
         cursor = db_connection.cursor()
         insert_query = sql.SQL("""
             INSERT INTO processed_data (
-                date, hour, district_id, police_station, total_calls, generated_cases, siraiki, punjabi, potohari, vwps, 
-                traffic, english, app_alerts, transfered, call_backs, avg_response_time, estimated_response_time, 
+                date, district_id, police_station, total_calls, generated_cases, 
+                siraiki, punjabi, potohari, vwps, traffic, english, app_alerts, 
+                transfered, call_backs, avg_response_time, estimated_response_time, 
                 video_calls, succ_conf_calls, unsucc_conf_calls, vccs, vcm
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
-            ON CONFLICT (date, hour, district_id, police_station) 
+            ON CONFLICT (date, district_id, police_station) 
             DO UPDATE SET
                 total_calls = EXCLUDED.total_calls,
                 generated_cases = EXCLUDED.generated_cases,
@@ -176,31 +176,30 @@ def insert_results(db_connection, log_db_cursor, results, date):
             'vcm': 0
         }
 
-        for (district_id, police_station, hour), result in results.items():
+        # Note: The results dictionary now uses keys as (district_id, police_station)
+        for (district_id, police_station), result in results.items():
             row = {
                 'date': date,
-                'hour': str(hour),
-                'district_id': district_id,
-                'police_station': police_station
+                'district_id':  district_id if district_id not in [None, 'null', 'NULL'] else 1111,
+                'police_station': police_station if police_station not in [None, 'null', 'NULL'] else 'UNKNOWN'
             }
             row.update(default_values)
             row.update(result)
 
             try:
                 cursor.execute(insert_query, (
-                    row['date'], row['hour'], row['district_id'],
-                    row['police_station'] if row['police_station'] not in [None, 'null', 'NULL'] else 'UNKNOWN',
+                    row['date'], row['district_id'], row['police_station'],
                     row['total_calls'], row['generated_cases'], row['siraiki'], row['punjabi'], row['potohari'],
                     row['vwps'], row['traffic'], row['english'], row['app_alerts'], row['transfered'],
-                    row['call_backs'],
-                    row['avg_response_time'], row['estimated_response_time'], row['video_calls'],
-                    row['succ_conf_calls'],
-                    row['unsucc_conf_calls'], row['vccs'], row['vcm']
+                    row['call_backs'], row['avg_response_time'], row['estimated_response_time'], row['video_calls'],
+                    row['succ_conf_calls'], row['unsucc_conf_calls'], row['vccs'], row['vcm']
                 ))
+                # Uncomment the next line for debugging purposes if needed:
                 # print(f"Inserted/updated: {row}")
             except Exception as e:
-                print(f"Error for district {district_id}, station {police_station}, hour {hour}: {e}")
-                # db_connection.rollback()  # Roll back the entire transaction on error
+                print(f"Error for district {district_id}, station {police_station}: {e}")
+                # Consider rolling back the transaction if required:
+                # db_connection.rollback()
 
         db_connection.commit()
     except Exception as e:
@@ -308,7 +307,12 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
             start_time = EXCLUDED.start_time,
             completed_time = EXCLUDED.completed_time,
             caller_feedback = EXCLUDED.caller_feedback,
-            feedback_comments = EXCLUDED.feedback_comments;
+            feedback_comments = EXCLUDED.feedback_comments,
+            district_id = EXCLUDED.district_id,
+            police_station = EXCLUDED.police_station,
+            level1_case_nature = EXCLUDED.level1_case_nature,
+            level2_case_nature = EXCLUDED.level2_case_nature,
+            level3_case_nature = EXCLUDED.level3_case_nature;
         """).format(
             placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(40))
         )
