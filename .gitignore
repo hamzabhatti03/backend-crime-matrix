@@ -28,6 +28,7 @@ ProcessingAgents/fir_scraper_pgs_prod.py
 ProcessingAgents/fir_scraper_pgs_v1.py
 ProcessingAgents/pgs_processing_script_v4.py
 ApplicationProgrammingInterface/api_pgs_optimized_v4_prod_copy.py
+ProcessingAgents/pgs_processing_script_v3_copy.py
 firebase
 firebase/*
 static/*

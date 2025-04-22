@@ -13,8 +13,10 @@ from dotenv import load_dotenv
 import psycopg2
 import traceback
 import json
+from typing import Optional, Dict, Any
 import firebase_admin
 from firebase_admin import messaging
+from Utilities import db_config
 
 load_dotenv()
 
@@ -1132,3 +1134,274 @@ def get_reached_time(first_arrival_time, reached_time, accepted_time):
         return 'N/A'
 
     return datetime.fromtimestamp(int(used_time)).strftime("%d %b %Y %H:%M:%S")
+
+def is_negative_float(value):
+    value = float(value) if value else None
+    return isinstance(value, float) and value <= 0
+
+
+def compute_pct_change(current: int, prior: int) -> Optional[float]:
+    """
+    Return percentage change from prior to current, or None if prior is zero.
+    """
+    if prior == 0 or prior is None:
+        return None
+    return round(float(((current - prior) / prior ) * 100),2)
+
+
+def fetch_and_compute_1787_complaint_stats(period: str, dist_cond: str) -> Dict[str, Any]:
+    # 1) Build your interval params
+    if period == "week":
+        params = {"current_interval": 7, "previous_interval_end": 14}
+    else:
+        params = {"current_interval": 30, "previous_interval_end": 60}
+
+    # 2) Run your query (with "=" fixed for 'Overdue' cases)
+
+    query = f"""SELECT
+        SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 2
+        AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS under_investigation_pending_prev,
+        
+            SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 2 
+                    THEN 1 ELSE 0 END
+                ) AS under_investigation_total_prev,
+        
+            SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 2
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS under_investigation_completed_prev,
+   
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 1
+                     AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS non_fir_registration_pending_prev,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 1
+                    THEN 1 ELSE 0 END
+                ) AS non_fir_registration_total_prev,
+        
+        SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 1
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS non_fir_registration_completed_prev,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 3
+                     AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_police_pending_prev,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 3
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_police_total_prev,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 3
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_police_completed_prev,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 4
+                     AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_services_pending_prev,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 4
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_services_total_prev,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 4
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_services_completed_prev,   
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 5
+                     AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS departmental_issue_pending_prev,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 5
+                    THEN 1 ELSE 0 END
+                ) AS departmental_issue_total_prev,
+        
+        SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(current_interval)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY AND category = 5
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS departmental_issue_completed_prev,
+        
+                -- Previous Interval Counts
+                  SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 2
+                     AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS under_investigation_pending_prior,
+        
+                  SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 2
+                    THEN 1 ELSE 0 END
+                ) AS under_investigation_total_prior,
+        
+                  SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 2
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS under_investigation_completed_prior, 
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 1
+                     AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS non_fir_registration_pending_prior,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 1
+                    THEN 1 ELSE 0 END
+                ) AS non_fir_registration_total_prior,
+        
+                 SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 1
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS non_fir_registration_completed_prior, 
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 3
+                     AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_police_pending_prior,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 3
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_police_total_prior,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 3
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_police_completed_prior,  
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 4
+                     AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_services_pending_prior,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 4
+                     
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_services_total_prior,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 4
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS complaint_against_services_completed_prior,    
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 5
+                     AND complaint_status IN ('Pending (Fresh)','In Proceeding', 'Pending (Reopened)','Overdue')
+                    THEN 1 ELSE 0 END
+                ) AS departmental_issue_pending_prior,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 5
+                    
+                    THEN 1 ELSE 0 END
+                ) AS departmental_issue_total_prior,
+        
+                SUM(CASE 
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() - INTERVAL %(current_interval)s DAY AND category = 5
+                     AND complaint_status IN ('Closed (Disposed)')
+                    THEN 1 ELSE 0 END
+                ) AS departmental_issue_completed_prior   
+                
+                FROM complaints_view
+                WHERE source = 2
+                {dist_cond}
+            """
+    conn = db_config.get_1787_db_connection()
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(query, params)
+        row = cursor.fetchone()  # type: Dict[str, int]
+    # 3) Define the mapping of top‑level keys → column‑name prefixes
+    category_map = {
+        "investigation":         "under_investigation",
+        "fir_registration":      "non_fir_registration",
+        "complaint_against_police":   "complaint_against_police",
+        "complaint_against_service_delivery": "complaint_against_services",
+        "departmental_issue":    "departmental_issue",
+    }
+    statuses = ["pending", "total", "completed"]
+    intervals = {"prev": "_prev", "prior": "_prior"}
+
+    # 4) Build the nested dict in two nested loops
+    result: Dict[str, Any] = {}
+    for top_key, prefix in category_map.items():
+        result[top_key] = {}
+        for status in statuses:
+            # pull out the two raw counts
+            current_key = f"{prefix}_{status}{intervals['prev']}"
+            prior_key   = f"{prefix}_{status}{intervals['prior']}"
+
+            curr_val  = row.get(current_key, 0)
+            prior_val = row.get(prior_key, 0)
+            pct       = compute_pct_change(curr_val, prior_val)
+
+            result[top_key][status] = {
+                "prev":    curr_val,
+                "prior":   prior_val,
+                "pct_chng": pct,
+            }
+    if cursor:
+        cursor.close()
+    if conn:
+        conn.close()
+    return result

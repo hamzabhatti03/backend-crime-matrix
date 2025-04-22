@@ -137,3 +137,23 @@ def get_pg_logdb_connection():
     except psycopg2.Error as err:
         print(f"Production PostgreSQL Connection Error: {err}")
         return None
+
+def get_1787_db_connection():
+    """Create and return a connection to the MySQL database."""
+    try:
+        connection = mysql.connector.connect(
+
+            host=os.getenv('COMPLAINTS_1787_HOST'),
+
+            database=os.getenv('COMPLAINTS_1787_DB'),
+            user=os.getenv('COMPLAINTS_1787_USER'),
+            password=os.getenv('COMPLAINTS_1787_PASSWORD'),
+            port=3306
+        )
+        if connection.is_connected():
+            # print("Successfully connected to the database.")
+            return connection
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return None
+
