@@ -31,7 +31,6 @@ import requests
 import ast
 from collections import defaultdict
 
-
 load_dotenv()
 
 '''
@@ -237,6 +236,7 @@ def get_db_pg_predictive():
     predicive_conn = predictive_db_pool.getconn()
     predictive_cursor = predicive_conn.cursor()
     return predicive_conn, predictive_cursor
+
 
 def get_db_realtime15():
     realtime15_conn = realtime15_pool.getconn()
@@ -886,7 +886,8 @@ def punjab_stats_dashboard():
         total_calls, total_cases = processed_db_cursor.fetchone()
         is_realtime = 0
         realtime_data = {}
-        if (datetime.strptime(from_date_str, "%Y-%m-%d").date() == datetime.now().date()) and username == "15_supervisor":
+        if (datetime.strptime(from_date_str,
+                              "%Y-%m-%d").date() == datetime.now().date()) and username == "15_supervisor":
             is_realtime = 1
             # Fetch latest realtime data from PostgreSQL
             realtime15_cursor.execute("""
@@ -3328,6 +3329,8 @@ def emergency_15_integration():
         columns = ["name", "police_station", "latitude", "longitude",
                    "registration_no", "district", "unit_type"]
         mv_data = [dict(zip(columns, row)) for row in records]
+        mv_data = [entry for entry in mv_data if entry.get(
+            "registration_no") != "RNS-9834-2003"]  # This vehicle location is out of boundary of Pakistan
 
         urdu_districts = [configs.district_eng_urdu.get(district, district) for district in districts]
 
@@ -6946,7 +6949,6 @@ def user_analytics():
         postgresql_pool.putconn(processed_db_conn)
 
 
-
 @app.route(configs.MDT_LOCATIONS['ENDPOINT'], methods=[configs.MDT_LOCATIONS['METHOD']])
 @limiter.limit(configs.LIMITER)
 # @require_api_key
@@ -6959,7 +6961,7 @@ def mdt_locations():
         imei = request.form.get('imei')
         latitude = request.form.get('latitude')
         longitude = request.form.get('longitude')
-        name = request.form.get('name',default=None)
+        name = request.form.get('name', default=None)
 
         if not all([imei, latitude, longitude]):
             return jsonify({'status': 'error', 'message': 'Missing parameters'}), 400
@@ -6969,7 +6971,7 @@ def mdt_locations():
                     VALUES (%s, %s, %s, %s);
                 """
 
-        mdt_db_cursor.execute(insert_query,(imei, latitude, longitude, name))
+        mdt_db_cursor.execute(insert_query, (imei, latitude, longitude, name))
         mdt_db_conn.commit()
 
         return jsonify({'status': 'success'}), 200

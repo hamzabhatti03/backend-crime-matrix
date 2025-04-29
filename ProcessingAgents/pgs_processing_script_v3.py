@@ -125,7 +125,7 @@ def insert_results(db_connection, log_db_cursor, results, date):
     try:
         cursor = db_connection.cursor()
         insert_query = sql.SQL("""
-            INSERT INTO processed_data (
+            INSERT INTO leads_in_counts (
                 date, district_id, police_station, total_calls, generated_cases, 
                 siraiki, punjabi, potohari, vwps, traffic, english, app_alerts, 
                 transfered, call_backs, avg_response_time, estimated_response_time, 
@@ -637,9 +637,8 @@ def main(start_date, end_date, start):
     try:
         with processed_conn.cursor() as processed_cursor:
             processed_cursor.execute('''
-                CREATE TABLE IF NOT EXISTS processed_data (
+                CREATE TABLE IF NOT EXISTS leads_in_counts (
                     date TEXT,
-                    hour TEXT,
                     district_id INTEGER,
                     police_station TEXT,
                     total_calls INTEGER,
@@ -660,7 +659,7 @@ def main(start_date, end_date, start):
                     unsucc_conf_calls INTEGER,
                     vccs INTEGER,
                     vcm INTEGER,
-                    PRIMARY KEY (date, hour, district_id, police_station)
+                    PRIMARY KEY (date, district_id, police_station)
                 )
             ''')
 
@@ -778,7 +777,7 @@ def main(start_date, end_date, start):
 
             """ Add indexes for optimization """
             processed_cursor.execute(
-                'CREATE INDEX IF NOT EXISTS idx_date_district_ps ON processed_data (date, district_id, police_station)')
+                'CREATE INDEX IF NOT EXISTS idx_date_district_ps ON leads_in_counts (date, district_id, police_station)')
             processed_cursor.execute(
                 'CREATE INDEX IF NOT EXISTS idx_date_district_ps_fir ON fir_cases (date, district_id, police_station)')
             processed_cursor.execute(
