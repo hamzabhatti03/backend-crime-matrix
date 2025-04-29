@@ -4,6 +4,7 @@ Latest file before this file is api_psg_optimized_v2.py, This file includes the 
 1) LOGIN with HRMIS API
 2) IGP INSIGHTS API
 3) Updated and Modified total calls and cases count to match it with pucar-15 stats
+4) IGP INSIGHTS tab implementation and response time (verified and unverified) along with unsuccessful conference calls
 
 
 #### api_pgs_optimized_v4_prod_copy.py

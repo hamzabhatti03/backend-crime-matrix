@@ -18,7 +18,7 @@ Latest file before this file for processing is pgs_processing_script_v2.py, whic
 '''
 
 
-def process_date(db_connection, log_db_cursor, start_timestamp, end_timestamp):
+def process_date(db_connection,log_db_conn, log_db_cursor, start_timestamp, end_timestamp):
     try:
         cursor = db_connection.cursor()
 
@@ -118,10 +118,10 @@ def process_date(db_connection, log_db_cursor, start_timestamp, end_timestamp):
         return results
     except Exception as e:
         # Ensure you have the required `traceback` and `utils` modules imported in your context.
-        utils.log_to_pg_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
-def insert_results(db_connection, log_db_cursor, results, date):
+def insert_results(db_connection,log_db_conn, log_db_cursor, results, date):
     try:
         cursor = db_connection.cursor()
         insert_query = sql.SQL("""
@@ -203,10 +203,10 @@ def insert_results(db_connection, log_db_cursor, results, date):
 
         db_connection.commit()
     except Exception as e:
-        utils.log_to_pg_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
-def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp):
+def response_time(primary_conn,log_db_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp):
     try:
         primary_cursor = primary_conn.cursor()
 
@@ -248,7 +248,7 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
                 ELSE 'District'
             END AS tab,
             MAX(d.completed_time) AS completed_time,
-            l.caller_name,
+            l.caller_name, 
             l.cli,
             MAX(d.job_status) AS job_status,
             l.caller_location,
@@ -310,9 +310,21 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
             feedback_comments = EXCLUDED.feedback_comments,
             district_id = EXCLUDED.district_id,
             police_station = EXCLUDED.police_station,
+            police_station_id = EXCLUDED.police_station_id,
+            police_circle = EXCLUDED.police_circle,
             level1_case_nature = EXCLUDED.level1_case_nature,
             level2_case_nature = EXCLUDED.level2_case_nature,
-            level3_case_nature = EXCLUDED.level3_case_nature;
+            level3_case_nature = EXCLUDED.level3_case_nature,
+            parent_id = EXCLUDED.parent_id,
+            tab = EXCLUDED.tab,
+            description = EXCLUDED.description,
+            queue = EXCLUDED.queue,
+            created_time = EXCLUDED.created_time,
+            caller_location = EXCLUDED.caller_location,
+            field3 = EXCLUDED.field3,
+            lat = EXCLUDED.lat,
+            long = EXCLUDED.long
+            ;
         """).format(
             placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(40))
         )
@@ -343,14 +355,14 @@ def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, 
         processed_conn.commit()
 
     except psycopg2.Error as db_error:
-        utils.log_to_pg_database(primary_conn, log_db_cursor, "DB_ERROR", str(db_error))
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "DB_ERROR", str(db_error))
         raise
     except Exception as e:
-        utils.log_to_pg_database(primary_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
         raise
 
 
-def process_fir_cases(db_conn, processed_conn, start_timestamp, end_timestamp, date):
+def process_fir_cases(db_conn,log_db_conn, processed_conn, start_timestamp, end_timestamp, date):
     try:
         cursor = db_conn.cursor()
         processed_cursor = processed_conn.cursor()
@@ -480,10 +492,10 @@ def process_fir_cases(db_conn, processed_conn, start_timestamp, end_timestamp, d
         processed_conn.commit()
 
     except Exception as e:
-        utils.log_to_pg_database(processed_conn, None, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, None, "ERROR", traceback.format_exc())
 
 
-def fir_trends_processing(db_conn, log_db_cursor):
+def fir_trends_processing(db_conn,log_db_conn, log_db_cursor):
     try:
         cursor = db_conn.cursor()
 
@@ -554,10 +566,10 @@ def fir_trends_processing(db_conn, log_db_cursor):
         return results
 
     except Exception as e:
-        utils.log_to_pg_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
-def insert_fir_trends(db_connection, log_db_cursor, results):
+def insert_fir_trends(db_connection,log_db_conn, log_db_cursor, results):
     try:
         cursor = db_connection.cursor()
         insert_query = sql.SQL("""
@@ -622,47 +634,54 @@ def insert_fir_trends(db_connection, log_db_cursor, results):
 
         db_connection.commit()
     except Exception as e:
-        utils.log_to_pg_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
         db_connection.rollback()
     finally:
         cursor.close()
 
 
 def main(start_date, end_date, start):
-    db_conn = db_config.get_db_connection()
-    log_db_cursor = db_conn.cursor()
+    log_db_conn = utils.get_processed_db_connection({
+                                                'dbname': 'logs',
+                                                'user': 'postgres',
+                                                'password': 'psca@officialmai1',
+                                                'host': '10.20.170.151',
+                                                'port': 5432  # Default PostgreSQL port
+                                            })
+    log_db_cursor = log_db_conn.cursor()
 
+    db_conn = db_config.get_db_connection()
+    db_cursor = db_conn.cursor()
     processed_conn = utils.get_processed_db_connection()  # Function to get PostgreSQL connection
 
     try:
         with processed_conn.cursor() as processed_cursor:
             processed_cursor.execute('''
-                CREATE TABLE IF NOT EXISTS processed_data (
-                    date TEXT,
-                    hour TEXT,
-                    district_id INTEGER,
-                    police_station TEXT,
-                    total_calls INTEGER,
-                    generated_cases INTEGER,
-                    siraiki INTEGER,
-                    punjabi INTEGER,
-                    potohari INTEGER,
-                    vwps INTEGER,
-                    traffic INTEGER,
-                    english INTEGER,
-                    app_alerts INTEGER,
-                    transfered INTEGER,
-                    call_backs INTEGER,
-                    avg_response_time INTEGER,
-                    estimated_response_time INTEGER,
-                    video_calls INTEGER,
-                    succ_conf_calls INTEGER,
-                    unsucc_conf_calls INTEGER,
-                    vccs INTEGER,
-                    vcm INTEGER,
-                    PRIMARY KEY (date, hour, district_id, police_station)
-                )
-            ''')
+                    CREATE TABLE IF NOT EXISTS leads_in_counts (
+                        date TEXT,
+                        district_id INTEGER,
+                        police_station TEXT,
+                        total_calls INTEGER,
+                        generated_cases INTEGER,
+                        siraiki INTEGER,
+                        punjabi INTEGER,
+                        potohari INTEGER,
+                        vwps INTEGER,
+                        traffic INTEGER,
+                        english INTEGER,
+                        app_alerts INTEGER,
+                        transfered INTEGER,
+                        call_backs INTEGER,
+                        avg_response_time INTEGER,
+                        estimated_response_time INTEGER,
+                        video_calls INTEGER,
+                        succ_conf_calls INTEGER,
+                        unsucc_conf_calls INTEGER,
+                        vccs INTEGER,
+                        vcm INTEGER,
+                        PRIMARY KEY (date, district_id, police_station)
+                    )
+                ''')
 
             processed_cursor.execute('''
                             CREATE TABLE IF NOT EXISTS response_time (
@@ -787,7 +806,13 @@ def main(start_date, end_date, start):
             processed_cursor.execute(
                 'CREATE INDEX IF NOT EXISTS idx_response_date_district ON response_time (date, district_id)')
             processed_cursor.execute(
-                'CREATE INDEX IF NOT EXISTS idx_response_station ON response_time (police_station_id)')
+                'CREATE INDEX IF NOT EXISTS idx_response_station ON response_time (police_station)')
+            processed_cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_response_field3 ON response_time (field3)')
+            processed_cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_response_parent_id ON response_time (parent_id)')
+            processed_cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_response_level3_case_nature ON response_time (level3_case_nature)')
 
             processed_conn.commit()
 
@@ -804,15 +829,15 @@ def main(start_date, end_date, start):
             insert_results(processed_conn, log_db_cursor, results, current_date.strftime(configs.YM_DATE))
 
             """Response Time Processing & Records Insertion in DB"""
-            response_time(db_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp)
+            response_time(db_conn,log_db_conn, db_cursor, processed_conn, start_timestamp, end_timestamp)
 
             """Porcesses FIR CASES AND INSERTING"""
-            process_fir_cases(db_conn, processed_conn, start_timestamp, end_timestamp,
+            process_fir_cases(db_conn,log_db_conn, processed_conn, start_timestamp, end_timestamp,
                               current_date.strftime(configs.YM_DATE))
 
             """PROCESSES FIR TRENDS AND INSERTING"""
-            results = fir_trends_processing(db_conn, log_db_cursor)
-            insert_fir_trends(processed_conn, log_db_cursor, results)
+            results = fir_trends_processing(db_conn,log_db_conn, log_db_cursor)
+            insert_fir_trends(processed_conn,log_db_conn, log_db_cursor, results)
 
             fir_data.main(current_date)
             fb_data.main()
@@ -824,19 +849,19 @@ def main(start_date, end_date, start):
                 processed_cursor.close()
             processed_conn.close()
         if db_conn:
-            if log_db_cursor:
-                log_db_cursor.close()
+            if db_cursor:
+                db_cursor.close()
             db_conn.close()
     except Exception as e:
         if processed_conn:
             if processed_cursor:
                 processed_cursor.close()
             processed_conn.close()
-        if db_conn:
-            if log_db_cursor:
-                log_db_cursor.close()
-            db_conn.close()
-        utils.log_to_pg_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+            if db_conn:
+                if db_cursor:
+                    db_cursor.close()
+                db_conn.close()
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
 if __name__ == '__main__':
