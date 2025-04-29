@@ -368,6 +368,8 @@ CALLER_FEEBACK_PSWISE = {'ENDPOINT': '/caller_feedback_pswise', 'METHOD': 'POST'
 USER_ANALYTICS = {'ENDPOINT': '/user_analytics', 'METHOD': 'POST'}
 MDT_LOCATIONS = {'ENDPOINT': '/live_mdt_locations', 'METHOD': 'POST'}
 INSIGHTS_TAB = {'ENDPOINT': '/igp_insights', 'METHOD': 'POST'}
+VERIFIED_UNVERIFIED_RT = {'ENDPOINT': '/verified_unverified_rt', 'METHOD': 'POST'}
+UNSUCCESSFUL_CONFERENCE_CALLS = {'ENDPOINT': '/unsuccessful_conference_calls/critical', 'METHOD': 'POST'}
 
 
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
@@ -848,7 +850,7 @@ district_code_mapping = {
                 "nrl": "narowal",
                 "nks": "nankana",
                 "oka": "okara",
-                "pp": "pakpatan",
+                "pp": "pakpattan",
                 "rjr": "rajanpur",
                 "tts": "ttsingh",
                 "vri": "vehari",
