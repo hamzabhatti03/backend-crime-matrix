@@ -1512,7 +1512,8 @@ def punjab_more_info():
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     db_conn = db_config.get_vcm_db_connection()
     db_cursor = db_conn.cursor()
-
+    vccs_conn = db_config.get_vccs_db_connection()
+    vccs_cursor = vccs_conn.cursor()
     try:
         # Get and validate request body from form data
         category = request.form.get('category')
@@ -1587,10 +1588,98 @@ def punjab_more_info():
         elif view_role in [3, 4]:
             additional_condition = f" AND district_id IN ({', '.join(map(str, district_ids))})"
 
+        if category == 'children_still_missing':
+            from_date_obj = datetime.strptime(from_date, '%Y-%m-%d')
+            to_date_obj = datetime.strptime(to_date, '%Y-%m-%d')
+            current_date_str = from_date_obj.strftime('%Y-%m-%d 00:00:00')
+            to_date_str = to_date_obj.strftime('%Y-%m-%d 23:59:59')
+
+            # District-wise query
+            categories = configs.CATEGORIES.get(category, [])
+            level3_list = ", ".join(f"'{val}'" for val in categories)
+            district_query = f"""
+                        SELECT pucar_district_id, COUNT(*) AS count
+                        FROM case_final_status
+                        WHERE created_at BETWEEN '2024-07-25 00:00:00' AND %s
+                          AND level3_case_nature IN ({level3_list})
+                          AND pucar_district_id NOT IN ('0', '41', '42', '43', '44', '45')
+                          {additional_condition}
+                        GROUP BY pucar_district_id HAVING COUNT(*) > 0;
+                    """
+            vccs_cursor.execute(district_query, [to_date_str])
+            district_response = vccs_cursor.fetchall()
+            district_response_obj = {
+                configs.DISTRICTS_DICTIONARY.get(int(district_id)): count
+                for district_id, count in district_response
+            }
+
+            # Police station-wise query
+            ps_query = f"""
+                        SELECT pucar_district_id, pucar_police_station_id, pucar_police_station, COUNT(*) AS count
+                        FROM case_final_status
+                        WHERE created_at BETWEEN '2024-07-25 00:00:00' AND %s
+                          AND level3_case_nature IN ({level3_list})
+                          {additional_condition}
+                        GROUP BY pucar_district_id, pucar_police_station HAVING COUNT(*) > 0;
+                    """
+            vccs_cursor.execute(ps_query, [to_date_str])
+            ps_response = vccs_cursor.fetchall()
+            ps_response_obj = {
+                ps: {configs.DISTRICTS_DICTIONARY.get(int(district)): count}
+                for district, _, ps, count in ps_response
+            }
+
+            # Police station count
+            ps_conn = utils.get_db_connection(configs.POLICE_STATIONS_MAIN)
+            ps_cursor = ps_conn.cursor()
+            ps_condition = district_condition if view_role in [3, 4, 5] else ""
+            ps_cursor.execute(f"""
+                        SELECT district_id, count(name) as count 
+                        FROM police_stations 
+                        WHERE district_id NOT IN ('0', '41', '42', '43', '44', '45') 
+                            AND district_id is NOT NULL
+                            {ps_condition}
+                        GROUP BY district_id
+                        HAVING count > 1
+                    """)
+            ps_count = ps_cursor.fetchall()
+            ps_count_obj = {
+                configs.DISTRICTS_DICTIONARY.get(int(district_id)): count
+                for district_id, count in ps_count
+            }
+
+            # Case details
+            cases_query = f"""
+                        SELECT pucar_case_number, level3_case_nature, pucar_caller_name, 
+                               pucar_accepted_time, pucar_cli, pucar_police_station, 
+                               pucar_district_id, pucar_cro_comments
+                        FROM case_final_status
+                        WHERE created_at BETWEEN '2024-07-25 00:00:00' AND %s
+                          AND level3_case_nature IN ({level3_list})
+                          {additional_condition};
+                    """
+            vccs_cursor.execute(cases_query, [to_date_str])
+            cases = vccs_cursor.fetchall()
+            cases_list = [
+                {
+                    "case_number": case_no,
+                    "case_nature": case_nature,
+                    "caller_name": caller_name,
+                    "assigned_time": accepted_time,
+                    "cli": caller_number,
+                    "police_station": police_station,
+                    "status": 'Completed',
+                    "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)),
+                    "description": description
+                }
+                for case_no, case_nature, caller_name, accepted_time,
+                caller_number, police_station, district_id, description in cases
+            ]
+
         # ---------------------------
         # Minority-specific query branch
         # ---------------------------
-        if category == 'minorities':
+        elif category == 'minorities':
             # Example: Adjust conditions and column names as per your case_final_status table.
             # District-wise aggregation from case_final_status
 
@@ -13149,97 +13238,134 @@ def prism_police_station():
             )
             representative_case_numbers.add(representative_case["case_number"])
 
-        # Step 3: Police station-wise counts for today from found_enmities_case
+        # Step 3: Fetch case details for today from found_enmities_case
         processed_db_cursor.execute("""
-            SELECT
-                rt_police_station,
-                COUNT(*)
-            FROM found_enmities_case
-            WHERE date = %s AND rt_district = %s
-            GROUP BY rt_police_station
-        """, (today.strftime('%Y-%m-%d'), district))
-        enmities_police_station_counts = processed_db_cursor.fetchall()
+                SELECT
+                    rt_police_station,
+                    level3_case_nature,
+                    rt_case_number,
+                    rt_accepted_time
+                FROM found_enmities_case
+                WHERE date = %s AND rt_district = %s
+            """, (today.strftime('%Y-%m-%d'), str(district)))
+        enmities_cases = processed_db_cursor.fetchall()
 
-        # Police station-wise counts for today from rising_crimes
+        # Fetch case details for today from rising_crimes
         processed_db_cursor.execute("""
-            SELECT
-                police_station,
-                COUNT(DISTINCT (level3_case_nature, police_station)) AS unique_combinations
-            FROM rising_crimes
-            WHERE date = %s AND district_id = %s
-            GROUP BY police_station
-        """, (today.strftime('%Y-%m-%d'), str(district_id)))
-        rising_police_station_counts = processed_db_cursor.fetchall()
+                SELECT
+                    police_station,
+                    level3_case_nature,
+                    case_number,
+                    accepted_time
+                FROM rising_crimes
+                WHERE date = %s AND district_id = %s
+            """, (today.strftime('%Y-%m-%d'), str(district_id)))
+        rising_cases = processed_db_cursor.fetchall()
 
-        # Combine police station counts
-        police_station_total_counts = defaultdict(int)
-        for police_station, count in enmities_police_station_counts:
-            if police_station:  # Exclude None or empty police stations
-                police_station_total_counts[police_station] += count
-        for police_station, count in rising_police_station_counts:
-            if police_station:  # Exclude None or empty police stations
-                police_station_total_counts[police_station] += count
+        # Step 4: Combine and group cases by police_station
+        police_station_cases = defaultdict(list)
 
-        police_station_counts_list = [
-            {'police_station': police_station, 'count': count}
-            for police_station, count in police_station_total_counts.items()
-        ]
+        # Helper function to determine risk level
+        def get_risk_level(case_nature):
+            high_risk = ["Murder", "Highway/Road/Street Robbery",
+                         "Male Kidnapping/ Abduction","Attempt to Kidnap / Abduct",
+                         "Female Kidnapping/ Abduction"]
+            medium_risk = ["Snatching/Jhapatta", "House Burglary","Motorcycle Snatching",
+                           "Attempt to Suicide","Aerial Firing","Attempt to Murder"]
+            if case_nature in high_risk:
+                return "high"
+            elif case_nature in medium_risk:
+                return "medium"
+            else:
+                return "low"
 
-        # Step 4: Total counts for found_enmities_case
+        # Process found_enmities_case
+        for (police_station, case_nature, case_number, accepted_time) in enmities_cases:
+            if police_station and case_nature:
+                risk_alert = get_risk_level(case_nature)
+                case_dict = {
+                    "case_number": case_number,
+                    "level3_case_nature": case_nature,
+                    "event": "old_enmities",
+                    "risk_alert": risk_alert,
+                    "accepted_time": accepted_time
+                }
+                police_station_cases[police_station].append(case_dict)
+
+        # Process rising_crimes
+        for (police_station, case_nature, case_number, accepted_time) in rising_cases:
+            if police_station and case_nature:
+                risk_alert = get_risk_level(case_nature)
+                case_dict = {
+                    "case_number": case_number,
+                    "level3_case_nature": case_nature,
+                    "event": "rising_crime",
+                    "risk_alert": risk_alert,
+                    "accepted_time": accepted_time
+                }
+                police_station_cases[police_station].append(case_dict)
+
+        # Step 5: Total counts for found_enmities_case
         processed_db_cursor.execute("""
-            SELECT COUNT(*)
-            FROM found_enmities_case
-            WHERE date = %s AND rt_district = %s
-        """, (today.strftime('%Y-%m-%d'), district))
+                SELECT COUNT(*)
+                FROM found_enmities_case
+                WHERE date = %s AND rt_district = %s
+            """, (today.strftime('%Y-%m-%d'), district))
         total_enmities = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
-            SELECT COUNT(*)
-            FROM found_enmities_case
-            WHERE date BETWEEN %s AND %s AND rt_district = %s
-        """, (last_week, today.strftime('%Y-%m-%d'), district))
+                SELECT COUNT(*)
+                FROM found_enmities_case
+                WHERE date BETWEEN %s AND %s AND rt_district = %s
+            """, (last_week, today.strftime('%Y-%m-%d'), district))
         last_week_enmities = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
-            SELECT COUNT(*)
-            FROM found_enmities_case
-            WHERE date BETWEEN %s AND %s AND rt_district = %s
-        """, (last_month, today.strftime('%Y-%m-%d'), district))
+                SELECT COUNT(*)
+                FROM found_enmities_case
+                WHERE date BETWEEN %s AND %s AND rt_district = %s
+            """, (last_month, today.strftime('%Y-%m-%d'), district))
         last_month_enmities = processed_db_cursor.fetchone()[0]
 
         # Total counts for rising_crimes (only representative cases)
         processed_db_cursor.execute("""
-            SELECT COUNT(*)
-            FROM rising_crimes
-            WHERE date = %s AND district_id = %s
-            AND case_number = ANY(%s)
-        """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
+                SELECT COUNT(*)
+                FROM rising_crimes
+                WHERE date = %s AND district_id = %s
+                AND case_number = ANY(%s)
+            """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         total_rising = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
-            SELECT COUNT(*)
-            FROM rising_crimes
-            WHERE date BETWEEN %s AND %s AND district_id = %s
-            AND case_number = ANY(%s)
-        """, (last_week, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
+                SELECT COUNT(*)
+                FROM rising_crimes
+                WHERE date BETWEEN %s AND %s AND district_id = %s
+                AND case_number = ANY(%s)
+            """, (last_week, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         week_rising = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
-            SELECT COUNT(*)
-            FROM rising_crimes
-            WHERE date BETWEEN %s AND %s AND district_id = %s
-            AND case_number = ANY(%s)
-        """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
+                SELECT COUNT(*)
+                FROM rising_crimes
+                WHERE date BETWEEN %s AND %s AND district_id = %s
+                AND case_number = ANY(%s)
+            """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         month_rising = processed_db_cursor.fetchone()[0]
 
-        # Step 5: Calculate total alerts
+        # Step 6: Calculate total alerts
         total_alerts = total_enmities + total_rising
         last_week_alerts = last_week_enmities + week_rising
         last_month_alerts = last_month_enmities + month_rising
 
-        # Step 6: Construct response
+        # Step 7: Construct response
         data = {
-            'police_station_counts': police_station_counts_list,
+            'police_station_cases': [
+                {
+                    'police_station': police_station,
+                    'cases': cases
+                }
+                for police_station, cases in police_station_cases.items()
+            ],
             'total_alerts': total_alerts,
             'last_week_alerts': last_week_alerts,
             'last_month_alerts': last_month_alerts
@@ -13247,7 +13373,7 @@ def prism_police_station():
 
         response = {
             'status': True,
-            'message': f'Police station-wise counts and total alerts for district {district} fetched successfully',
+            'message': f'Police station-wise cases and total alerts for district {district} fetched successfully',
             'data': data
         }
 

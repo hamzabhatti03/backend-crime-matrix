@@ -1554,3 +1554,8 @@ def get_mysql_date_range(period):
         "previous_start": previous_start.strftime("%Y-%m-%d"),
         "previous_end": previous_end.strftime("%Y-%m-%d")
     }
+
+
+def get_risk_level(crime_category):
+    """Determine the risk level for a given crime category."""
+    return configs.RISK_LEVEL_MAPPING.get(crime_category.lower(), "unknown")

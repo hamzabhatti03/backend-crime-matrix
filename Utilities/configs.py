@@ -412,7 +412,8 @@ CATEGORIES = {
                      'Physical Threats / Harrasment', 'Domestic Violence',
                      'Criminal Intimidation (Threat with Weapon)'],
     'other_property': ['Attempt to Illegal Possession of Land/ Premises'],  # level3
-    'child_abuse': ['Rape', 'Child Abuse / Molestation']  # level3
+    'child_abuse': ['Rape', 'Child Abuse / Molestation'],  # level3
+    'children_still_missing': ['Child Lost/ Missing','Child Kidnapping','Missing Person reported','Kidnapping for Ransom']
 }
 
 REGIONAL_CATEGORY_RT_QUERY = """        
@@ -1027,4 +1028,13 @@ PKM_DISTRICT_MAPPING = {
     "Sahiwal": 19, "Sargodha": 20, "Sialkot": 21, "Sheikhupura": 22, "Faisalabad": 23, "Kasur": 24,
     "Gujrat": 25, "Gujranwala": 26, "Lahore": 27, "Lodhran": 28, "Layyah": 29, "Muzaffargarh": 30,
     "Multan": 31, "M.B. Din": 32, "Mianwali": 33, "Narowal": 34, "Nankana Sb": 35, "Vehari": 36
+}
+
+RISK_LEVEL_MAPPING = {
+    "murder": "high",
+    "assault": "high",
+    "theft": "medium",
+    "burglary": "medium",
+    "rape": "high"
+    # Add more mappings as needed
 }
