@@ -9223,8 +9223,9 @@ def igp_response_time_alerts():
         processed_db_cursor.execute(district_rt_pct_chng_query, query_params)
         results = processed_db_cursor.fetchall()
         for row in results:
-            police_station, pct = row
-            rt_district_dict[police_station] = round(float(pct), 2)
+            district, pct = row
+            district_name = configs.DISTRICTS_DICTIONARY[int(district)]
+            rt_district_dict[district_name] = round(float(pct), 2)
         response = {
             'response_time': {
                 'prev': alerts_count_prev,
