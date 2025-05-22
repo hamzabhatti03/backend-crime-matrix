@@ -325,7 +325,7 @@ def forecast_date(ps, district, start_date, end_date,pg_conn):
 
         query = (
             "SELECT * FROM prediction "
-            "WHERE district = %s AND police_station = %s AND date BETWEEN %s AND %s"
+            "WHERE district = %s AND police_station = %s AND TO_DATE(date, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')"
         )
         pg_cursor.execute(query, (str(district_id), str(police_station), start_date_prediction, end_date_prediction))
         rows = pg_cursor.fetchall()

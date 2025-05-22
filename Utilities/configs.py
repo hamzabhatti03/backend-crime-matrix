@@ -370,6 +370,8 @@ MDT_LOCATIONS = {'ENDPOINT': '/live_mdt_locations', 'METHOD': 'POST'}
 INSIGHTS_TAB = {'ENDPOINT': '/igp_insights', 'METHOD': 'POST'}
 VERIFIED_UNVERIFIED_RT = {'ENDPOINT': '/verified_unverified_rt', 'METHOD': 'POST'}
 UNSUCCESSFUL_CONFERENCE_CALLS = {'ENDPOINT': '/unsuccessful_conference_calls/critical', 'METHOD': 'POST'}
+EXECUTIVE_SUMMARY = {'ENDPOINT': '/executive_summary', 'METHOD': 'POST'}
+PRISM = {'ENDPOINT': '/prism', 'METHOD': 'POST'}
 
 
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
@@ -848,7 +850,7 @@ district_code_mapping = {
                 "mbd": "mbdin",
                 "mwl": "mianwali",
                 "nrl": "narowal",
-                "nks": "nankana",
+                "nks": "nankana sb",
                 "oka": "okara",
                 "pp": "pakpattan",
                 "rjr": "rajanpur",
@@ -865,12 +867,12 @@ district_code_mapping = {
                 "hfd": "hafizabad",
                 "khb": "khushab",
                 "nrw": "narowal",
-                "nsb": "nankana",
+                "nsb": "nankana sb",
                 "pkt": "pakpatan",
                 "wab": "wazirabad",
                 "kta": "kotaddu",
-                "mur": "murree"
-
+                "mur": "murree",
+                "atk": "attock"
             }
 
 IMAGE_FOLDER = "static/images"
@@ -882,4 +884,13 @@ HRMIS_API_2 = "https://hrapi2.punjabpolice.gov.pk/hrmis-apis/v3/sc/ofc-detail"
 # API Header
 LOGIN_HEADERS = {
     "Authorization": "Bearer syOTeA0OrszbsIau57SFppq0KrPCSfFmgWE3ekfpb83abaf1"
+}
+
+PKM_DISTRICT_MAPPING = {
+    "Attock": 1, "Okara": 2, "Bahawalpur": 3, "Bahawalnagar": 4, "Bhakkar": 5, "Pakpattan": 6,
+    "T.T. Singh": 7, "Jhelum": 8, "Jhang": 9, "Chakwal": 10, "Chiniot": 11, "Hafizabad": 12,
+    "Khanewal": 13, "Khushab": 14, "D.G. Khan": 15, "Rajanpur": 16, "Rahimyar Khan": 17, "Rawalpindi": 18,
+    "Sahiwal": 19, "Sargodha": 20, "Sialkot": 21, "Sheikhupura": 22, "Faisalabad": 23, "Kasur": 24,
+    "Gujrat": 25, "Gujranwala": 26, "Lahore": 27, "Lodhran": 28, "Layyah": 29, "Muzaffargarh": 30,
+    "Multan": 31, "M.B. Din": 32, "Mianwali": 33, "Narowal": 34, "Nankana Sb": 35, "Vehari": 36
 }

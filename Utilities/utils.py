@@ -563,16 +563,8 @@ def log_to_pg_database(log_conn, log_cursor, level, message, client_ip=SYS_IP):
         log_cursor.execute(query, data)
         log_conn.commit()
 
-        if log_conn:
-            if log_cursor:
-                log_cursor.close()
-            log_conn.close()
     except Exception as err:
         log_conn.rollback()
-        if log_conn:
-            if log_cursor:
-                log_cursor.close()
-            log_conn.close()
         print(f"Database Error: {err}")
 
 
@@ -1159,129 +1151,164 @@ def compute_pct_change(current: int, prior: int) -> Optional[float]:
 
 
 def fetch_and_compute_1787_complaint_stats(period: str, dist_cond: str) -> Dict[str, Any]:
-    # 1) Build your interval params
+    """
+    Fetch and compute complaint statistics for the specified period and district condition.
+
+    Args:
+        period (str): The time period for analysis ('week', 'month', 'last90days', 'last15days_yearly').
+        dist_cond (str): District condition to filter complaints (e.g., 'AND district = 1').
+
+    Returns:
+        Dict[str, Any]: Nested dictionary with complaint stats by category, including counts, percentage change,
+                        status, and description.
+    """
+    # Get today's date
+    today = datetime.now().date()
+
+    # Define date ranges and period-specific descriptions
     if period == "week":
-        params = {"current_interval": 7, "previous_interval_end": 14}
+        current_start = today - timedelta(days=7)
+        current_end = today + timedelta(days=1)  # Up to today inclusive
+        previous_start = today - timedelta(days=14)
+        previous_end = today - timedelta(days=7)
+        period_display = "in the most recent week"
+    elif period == "month":
+        current_start = today - timedelta(days=30)
+        current_end = today + timedelta(days=1)
+        previous_start = today - timedelta(days=60)
+        previous_end = today - timedelta(days=30)
+        period_display = "in the most recent month"
+    elif period == "last90days":
+        current_start = today - timedelta(days=90)
+        current_end = today + timedelta(days=1)
+        previous_start = today - timedelta(days=180)
+        previous_end = today - timedelta(days=90)
+        period_display = "in the last 90 days"
+    elif period == "last15days_yearly":
+        current_start = today - timedelta(days=15)
+        current_end = today + timedelta(days=1)
+        previous_start = current_start.replace(year=today.year - 1)
+        previous_end = current_end.replace(year=today.year - 1)
+        period_display = "compared to the same period last year"
     else:
-        params = {"current_interval": 30, "previous_interval_end": 60}
+        raise ValueError(f"Invalid period: {period}. Expected 'week', 'month', 'last90days', or 'last15days_yearly'.")
 
-    # 2) Run your query (with "=" fixed for 'Overdue' cases)
+    # Prepare parameters for the SQL query
+    params = {
+        "current_start": current_start.strftime('%Y-%m-%d'),
+        "current_end": current_end.strftime('%Y-%m-%d'),
+        "previous_start": previous_start.strftime('%Y-%m-%d'),
+        "previous_end": previous_end.strftime('%Y-%m-%d'),
+    }
 
+    # Updated SQL query using the date parameters
     query = f"""
         SELECT
             -- Category 1: Non-FIR Registration
-            MAX(CASE WHEN category = 1 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS non_fir_registration_pending_prev,
-            MAX(CASE WHEN category = 1 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prev,
-            MAX(CASE WHEN category = 1 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS non_fir_registration_completed_prev,
-            MAX(CASE WHEN category = 1 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS non_fir_registration_pending_prior,
-            MAX(CASE WHEN category = 1 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prior,
-            MAX(CASE WHEN category = 1 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS non_fir_registration_completed_prior,
+            MAX(CASE WHEN category = 1 AND period = 'current' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prev,
+            MAX(CASE WHEN category = 1 AND period = 'previous' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prior,
             -- Category 2: Under Investigation
-            MAX(CASE WHEN category = 2 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS under_investigation_pending_prev,
-            MAX(CASE WHEN category = 2 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS under_investigation_total_prev,
-            MAX(CASE WHEN category = 2 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS under_investigation_completed_prev,
-            MAX(CASE WHEN category = 2 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS under_investigation_pending_prior,
-            MAX(CASE WHEN category = 2 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS under_investigation_total_prior,
-            MAX(CASE WHEN category = 2 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS under_investigation_completed_prior,
+            MAX(CASE WHEN category = 2 AND period = 'current' THEN complaint_count ELSE 0 END) AS under_investigation_total_prev,
+            MAX(CASE WHEN category = 2 AND period = 'previous' THEN complaint_count ELSE 0 END) AS under_investigation_total_prior,
             -- Category 3: Complaint Against Police
-            MAX(CASE WHEN category = 3 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_police_pending_prev,
-            MAX(CASE WHEN category = 3 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prev,
-            MAX(CASE WHEN category = 3 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_police_completed_prev,
-            MAX(CASE WHEN category = 3 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_police_pending_prior,
-            MAX(CASE WHEN category = 3 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prior,
-            MAX(CASE WHEN category = 3 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_police_completed_prior,
+            MAX(CASE WHEN category = 3 AND period = 'current' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prev,
+            MAX(CASE WHEN category = 3 AND period = 'previous' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prior,
             -- Category 4: Complaint Against Services
-            MAX(CASE WHEN category = 4 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_services_pending_prev,
-            MAX(CASE WHEN category = 4 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prev,
-            MAX(CASE WHEN category = 4 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_services_completed_prev,
-            MAX(CASE WHEN category = 4 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_services_pending_prior,
-            MAX(CASE WHEN category = 4 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prior,
-            MAX(CASE WHEN category = 4 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_services_completed_prior,
+            MAX(CASE WHEN category = 4 AND period = 'current' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prev,
+            MAX(CASE WHEN category = 4 AND period = 'previous' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prior,
             -- Category 5: Departmental Issue
-            MAX(CASE WHEN category = 5 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS departmental_issue_pending_prev,
-            MAX(CASE WHEN category = 5 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prev,
-            MAX(CASE WHEN category = 5 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS departmental_issue_completed_prev,
-            MAX(CASE WHEN category = 5 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS departmental_issue_pending_prior,
-            MAX(CASE WHEN category = 5 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prior,
-            MAX(CASE WHEN category = 5 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS departmental_issue_completed_prior
+            MAX(CASE WHEN category = 5 AND period = 'current' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prev,
+            MAX(CASE WHEN category = 5 AND period = 'previous' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prior
         FROM (
             SELECT
                 category,
                 CASE
-                    WHEN DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= CURDATE() - INTERVAL %(current_interval)s DAY
-                         AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < CURDATE() + INTERVAL 1 DAY THEN 'current'
-                    ELSE 'previous'
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= %(current_start)s 
+                         AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s THEN 'current'
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s 
+                         AND DATE(FROM_UNIXTIME(complaint_date)) < %(previous_end)s THEN 'previous'
                 END AS period,
-                CASE
-                    WHEN complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue') THEN 'pending'
-                    WHEN complaint_status = 'Closed (Disposed)' THEN 'completed'
-                END AS status_group,
                 COUNT(*) AS complaint_count
             FROM complaints_view
             WHERE source = 2
                 AND complaint_date IS NOT NULL
-                AND DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY
-                AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY
-                AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                AND (
+                    (DATE(FROM_UNIXTIME(complaint_date)) >= %(current_start)s 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s)
+                    OR
+                    (DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(previous_end)s)
+                )
                 {dist_cond}
-            GROUP BY category, period, status_group
-            UNION ALL
-            SELECT
-                category,
-                CASE
-                    WHEN DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= CURDATE() - INTERVAL %(current_interval)s DAY
-                         AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < CURDATE() + INTERVAL 1 DAY THEN 'current'
-                    ELSE 'previous'
-                END AS period,
-                'total' AS status_group,
-                COUNT(*) AS complaint_count
-            FROM complaints_view
-            WHERE source = 2
-                AND complaint_date IS NOT NULL
-                AND DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY
-                AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY
             GROUP BY category, period
         ) AS aggregated_complaints;
+    """
 
-            """
+    # Execute the query
     conn = db_config.get_1787_db_connection()
+    row = {}
     if conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(query, params)
-        row = cursor.fetchone()  # type: Dict[str, int]
-    # 3) Define the mapping of top‑level keys → column‑name prefixes
-    category_map = {
-        "investigation":         "under_investigation",
-        "fir_registration":      "non_fir_registration",
-        "complaint_against_police":   "complaint_against_police",
-        "complaint_against_service_delivery": "complaint_against_services",
-        "departmental_issue":    "departmental_issue",
-    }
-    statuses = ["pending", "total", "completed"]
-    intervals = {"prev": "_prev", "prior": "_prior"}
-
-    # 4) Build the nested dict in two nested loops
-    result: Dict[str, Any] = {}
-    for top_key, prefix in category_map.items():
-        result[top_key] = {}
-        for status in statuses:
-            # pull out the two raw counts
-            current_key = f"{prefix}_{status}{intervals['prev']}"
-            prior_key   = f"{prefix}_{status}{intervals['prior']}"
-
-            curr_val  = row.get(current_key, 0)
-            prior_val = row.get(prior_key, 0)
-            pct       = compute_pct_change(curr_val, prior_val)
-
-            result[top_key][status] = {
-                "prev":    curr_val,
-                "prior":   prior_val,
-                "pct_chng": pct,
-            }
-    if cursor:
+        row = cursor.fetchone() or {}
         cursor.close()
-    if conn:
         conn.close()
+
+    # Define category mappings and display names
+    category_map = {
+        "investigation": "under_investigation",
+        "fir_registration": "non_fir_registration",
+        "complaint_against_police": "complaint_against_police",
+        "complaint_against_service_delivery": "complaint_against_services",
+        "departmental_issue": "departmental_issue",
+    }
+    intervals = {"prev": "_prev", "prior": "_prior"}
+    category_display_names = {
+        "fir_registration": "FIR registration complaints",
+        "investigation": "investigation complaints",
+        "complaint_against_police": "complaints against police",
+        "complaint_against_service_delivery": "complaints against service delivery",
+        "departmental_issue": "departmental issue complaints",
+    }
+
+    # Helper function to compute percentage change
+    def compute_pct_change(prev: int, prior: int) -> float:
+        if prior == 0:
+            return 100.0 if prev > 0 else 0.0
+        return ((prev - prior) / prior) * 100
+
+    # Helper function to determine status and description
+    def get_status_and_description(prev: int, prior: int, pct_chng: float, period_display: str, display_name: str) -> \
+    tuple[str, str]:
+        status = 'increased' if prev > prior else 'decreased' if prev < prior else 'unchanged'
+        if status == 'unchanged':
+            description = f"{display_name} remained the same at {prev} {period_display}."
+        else:
+            description = f"{abs(pct_chng):.1f}% {'increase' if status == 'increased' else 'decrease'} in {display_name} {period_display}."
+        return status, description
+
+    # Build the result dictionary
+    result = {}
+    for top_key, prefix in category_map.items():
+        result[top_key] = {};
+        current_key = f"{prefix}_total{intervals['prev']}"
+        prior_key = f"{prefix}_total{intervals['prior']}"
+
+        curr_val = row.get(current_key, 0)
+        prior_val = row.get(prior_key, 0)
+        pct = compute_pct_change(curr_val, prior_val)
+
+        display_name = f"total {category_display_names[top_key]}"
+        status_val, description_val = get_status_and_description(curr_val, prior_val, pct, period_display, display_name)
+
+        result[top_key]["total"] = {
+            "prev": curr_val,
+            "prior": prior_val,
+            "pct_chng": pct,
+            "status": status_val,
+            "description": description_val,
+        }
+
     return result
 
 
@@ -1333,51 +1360,104 @@ def get_district_conditions(view_role, district_ids, districts):
 
 def get_query_params(period):
     """Return query parameters based on period."""
-    return {
-        "week": {"current_interval": "7 days", "previous_interval_end": "14 days"},
-        "month": {"current_interval": "30 days", "previous_interval_end": "60 days"}
-    }[period]
+    base_params = {
+        "week": {
+            "current_interval": "7 days",
+            "previous_interval_start": "14 days",
+            "previous_interval_end": "7 days"
+        },
+        "month": {
+            "current_interval": "30 days",
+            "previous_interval_start": "60 days",
+            "previous_interval_end": "30 days"
+        },
+        "last90days": {
+            "current_interval": "90 days",
+            "previous_interval_start": "180 days",
+            "previous_interval_end": "90 days"
+        }
+    }
+
+    if period == 'last15days_yearly':
+        return {
+            "current_interval": "14 days",
+            "previous_interval_start": "1 year 14 days",
+            "previous_interval_end": "1 year"
+        }
+
+    return base_params[period]
 
 
 def get_date_ranges(period):
-    """Calculate date ranges for the given period."""
     today = datetime.today().date()
-    current_days = 7 if period == "week" else 30
-    previous_days = 14 if period == "week" else 60
-
-    current_start_date = today - timedelta(days=current_days)
-    current_end_date = today
-    previous_start_date = today - timedelta(days=previous_days)
-    previous_end_date = today - timedelta(days=current_days)
+    if period == "last15days_yearly":
+        current_start = today - timedelta(days=14)
+        current_end = today
+        previous_start = current_start.replace(year=current_start.year - 1)
+        previous_end = current_end.replace(year=current_end.year - 1)
+    else:
+        days_map = {"week": 7, "month": 30, "last90days": 90}
+        days = days_map.get(period, 7)
+        current_start = today - timedelta(days=days)
+        current_end = today
+        previous_start = today - timedelta(days=2 * days)
+        previous_end = current_start
 
     date_format = "%Y-%m-%d"
     return {
-        "current_start_date": current_start_date.strftime(date_format),
-        "current_end_date": current_end_date.strftime(date_format),
-        "previous_start_date": previous_start_date.strftime(date_format),
-        "previous_end_date": previous_end_date.strftime(date_format)
+        "current_start_date": current_start.strftime(date_format),
+        "current_end_date": current_end.strftime(date_format),
+        "previous_start_date": previous_start.strftime(date_format),
+        "previous_end_date": previous_end.strftime(date_format),
     }
 
 def get_period_params(period):
-    period_start_pg = "CURRENT_DATE - INTERVAL '7 days'"
     if period == 'week':
         period_start_pg = "CURRENT_DATE - INTERVAL '7 days'"
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 7 DAY, '%Y-%m-%d 00:00:00')"
+        query_params = {
+            "current_interval": "7 days",
+            "previous_interval_start": "14 days",
+            "previous_interval_end": "7 days"
+        }
     elif period == 'month':
         period_start_pg = "CURRENT_DATE - INTERVAL '30 days'"
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 30 DAY, '%Y-%m-%d 00:00:00')"
+        query_params = {
+            "current_interval": "30 days",
+            "previous_interval_start": "60 days",
+            "previous_interval_end": "30 days"
+        }
+    elif period == 'last90days':
+        period_start_pg = "CURRENT_DATE - INTERVAL '90 days'"
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 90 DAY, '%Y-%m-%d 00:00:00')"
+        query_params = {
+            "current_interval": "90 days",
+            "previous_interval_start": "180 days",
+            "previous_interval_end": "90 days"
+        }
+    elif period == 'last15days_yearly':
+        # PostgreSQL-compatible expressions
+        period_start_pg = "CURRENT_DATE - INTERVAL '14 days'"
 
-    period_start_mysql = (
-        "DATE_FORMAT(CURDATE() - INTERVAL 7 DAY, '%Y-%m-%d 00:00:00')"
-        if period == 'week' else
-        "DATE_FORMAT(CURDATE() - INTERVAL 30 DAY, '%Y-%m-%d 00:00:00')"
-    )
+        # MySQL-compatible expression
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 14 DAY, '%Y-%m-%d 00:00:00')"
 
-    query_params = {
-        "current_interval": "7 days",
-        "previous_interval_end": "14 days"
-    } if period == "week" else {
-        "current_interval": "30 days",
-        "previous_interval_end": "60 days"
-    }
+        # Query parameters for comparing same 15-day period last year
+        query_params = {
+            "current_interval": "14 days",
+            "previous_interval_start": "1 year 14 days",  # start of previous year’s window
+            "previous_interval_end": "1 year"              # end of previous year’s window
+        }
+    else:
+        # Default fallback
+        period_start_pg = "CURRENT_DATE - INTERVAL '7 days'"
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 7 DAY, '%Y-%m-%d 00:00:00')"
+        query_params = {
+            "current_interval": "7 days",
+            "previous_interval_start": "14 days",
+            "previous_interval_end": "7 days"
+        }
 
     return period_start_pg, period_start_mysql, query_params
     
@@ -1410,3 +1490,67 @@ def filter_records_within_punjab(records: list[dict]) -> list[dict]:
         if 'latitude' in record and 'longitude' in record
         and is_within_punjab(record['latitude'], record['longitude'])
     ]
+
+
+def adjust_counts(prev, prior):
+    """
+    Adjust prev and prior counts for IGP INSIGHTS based on conditions:
+    - If both prev and prior are less than 5, return (0, 0).
+    - If the absolute difference between prev and prior is 5, return (0, 0).
+    - Otherwise, return the original prev and prior values.
+
+    Args:
+        prev (int): Count for the current period.
+        prior (int): Count for the previous period.
+
+    Returns:
+        tuple: Adjusted (prev, prior) values.
+    """
+    if prev is None and prior is None:
+        return 0, 0
+    if (prev < 5 and prior < 5) or (abs(prev - prior) == 5):
+        return 0, 0
+    return prev, prior
+
+def merge_pkm_stats(a: dict, b: dict) -> dict:
+    merged = {}
+    for key in set(a) | set(b):
+        va, vb = a.get(key), b.get(key)
+        if isinstance(va, dict) and isinstance(vb, dict):
+            merged[key] = merge_pkm_stats(va, vb)
+        else:
+            na = va if isinstance(va, (int, float)) else 0
+            nb = vb if isinstance(vb, (int, float)) else 0
+            merged[key] = na + nb
+    return merged
+
+
+def get_mysql_date_range(period):
+    today = datetime.today().date()
+
+    if period == "last15days_yearly":
+        current_start = today - timedelta(days=14)
+        current_end = today
+        previous_start = current_start.replace(year=current_start.year - 1)
+        previous_end = current_end.replace(year=current_end.year - 1)
+    elif period == "week":
+        current_start = today - timedelta(days=7)
+        previous_start = today - timedelta(days=14)
+        previous_end = today - timedelta(days=7)
+    elif period == "month":
+        current_start = today - timedelta(days=30)
+        previous_start = today - timedelta(days=60)
+        previous_end = today - timedelta(days=30)
+    elif period == "last90days":
+        current_start = today - timedelta(days=90)
+        previous_start = today - timedelta(days=180)
+        previous_end = today - timedelta(days=90)
+    else:
+        raise ValueError("Unsupported period")
+
+    return {
+        "current_start": current_start.strftime("%Y-%m-%d"),
+        "current_end": current_end.strftime("%Y-%m-%d"),
+        "previous_start": previous_start.strftime("%Y-%m-%d"),
+        "previous_end": previous_end.strftime("%Y-%m-%d")
+    }

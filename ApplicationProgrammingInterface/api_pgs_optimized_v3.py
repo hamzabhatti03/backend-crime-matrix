@@ -30,6 +30,7 @@ import time
 import requests
 import ast
 from collections import defaultdict
+from requests.auth import HTTPBasicAuth
 
 load_dotenv()
 
@@ -684,6 +685,7 @@ def punjab_stats_dashboard():
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     users_db_conn, usersdb_cursor = get_users_db_connection()
+    vccs_conn = db_config.get_vccs_db_connection()
     try:
         # Get parameters from request body
         from_date_str = request.form.get('fromDate')
@@ -1240,7 +1242,10 @@ def punjab_stats_dashboard():
                 Select count(*) Filter (Where level3_case_nature IN ('Firing on Police', 
                                         'Suicidal Attack/ Bomb Blast/ Terrorist Attack') ) as terrorism,
                         count(*) Filter ( Where level3_case_nature IN ('Dacoity with Murder')
-                                        ) as dacoity_with_murder
+                                        ) as dacoity_with_murder,
+                        count(*) Filter (Where level3_case_nature IN ('Murder')) as murder,
+                        count(*) Filter (Where level3_case_nature IN ('Rape', 
+                                        'Child Abuse / Molestation') ) as rape
                     from response_time
                     Where date Between %s AND %s
                     AND district_id IS NOT NULL
@@ -1249,7 +1254,7 @@ def punjab_stats_dashboard():
 					{district_condition}
         """
         processed_db_cursor.execute(unsuccess_conference_calls_query,(from_date_str,to_date_str))
-        (unsuccessful_conf_terrorism, unsuccessful_conf_dacoity_with_murder) = processed_db_cursor.fetchone()
+        (unsuccessful_conf_terrorism, unsuccessful_conf_dacoity_with_murder, unsuccessful_conf_murder, unsuccessful_conf_rape) = processed_db_cursor.fetchone()
 
         vcm_conf_calls_query = """
                 SELECT lead_id 
@@ -1270,6 +1275,20 @@ def punjab_stats_dashboard():
         """
         processed_db_cursor.execute(conf_minorities_query,(lead_ids,))
         unsuccessful_minorities = processed_db_cursor.fetchone()[0]
+
+        vccs_query = ("""
+                    Select count(*) from case_final_status
+                     Where pucar_level3_case_nature_id IN (594,595,495,493)
+                             AND is_closed = 0
+                             AND (is_handed_over IS NULL OR is_handed_over = 0)
+                             AND created_at >= %s
+                             AND created_at <= %s
+                      """)
+        vccs_cursor = vccs_conn.cursor()
+        vccs_cursor.execute(vccs_query,(current_date_str,to_date_str))
+        children_still_missing = vccs_cursor.fetchone()[0]
+
+        vccs_conn.close()
 
         dashboard_data = {
             'terrorist_act': {'count': terrorism, 'fir': terrorism_fir,
@@ -1325,7 +1344,7 @@ def punjab_stats_dashboard():
                                                                                          'rural': '00:00'}),
                                   'avg_response_time': category_avg_response_dict.get('robbery_snatching',
                                                                                       '00:00')},
-            'theft': {'count': theft, 'fir': theft_fir,
+            'theft': {'count': theft, 'fir': theft_fir+burglary_fir,
                       'fake/other': 0,
                       'response_times': category_regional_response_dict.get('theft',
                                                                             {'urban': '00:00', 'rural': '00:00'}),
@@ -1398,12 +1417,16 @@ def punjab_stats_dashboard():
             'vccs_escalated': 0,
             'responsetime_alerts': response_time_alerts,
             'crime_reoccurrence_count': re_occurrences_response,
+            'chidlren_still_missing': children_still_missing,
             'unsuccessful_conference_calls' : {
-                                'total': unsuccessful_conf_dacoity_with_murder + unsuccessful_conf_terrorism + unsuccessful_minorities + 0,
+                                'total': unsuccessful_conf_dacoity_with_murder + unsuccessful_conf_terrorism + unsuccessful_minorities +
+                                         unsuccessful_conf_murder + unsuccessful_conf_rape + 0,
                                 'religious_issues' : unsuccessful_minorities,
                                 'terrorism': unsuccessful_conf_terrorism,
                                 'dacoity_with_murder':unsuccessful_conf_dacoity_with_murder,
-                                'police_encounter' : 0 #Police encounter is 0
+                                'police_encounter' : 0, #Police encounter is 0
+                                'murder' : unsuccessful_conf_murder,
+                                'rape' : unsuccessful_conf_murder
             }
         }
 
@@ -1438,24 +1461,9 @@ def punjab_stats_dashboard():
             'data': None
         }
         utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
-
-        predpol_db_cursor.close()
-        predictive_db_pool.putconn(predpol_db_conn)
-
-        log_db_cursor.close()
-        log_db_pool.putconn(log_db_conn)
-        # Properly return to the pool without removing it
-
-        usersdb_cursor.close()
-        usersdb_pool.putconn(users_db_conn)
-
-        processed_db_cursor.close()
-        postgresql_pool.putconn(processed_db_conn)
-
-        realtime15_cursor.close()
-        realtime15_pool.putconn(realtime15_conn)
-
         return jsonify(error_response), 500
+
+
     finally:
         predpol_db_cursor.close()
         predictive_db_pool.putconn(predpol_db_conn)
@@ -1472,6 +1480,9 @@ def punjab_stats_dashboard():
 
         realtime15_cursor.close()
         realtime15_pool.putconn(realtime15_conn)
+
+        if vccs_conn:
+            vccs_conn.close()
 
 
 @app.route(configs.PUNJAB_MORE_INFO['ENDPOINT'], methods=[configs.PUNJAB_MORE_INFO['METHOD']])
@@ -2257,19 +2268,23 @@ def districtwise_more_info():
 
         # Get police station-wise statistics
         ps_query = f"""
-            SELECT 
+            SELECT
                 ps.police_circle, 
                 ps.police_station, 
                 COALESCE(COUNT(rt.lead_id), 0) AS total_count
             FROM 
                 (SELECT DISTINCT 
-                    police_circle, 
-                    police_station, 
+                    TRIM(police_circle) AS police_circle, 
+                    TRIM(police_station) AS police_station, 
                     police_station_id 
                  FROM 
                     response_time 
                  WHERE 
-                    police_station IS NOT NULL 
+                    police_station IS NOT NULL
+                    AND police_circle IS NOT NULL
+                    AND response_time IS NOT NULL
+                    AND response_time > 0
+                    AND queue NOT IN ('minorities-15')
                     {district_condition}
                 ) ps
             LEFT JOIN 
@@ -2284,8 +2299,12 @@ def districtwise_more_info():
                     OR rt.level3_case_nature = 'Aerial Firing'
                     OR rt.level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises'
                 )
+                AND ps.police_circle IS NOT NULL
                 AND rt.parent_id = 0
                 AND rt.police_station IS NOT NULL
+                AND rt.response_time IS NOT NULL
+                AND rt.response_time > 0
+                AND rt.queue NOT IN ('minorities-15')
             GROUP BY 
                 ps.police_circle, 
                 ps.police_station
@@ -2399,6 +2418,7 @@ def pswise_categories():
     """
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    predpol_db_conn, predpol_db_cursor = get_db_pg_predictive()
 
     try:
         from_date = request.form.get('fromDate')
@@ -2538,7 +2558,7 @@ def pswise_categories():
                 AND date BETWEEN %s AND %s
                 AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
-                AND district_id NOT IN ('0','41','42','43','44','45')
+                AND district_id NOT IN ('0','41','42','43','44','45','46')
                 AND police_station is not Null
                 AND parent_id = 0
         """
@@ -2657,7 +2677,7 @@ def pswise_categories():
         vehicles_location_data = [dict(zip(column_names, vehicle)) for vehicle in vehicles_location]
 
         crime_hotspots_query = """
-                            Select district_id ,police_station, level3_case_nature , reached_lat, reached_long
+                            Select district_id ,police_station, level2_case_nature , reached_lat, reached_long
                             FROM response_time
                             WHERE district_id = %s
                             AND police_station = %s
@@ -2676,10 +2696,66 @@ def pswise_categories():
             # Extract the latitude and longitude values from the result
             reached_lat = result[3]
             reached_long = result[4]
-            case_nature = result[2]
 
             # Append the coordinates as a list to the coordinates list
-            coordinates.append([float(reached_lat), float(reached_long), case_nature])
+            coordinates.append([float(reached_lat), float(reached_long)])
+
+        alerts_count_query = """
+                        SELECT COUNT(case_number) AS case_count
+                        FROM response_time
+                        Where date between %s AND %s
+                        AND response_time > 2100 
+                        AND parent_id = 0
+                        AND district_id IS NOT NULL
+                        AND district_id NOT IN ('0','41','42','43','44','45')
+                        AND level2_case_nature in ('Robbery/Snatching', 'Burglary', 'Dacoity', 'Sexual Assault', 
+                        'Kiddnapping / Abduction', 'Murder', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack','Firing on Police')
+                        AND district_id = %s
+                        AND police_station = %s
+                        """
+        processed_db_cursor.execute(alerts_count_query, (from_date, to_date,district_id,police_station))
+        rt_alerts = processed_db_cursor.fetchone()[0]
+
+        from_date_obj = datetime.strptime(from_date, "%Y-%m-%d")
+        from_date_formatted = from_date_obj.strftime("%d-%m-%Y")
+
+        to_date_obj = datetime.strptime(to_date,"%Y-%m-%d")
+        to_date_formatted = to_date_obj.strftime("%d-%m-%Y")
+
+        predpol_db_cursor.execute(f"""
+                            SELECT count(*)
+                            FROM crime_hotspot 
+                            WHERE case_number IS NOT null
+                            AND case_nature in ('Highway/Road/Street Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 'Any Other Robbery', 
+                            'Snatching/Jhapatta', 'House Robbery', 'Cattle Robbery', 'Robbery with Murder', 'Bank/Money Exchange/ ATM Robbery', 
+                            'Jewellery Shop Robbery','Motorcycle Snatching', 'Bank Burglary', 'House Burglary', 'Shop Burglary', 'Other Burglary', 
+                            'Dacoity with Murder', 'House Dacoity', 'Highway/Road/Street Dacoity', 'Cattle Dacoity', 'Shop Dacoity', 'Any Other Dacoity', 
+                            'Patrol Pump Dacoity', 'Jewellery Shop Dacoity', 'Sexual Assault/ Harrasment To Women', 'Rape', 'Child Abuse / Molestation', 
+                            'Male Kidnapping/ Abduction', 'Female Kidnapping/ Abduction', 'Attempt to Kidnap / Abduct', 'Child Kidnapping', 
+                            'Kidnapping for Ransom','Illegal detention of a person', 'Attempt to Murder', 'Murder', 'Firing on Police', 
+                            'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                            AND date Between %s AND %s
+                            AND district = %s
+                            AND police_station = %s
+                """, (from_date_formatted,to_date_formatted,str(district_id),police_station))
+        re_occurrences_count = predpol_db_cursor.fetchone()
+        if re_occurrences_count is not None:
+            re_occurrences_response = {"reoccured_cases": re_occurrences_count[0]}
+        else:
+            re_occurrences_response = {"reoccured_cases": 0}
+
+
+        negative_caller_feedback_query = """
+                                    Select SUM(CASE WHEN caller_feedback = 'Negative' THEN 1 ELSE 0 END)
+                                    FROM response_time
+                                    WHERE date Between %s AND %s 
+                                    AND district_id = %s
+                                    AND police_station = %s
+                                        """
+        processed_db_cursor.execute(negative_caller_feedback_query, (from_date, to_date,district_id,police_station))
+        row = processed_db_cursor.fetchone()
+        negative_feedback_count = row[0] if row is not None else 0
+
 
         # successful response
         response = {
@@ -2695,7 +2771,10 @@ def pswise_categories():
                 'police_mv_locations': vehicles_location_data,
                 'successful_conf_calls': successful_calls,
                 'unsuccessful_conf_calls': unsuccessful_calls,
-                'hotspot_coordinates': filter_lat_longs(coordinates, max_distance_km=3)
+                'hotspot_coordinates': filter_lat_longs(coordinates, max_distance_km=3),
+                'response_time_alerts': rt_alerts,
+                'reoccurrence_alerts'  : re_occurrences_response,
+                'negative_feedback_alerts' : negative_feedback_count
             }
         }
         return jsonify(response), 200
@@ -2726,8 +2805,8 @@ def punjab_case_details():
     Expected POST body:
     {
         "case_number": "string",      # The case number to retrieve details for
-        "assigned_to": "string",      # Optional; if empty, use the current username or handle differently
-        "assigned_by": "string"       # Optional; if empty, use the current username or handle differently
+        "assigned_to": "string",      # Optional;
+        "assigned_by": "string"       # Optional;
     }
 
     Returns:
@@ -2747,14 +2826,30 @@ def punjab_case_details():
 
         case_query = """
             SELECT 
-                case_number, description, response_time, 
-                responder_id, accepted_time, police_station,
-                district_id, region_category, caller_name,
-                caller_number, caller_location, level3_case_nature, 
-                dispatched_time, first_arrival_time,lat, long, 
-                responder_lat, responder_long,reached_time,feedback_comments
-            FROM response_time
-            WHERE case_number = %s
+                rt.case_number, 
+                rt.description, 
+                rt.response_time, 
+                rt.responder_id, 
+                rt.accepted_time, 
+                rt.police_station,
+                rt.district_id, 
+                rt.region_category, 
+                rt.caller_name,
+                rt.caller_number, 
+                rt.caller_location, 
+                rt.level3_case_nature, 
+                rt.dispatched_time, 
+                rt.first_arrival_time,
+                rt.lat, 
+                rt.long, 
+                rt.responder_lat, 
+                rt.responder_long,
+                rt.reached_time,
+                rt.feedback_comments,
+                cf.caller_feedback_comments
+            FROM response_time rt
+            LEFT JOIN caller_feedback_log_preprocessed cf ON rt.lead_id = cf.lead_id
+            WHERE rt.case_number = %s
         """
         processed_db_cursor.execute(case_query, (case_number_str,))
         case_details = processed_db_cursor.fetchone()
@@ -2770,7 +2865,7 @@ def punjab_case_details():
         (case_number, description, response_time, responder_id, accepted_time, police_station,
          district_id, region_category, caller_name, caller_number, caller_location,
          level3_case_nature, dispatched_time, first_arrival_time,
-         lat, long, responder_lat, responder_long, reached_time, feedback) = case_details
+         lat, long, responder_lat, responder_long, reached_time, feedback,negative_feedback_summary) = case_details
 
         responder_name = None
         if responder_id:
@@ -2858,7 +2953,8 @@ def punjab_case_details():
             'long': long,
             'responder_lat': responder_lat,
             'responder_long': responder_long,
-            'feedback': feedback
+            'feedback': feedback,
+            'negative_feedback_for_responder' : negative_feedback_summary
         }
 
         # incase assigned_by and assigned_to are not provided
@@ -5463,7 +5559,7 @@ def crime_trends():
             "district_id IS NOT NULL",
             "police_station IS NOT NULL",
             "parent_id = 0",
-            "DATE(date) > '2024-06-01'"
+            "DATE(date) > '2025-06-01'"
         ]
         params = {'case_types': case_types}
 
@@ -8847,7 +8943,7 @@ def unsuccessful_conference():
                         AND parent_id = 0
                         AND field3 IN ('FO did not attend the call','Number Powered Off','Out of PS Jurisdiction')
                         AND level3_case_nature IN ('Dacoity with Murder','Firing on Police', 
-                                'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                                'Suicidal Attack/ Bomb Blast/ Terrorist Attack', 'Murder', 'Rape', 'Child Abuse / Molestation')
                                 {district_condition}
                         """
         processed_db_cursor.execute(cases_query, (from_date_str, to_date_str))
@@ -8951,8 +9047,6 @@ def unsuccessful_conference():
         if vcm_conn:
             vcm_conn.close()
 
-
-
 @app.route(f"{configs.INSIGHTS_TAB['ENDPOINT']}/response-time", methods=[configs.INSIGHTS_TAB['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
@@ -8982,6 +9076,14 @@ def igp_response_time_alerts():
                                  AND date(date) < CURRENT_DATE + INTERVAL '1 day'
                                  AND %(period)s = 'month'
                             THEN 1
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '90 days'
+                                 AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                                 AND %(period)s = 'last90days'
+                            THEN 1
+                            WHEN %(period)s = 'last15days_yearly'
+                                 AND date(date) >= CURRENT_DATE - INTERVAL '14 days'
+                                 AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                            THEN 1
                         END) AS current_period_count,
                         COUNT(CASE
                             WHEN date(date) >= CURRENT_DATE - INTERVAL '14 days'
@@ -8991,6 +9093,14 @@ def igp_response_time_alerts():
                             WHEN date(date) >= CURRENT_DATE - INTERVAL '60 days'
                                  AND date(date) < CURRENT_DATE - INTERVAL '30 days'
                                  AND %(period)s = 'month'
+                            THEN 1
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '180 days'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '90 days'
+                                 AND %(period)s = 'last90days'
+                            THEN 1
+                            WHEN %(period)s = 'last15days_yearly'
+                                 AND date(date) >= (CURRENT_DATE - INTERVAL '14 days') - INTERVAL '1 year'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '1 year'
                             THEN 1
                         END) AS previous_period_count
                     FROM response_time
@@ -9016,109 +9126,105 @@ def igp_response_time_alerts():
         rt_district_dict = {}
         if len(districts) > 1:
             district_rt_pct_chng_query = f"""
-                        SELECT 
-                            district_id,
-                            (
-                                (
-                                    SUM(CASE 
-                                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
-                                             AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
-                                        THEN 1 ELSE 0 
-                                    END) 
-                                    - 
-                                    SUM(CASE 
-                                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                             AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                                        THEN 1 ELSE 0 
-                                    END)
-                                )::numeric
-                                /
-                                NULLIF(SUM(CASE 
-                                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                                    THEN 1 ELSE 0 
-                                END), 0)
-                            ) * 100 AS rt_percentage_change
-                        FROM response_time
-                        WHERE 
-                            response_time > 2100
-                            AND parent_id = 0
-                            AND district_id IS NOT NULL
-                            AND district_id NOT IN ('0','41','42','43','44','45','46')
-                            AND level3_case_nature NOT IN ('Other Help')
-                            AND level2_case_nature IN (
-                                'Robbery/Snatching', 'Burglary', 'Dacoity', 
-                                'Sexual Assault', 'Kiddnapping / Abduction', 
-                                'Murder', 'Terrorist Act'
-                            )
-                            {district_condition}
-                        GROUP BY district_id
-                        HAVING SUM(CASE 
-                                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                                   THEN 1 ELSE 0 
-                               END) > 0
-                        ORDER BY rt_percentage_change DESC
-                        LIMIT 3;
-                    """
-            processed_db_cursor.execute(district_rt_pct_chng_query, query_params)
-            results = processed_db_cursor.fetchall()
-            for row in results:
-                district_id, pct = row
-                district = configs.DISTRICTS_DICTIONARY.get(district_id, "")
-                rt_district_dict[district] = round(float(pct), 2)
+                SELECT 
+                    district_id,
+                    (
+                        (
+                            SUM(CASE 
+                                WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                                     AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                                THEN 1 ELSE 0 
+                            END) 
+                            - 
+                            SUM(CASE 
+                                WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                     AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                THEN 1 ELSE 0 
+                            END)
+                        )::numeric
+                        /
+                        NULLIF(SUM(CASE 
+                            WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            THEN 1 ELSE 0 
+                        END), 0)
+                    ) * 100 AS rt_percentage_change
+                FROM response_time
+                WHERE 
+                    response_time > 2100
+                    AND parent_id = 0
+                    AND district_id IS NOT NULL
+                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND level3_case_nature NOT IN ('Other Help')
+                    AND level2_case_nature IN (
+                        'Robbery/Snatching', 'Burglary', 'Dacoity', 
+                        'Sexual Assault', 'Kiddnapping / Abduction', 
+                        'Murder', 'Terrorist Act'
+                    )
+                    {district_condition}
+                GROUP BY district_id
+                HAVING SUM(CASE 
+                            WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                           THEN 1 ELSE 0 
+                       END) > 0
+                ORDER BY rt_percentage_change DESC
+                LIMIT 3;
+            """
         else:
             district_rt_pct_chng_query = f"""
-                        SELECT 
-                            police_station,
-                            (
-                                (
-                                    SUM(CASE 
-                                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
-                                             AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
-                                        THEN 1 ELSE 0 
-                                    END) 
-                                    - 
-                                    SUM(CASE 
-                                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                             AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                                        THEN 1 ELSE 0 
-                                    END)
-                                )::numeric
-                                /
-                                NULLIF(SUM(CASE 
-                                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                                    THEN 1 ELSE 0 
-                                END), 0)
-                            ) * 100 AS rt_percentage_change
-                        FROM response_time
-                        WHERE 
-                            response_time > 2100
-                            AND parent_id = 0
-                            AND district_id IS NOT NULL
-                            AND district_id NOT IN ('0','41','42','43','44','45','46')
-                            AND level3_case_nature NOT IN ('Other Help')
-                            AND level2_case_nature IN (
-                                'Robbery/Snatching', 'Burglary', 'Dacoity', 
-                                'Sexual Assault', 'Kiddnapping / Abduction', 
-                                'Murder', 'Terrorist Act'
-                            )
-                            {district_condition}
-                        GROUP BY police_station
-                        HAVING SUM(CASE 
-                                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                                   THEN 1 ELSE 0 
-                               END) > 0
-                        ORDER BY rt_percentage_change DESC
-                        LIMIT 3;
-                    """
-            processed_db_cursor.execute(district_rt_pct_chng_query, query_params)
-            results = processed_db_cursor.fetchall()
-            for row in results:
-                police_station, pct = row
-                rt_district_dict[police_station] = round(float(pct), 2)
+                SELECT 
+                    police_station,
+                    (
+                        (
+                            SUM(CASE 
+                                WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                                     AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                                THEN 1 ELSE 0 
+                            END) 
+                            - 
+                            SUM(CASE 
+                                WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                     AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                THEN 1 ELSE 0 
+                            END)
+                        )::numeric
+                        /
+                        NULLIF(SUM(CASE 
+                            WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            THEN 1 ELSE 0 
+                        END), 0)
+                    ) * 100 AS rt_percentage_change
+                FROM response_time
+                WHERE 
+                    response_time > 2100
+                    AND parent_id = 0
+                    AND district_id IS NOT NULL
+                    AND district_id NOT IN ('0','41','42','43','44','45','46')
+                    AND level3_case_nature NOT IN ('Other Help')
+                    AND level2_case_nature IN (
+                        'Robbery/Snatching', 'Burglary', 'Dacoity', 
+                        'Sexual Assault', 'Kiddnapping / Abduction', 
+                        'Murder', 'Terrorist Act'
+                    )
+                    {district_condition}
+                GROUP BY police_station
+                HAVING SUM(CASE 
+                            WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                           THEN 1 ELSE 0 
+                       END) > 0
+                ORDER BY rt_percentage_change DESC
+                LIMIT 3;
+            """
+
+        # Execute query
+        processed_db_cursor.execute(district_rt_pct_chng_query, query_params)
+        results = processed_db_cursor.fetchall()
+        for row in results:
+            police_station, pct = row
+            rt_district_dict[police_station] = round(float(pct), 2)
         response = {
             'response_time': {
                 'prev': alerts_count_prev,
@@ -9165,34 +9271,34 @@ def igp_reoccurrence():
         query_params = utils.get_query_params(period)
 
         reoccurrence_query = f"""
-                    SELECT
-                        SUM(CASE
-                            WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(current_interval)s
-                             AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
-                            THEN 1 ELSE 0 
-                        END) AS previous_window_count,
-                        SUM(CASE
-                            WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                             AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(current_interval)s
-                            THEN 1 ELSE 0 
-                        END) AS before_previous_window_count
-                    FROM crime_hotspot
-                    WHERE 
-                        case_number IS NOT NULL
-                        AND case_nature IN (
-                            'Any Other Dacoity', 'Any Other Robbery', 'Any Other Theft', 'Bank Burglary', 
-                            'Bank/Money Exchange/ ATM Dacoity', 'Bank/Money Exchange/ ATM Robbery', 
-                            'Car Snatching', 'Car Theft', 'Cattle Dacoity', 'Cattle Robbery', 'Cattle theft', 
-                            'Cycle Theft', 'Dacoity with Murder', 'Highway/Road/Street Dacoity', 
-                            'Highway/Road/Street Robbery', 'House Burglary', 'House Dacoity', 'House Robbery', 
-                            'Jewellery Shop Dacoity', 'Jewellery Shop Robbery', 'Mobile Theft', 'Motorcycle Snatching', 
-                            'Motorcycle Theft', 'Other Burglary', 'Other Vehicles Snatching', 'Other Vehicles Theft', 
-                            'Patrol Pump Dacoity', 'Patrol Pump Robbery', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 
-                            'Robbery with Murder', 'Shop Burglary', 'Shop Dacoity', 'Shop Robbery', 'Snatching/Jhapatta', 
-                            'Transformer/ Motor Theft', 'Weapon Theft'
-                        )
-                        {additional_condition}
-                """
+                            SELECT
+                                SUM(CASE
+                                    WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(current_interval)s
+                                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
+                                    THEN 1 ELSE 0 
+                                END) AS previous_window_count,
+                                SUM(CASE
+                                    WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                    THEN 1 ELSE 0 
+                                END) AS before_previous_window_count
+                            FROM crime_hotspot
+                            WHERE 
+                                case_number IS NOT NULL
+                                AND case_nature IN (
+                                    'Any Other Dacoity', 'Any Other Robbery', 'Any Other Theft', 'Bank Burglary', 
+                                    'Bank/Money Exchange/ ATM Dacoity', 'Bank/Money Exchange/ ATM Robbery', 
+                                    'Car Snatching', 'Car Theft', 'Cattle Dacoity', 'Cattle Robbery', 'Cattle theft', 
+                                    'Cycle Theft', 'Dacoity with Murder', 'Highway/Road/Street Dacoity', 
+                                    'Highway/Road/Street Robbery', 'House Burglary', 'House Dacoity', 'House Robbery', 
+                                    'Jewellery Shop Dacoity', 'Jewellery Shop Robbery', 'Mobile Theft', 'Motorcycle Snatching', 
+                                    'Motorcycle Theft', 'Other Burglary', 'Other Vehicles Snatching', 'Other Vehicles Theft', 
+                                    'Patrol Pump Dacoity', 'Patrol Pump Robbery', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 
+                                    'Robbery with Murder', 'Shop Burglary', 'Shop Dacoity', 'Shop Robbery', 'Snatching/Jhapatta', 
+                                    'Transformer/ Motor Theft', 'Weapon Theft'
+                                )
+                                {additional_condition}
+                        """
         predpol_db_cursor.execute(reoccurrence_query, query_params)
         result = predpol_db_cursor.fetchone()
         reoccurence_count_prev = result[0] if result is not None else 0
@@ -9202,122 +9308,116 @@ def igp_reoccurrence():
         district_reoccurrence_pct_dict = {}
         if len(districts) > 1:
             district_reoccurrence_pct_query = f"""
-                        SELECT 
-                            district,
-                            (
-                                (
-                                    SUM(CASE 
-                                        WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(current_interval)s
-                                         AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
-                                        THEN 1 ELSE 0 END
-                                    ) -
-                                    SUM(CASE 
-                                        WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(current_interval)s
-                                        THEN 1 ELSE 0 END
-                                    )
-                                )::NUMERIC
-                                /
-                                NULLIF(
-                                    SUM(CASE 
-                                        WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(current_interval)s
-                                        THEN 1 ELSE 0 END
-                                    ), 0
-                                )
-                            ) * 100 AS reoccurrence_percentage_change
-                        FROM crime_hotspot
-                        WHERE 
-                            TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                            AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
-                            AND case_number IS NOT NULL
-                            AND district IS NOT NULL
-                            AND case_nature IN (
-                                'Any Other Dacoity', 'Any Other Robbery', 'Any Other Theft', 'Bank Burglary', 
-                                'Bank/Money Exchange/ ATM Dacoity', 'Bank/Money Exchange/ ATM Robbery', 
-                                'Car Snatching', 'Car Theft', 'Cattle Dacoity', 'Cattle Robbery', 'Cattle theft', 
-                                'Cycle Theft', 'Dacoity with Murder', 'Highway/Road/Street Dacoity', 
-                                'Highway/Road/Street Robbery', 'House Burglary', 'House Dacoity', 'House Robbery', 
-                                'Jewellery Shop Dacoity', 'Jewellery Shop Robbery', 'Mobile Theft', 'Motorcycle Snatching', 
-                                'Motorcycle Theft', 'Other Burglary', 'Other Vehicles Snatching', 'Other Vehicles Theft', 
-                                'Patrol Pump Dacoity', 'Patrol Pump Robbery', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 
-                                'Robbery with Murder', 'Shop Burglary', 'Shop Dacoity', 'Shop Robbery', 'Snatching/Jhapatta', 
-                                'Transformer/ Motor Theft', 'Weapon Theft'
-                            )
-                            {additional_condition}
-                        GROUP BY district
-                        HAVING 
+                SELECT 
+                    district,
+                    (
+                        (
                             SUM(CASE 
-                                WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                 AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(current_interval)s
+                                WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(current_interval)s
+                                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
                                 THEN 1 ELSE 0 END
-                            ) != 0
-                        ORDER BY reoccurrence_percentage_change DESC
-                        LIMIT 3;
-                    """
-            predpol_db_cursor.execute(district_reoccurrence_pct_query, query_params)
-            result = predpol_db_cursor.fetchall()
-            for row in result:
-                district_id, pct = row
-                if utils.is_negative_float(pct):
-                    continue
-                district = configs.DISTRICTS_DICTIONARY.get(int(district_id), "")
-                district_reoccurrence_pct_dict[district] = round(float(pct), 2)
+                            ) -
+                            SUM(CASE 
+                                WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                THEN 1 ELSE 0 END
+                            )
+                        )::NUMERIC
+                        /
+                        NULLIF(
+                            SUM(CASE 
+                                WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                THEN 1 ELSE 0 END
+                            ), 0
+                        )
+                    ) * 100 AS reoccurrence_percentage_change
+                FROM crime_hotspot
+                WHERE 
+                    TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
+                    AND case_number IS NOT NULL
+                    AND district IS NOT NULL
+                    AND case_nature IN (
+                        'Any Other Dacoity', 'Any Other Robbery', 'Any Other Theft', 'Bank Burglary', 
+                        'Bank/Money Exchange/ ATM Dacoity', 'Bank/Money Exchange/ ATM Robbery', 
+                        'Car Snatching', 'Car Theft', 'Cattle Dacoity', 'Cattle Robbery', 'Cattle theft', 
+                        'Cycle Theft', 'Dacoity with Murder', 'Highway/Road/Street Dacoity', 
+                        'Highway/Road/Street Robbery', 'House Burglary', 'House Dacoity', 'House Robbery', 
+                        'Jewellery Shop Dacoity', 'Jewellery Shop Robbery', 'Mobile Theft', 'Motorcycle Snatching', 
+                        'Motorcycle Theft', 'Other Burglary', 'Other Vehicles Snatching', 'Other Vehicles Theft', 
+                        'Patrol Pump Dacoity', 'Patrol Pump Robbery', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 
+                        'Robbery with Murder', 'Shop Burglary', 'Shop Dacoity', 'Shop Robbery', 'Snatching/Jhapatta', 
+                        'Transformer/ Motor Theft', 'Weapon Theft'
+                    )
+                    {additional_condition}
+                GROUP BY district
+                HAVING 
+                    SUM(CASE 
+                        WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                             AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                        THEN 1 ELSE 0 END
+                    ) != 0
+                ORDER BY reoccurrence_percentage_change DESC
+                LIMIT 3;
+            """
         else:
             district_reoccurrence_pct_query = f"""
-                        SELECT 
-                            police_station,
-                            (
-                                (
-                                    SUM(CASE 
-                                        WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(current_interval)s
-                                         AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
-                                        THEN 1 ELSE 0 END
-                                    ) -
-                                    SUM(CASE 
-                                        WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(current_interval)s
-                                        THEN 1 ELSE 0 END
-                                    )
-                                )::NUMERIC
-                                /
-                                NULLIF(
-                                    SUM(CASE 
-                                        WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(current_interval)s
-                                        THEN 1 ELSE 0 END
-                                    ), 0
-                                )
-                            ) * 100 AS reoccurrence_percentage_change
-                        FROM crime_hotspot
-                        WHERE 
-                            TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                            AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
-                            AND case_number IS NOT NULL
-                            AND district IS NOT NULL
-                            AND case_nature IN (
-                                'Any Other Dacoity', 'Any Other Robbery', 'Any Other Theft', 'Bank Burglary', 
-                                'Bank/Money Exchange/ ATM Dacoity', 'Bank/Money Exchange/ ATM Robbery', 
-                                'Car Snatching', 'Car Theft', 'Cattle Dacoity', 'Cattle Robbery', 'Cattle theft', 
-                                'Cycle Theft', 'Dacoity with Murder', 'Highway/Road/Street Dacoity', 
-                                'Highway/Road/Street Robbery', 'House Burglary', 'House Dacoity', 'House Robbery', 
-                                'Jewellery Shop Dacoity', 'Jewellery Shop Robbery', 'Mobile Theft', 'Motorcycle Snatching', 
-                                'Motorcycle Theft', 'Other Burglary', 'Other Vehicles Snatching', 'Other Vehicles Theft', 
-                                'Patrol Pump Dacoity', 'Patrol Pump Robbery', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 
-                                'Robbery with Murder', 'Shop Burglary', 'Shop Dacoity', 'Shop Robbery', 'Snatching/Jhapatta', 
-                                'Transformer/ Motor Theft', 'Weapon Theft'
-                            )
-                            {additional_condition}
-                        GROUP BY police_station
-                        HAVING 
-                            SUM(CASE 
-                                WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                 AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(current_interval)s
-                                THEN 1 ELSE 0 END
-                            ) != 0
-                        ORDER BY reoccurrence_percentage_change DESC
-                        LIMIT 3;
-                    """
+                SELECT 
+                    police_station,
+                (
+                    (
+                        SUM(CASE 
+                            WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(current_interval)s
+                                 AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
+                            THEN 1 ELSE 0 END
+                        ) -
+                        SUM(CASE 
+                            WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            THEN 1 ELSE 0 END
+                        )
+                    )::NUMERIC
+                    /
+                    NULLIF(
+                        SUM(CASE 
+                            WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            THEN 1 ELSE 0 END
+                        ), 0
+                    )
+                ) * 100 AS reoccurrence_percentage_change
+                FROM crime_hotspot
+                WHERE 
+                    TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
+                    AND case_number IS NOT NULL
+                    AND district IS NOT NULL
+                    AND case_nature IN (
+                        'Any Other Dacoity', 'Any Other Robbery', 'Any Other Theft', 'Bank Burglary', 
+                        'Bank/Money Exchange/ ATM Dacoity', 'Bank/Money Exchange/ ATM Robbery', 
+                        'Car Snatching', 'Car Theft', 'Cattle Dacoity', 'Cattle Robbery', 'Cattle theft', 
+                        'Cycle Theft', 'Dacoity with Murder', 'Highway/Road/Street Dacoity', 
+                        'Highway/Road/Street Robbery', 'House Burglary', 'House Dacoity', 'House Robbery', 
+                        'Jewellery Shop Dacoity', 'Jewellery Shop Robbery', 'Mobile Theft', 'Motorcycle Snatching', 
+                        'Motorcycle Theft', 'Other Burglary', 'Other Vehicles Snatching', 'Other Vehicles Theft', 
+                        'Patrol Pump Dacoity', 'Patrol Pump Robbery', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 
+                        'Robbery with Murder', 'Shop Burglary', 'Shop Dacoity', 'Shop Robbery', 'Snatching/Jhapatta', 
+                        'Transformer/ Motor Theft', 'Weapon Theft'
+                    )
+                    {additional_condition}
+                GROUP BY police_station
+                HAVING 
+                    SUM(CASE 
+                        WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                             AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                        THEN 1 ELSE 0 END
+                    ) != 0
+                ORDER BY reoccurrence_percentage_change DESC
+                LIMIT 3;
+            """
+
+        # Execute query
             predpol_db_cursor.execute(district_reoccurrence_pct_query, query_params)
             result = predpol_db_cursor.fetchall()
             for row in result:
@@ -9372,43 +9472,43 @@ def igp_conference_calls():
         query_params = utils.get_query_params(period)
 
         success_conference_call_query = f"""
-                    WITH filtered_data AS (
-                        SELECT 
-                            field3,
-                            DATE(date) AS event_date
-                        FROM response_time
-                        WHERE parent_id = 0
-                          AND district_id IS NOT NULL
-                          AND police_station IS NOT NULL
-                          AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
-                          AND DATE(date) >= CURRENT_DATE - INTERVAL '14 days'
-                          AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
-                          {district_condition}
-                    ),
-                    time_ranges AS (
-                        SELECT 
-                            field3,
-                            CASE 
-                                WHEN event_date >= CURRENT_DATE - INTERVAL '7 days' 
-                                     AND event_date < CURRENT_DATE + INTERVAL '1 day' THEN 'prev'
-                                WHEN event_date >= CURRENT_DATE - INTERVAL '14 days' 
-                                     AND event_date < CURRENT_DATE - INTERVAL '7 days' THEN 'prior'
-                            END AS time_range
-                        FROM filtered_data
-                    )
-                    SELECT 
-                        SUM(CASE WHEN time_range = 'prev' AND field3 = 'Successful Conference call' 
-                                THEN 1 ELSE 0 END) AS prev_success_count,
-                        SUM(CASE WHEN time_range = 'prior' AND field3 = 'Successful Conference call' 
-                                THEN 1 ELSE 0 END) AS prior_success_count,
-                        SUM(CASE WHEN time_range = 'prev' AND field3 IN 
-                                ('Successful Conference call', 'FO did not attend the call', 'Number Powered Off', 'Out of PS Jurisdiction') 
-                                THEN 1 ELSE 0 END) AS prev_total_count,
-                        SUM(CASE WHEN time_range = 'prior' AND field3 IN 
-                                ('Successful Conference call', 'FO did not attend the call', 'Number Powered Off', 'Out of PS Jurisdiction') 
-                                THEN 1 ELSE 0 END) AS prior_total_count
-                    FROM time_ranges;
-                """
+            WITH filtered_data AS (
+                SELECT 
+                    field3,
+                    DATE(date) AS event_date
+                FROM response_time
+                WHERE parent_id = 0
+                  AND district_id IS NOT NULL
+                  AND police_station IS NOT NULL
+                  AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                  AND DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                  AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                  {district_condition}
+            ),
+            time_ranges AS (
+                SELECT 
+                    field3,
+                    CASE 
+                        WHEN event_date >= CURRENT_DATE - INTERVAL %(current_interval)s 
+                             AND event_date < CURRENT_DATE + INTERVAL '1 day' THEN 'prev'
+                        WHEN event_date >= CURRENT_DATE - INTERVAL %(previous_interval_end)s 
+                             AND event_date < CURRENT_DATE - INTERVAL %(current_interval)s THEN 'prior'
+                    END AS time_range
+                FROM filtered_data
+            )
+            SELECT 
+                SUM(CASE WHEN time_range = 'prev' AND field3 = 'Successful Conference call' 
+                        THEN 1 ELSE 0 END) AS prev_success_count,
+                SUM(CASE WHEN time_range = 'prior' AND field3 = 'Successful Conference call' 
+                        THEN 1 ELSE 0 END) AS prior_success_count,
+                SUM(CASE WHEN time_range = 'prev' AND field3 IN 
+                        ('Successful Conference call', 'FO did not attend the call', 'Number Powered Off', 'Out of PS Jurisdiction') 
+                        THEN 1 ELSE 0 END) AS prev_total_count,
+                SUM(CASE WHEN time_range = 'prior' AND field3 IN 
+                        ('Successful Conference call', 'FO did not attend the call', 'Number Powered Off', 'Out of PS Jurisdiction') 
+                        THEN 1 ELSE 0 END) AS prior_total_count
+            FROM time_ranges;
+        """
         processed_db_cursor.execute(success_conference_call_query, query_params)
         successful_conf_prev, successful_conf_prior, total_conf_prev, total_conf_prior = processed_db_cursor.fetchone()
 
@@ -9563,8 +9663,8 @@ def igp_negative_feedback():
                             THEN 1 ELSE 0 
                         END) AS current_period_negative_count,
                         SUM(CASE 
-                            WHEN date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                 AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
                                  AND caller_feedback = 'Negative'
                             THEN 1 ELSE 0 
                         END) AS previous_period_negative_count
@@ -9723,121 +9823,143 @@ def igp_dashboard_categories():
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
     vcm_conn = db_config.get_vcm_db_connection()
     vcm_cursor = vcm_conn.cursor()
+
     try:
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
         period = request.form.get('period', 'week')
         police_station_str = request.form.get('police_station')
 
+        # Validate input parameters
         districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
             district_str, view_role, period, police_station_str)
+        if error_response:
+            return error_response, status_code
 
+        # Build SQL conditions based on district / role
         district_condition, additional_condition, _ = utils.get_district_conditions(view_role, district_ids, districts)
+
+        # Get period-based query parameters
         period_start_pg, period_start_mysql, query_params = utils.get_period_params(period)
 
+        # Fetch crime category stats
         category_query = f"""
-                    SELECT
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
-                                  AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
-                                  AND date(date) < CURRENT_DATE + INTERVAL '1 day'
-                        ) AS terrorism_current,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature IN (
-                                'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
-                                'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
-                            )
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
-                            AND date(date) < CURRENT_DATE + INTERVAL '1 day'
-                        ) AS dacoity_current,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature IN (
-                                'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
-                                'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
-                                'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
-                                'Robbery with Murder'
-                            )
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
-                            AND date(date) < CURRENT_DATE + INTERVAL '1 day'
-                        ) AS robbery_snatching_current,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature IN ('Rape','Child Abuse / Molestation')
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
-                            AND date(date) < CURRENT_DATE + INTERVAL '1 day'
-                        ) AS rape_sodomy_current,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature = 'Murder'
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
-                            AND date(date) < CURRENT_DATE + INTERVAL '1 day'
-                        ) AS murder_current,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature = 'Dacoity with Murder'
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
-                            AND date(date) < CURRENT_DATE + INTERVAL '1 day'
-                        ) AS dacoity_with_murder_current,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
-                                  AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                  AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                        ) AS terrorism_previous,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature IN (
-                                'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
-                                'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
-                            )
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                        ) AS dacoity_previous,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature IN (
-                                'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
-                                'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
-                                'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
-                                'Robbery with Murder'
-                            )
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                        ) AS robbery_snatching_previous,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature IN ('Rape','Child Abuse / Molestation')
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                        ) AS rape_sodomy_previous,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature = 'Murder'
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                        ) AS murder_previous,
-                        COUNT(*) FILTER (
-                            WHERE level3_case_nature = 'Dacoity with Murder'
-                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                        ) AS dacoity_with_murder_previous
-                    FROM response_time
-                    WHERE 
-                        police_station IS NOT NULL
-                        AND response_time IS NOT NULL
-                        AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                        AND parent_id = 0
-                        AND response_time > 0
-                        AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
-                        {district_condition};
-                """
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                          AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                          AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                ) AS terrorism_current,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
+                        'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
+                    )
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                ) AS dacoity_current,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                        'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                        'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
+                        'Robbery with Murder'
+                    )
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                ) AS robbery_snatching_current,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Rape','Child Abuse / Molestation')
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                ) AS rape_sodomy_current,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Murder'
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                ) AS murder_current,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Dacoity with Murder'
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                ) AS dacoity_with_murder_current,
+
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                          AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                          AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                ) AS terrorism_previous,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
+                        'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
+                    )
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                ) AS dacoity_previous,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                        'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                        'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
+                        'Robbery with Murder'
+                    )
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                ) AS robbery_snatching_previous,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN ('Rape','Child Abuse / Molestation')
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                ) AS rape_sodomy_previous,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Murder'
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                ) AS murder_previous,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature = 'Dacoity with Murder'
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                ) AS dacoity_with_murder_previous
+            FROM response_time
+            WHERE 
+                police_station IS NOT NULL
+                AND response_time IS NOT NULL
+                AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                AND parent_id = 0
+                AND response_time > 0
+                AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
+                {district_condition};
+        """
+
         processed_db_cursor.execute(category_query, query_params)
         category_stats = processed_db_cursor.fetchone()
 
         (terrorism_prev, dacoity_prev, robbery_snatching_prev, rape_sodomy_cat_prev, murder_prev,
          dacoity_with_murder_prev, terrorism_prior, dacoity_prior, robbery_snatching_prior,
-         rape_sodomy_cat_prior, murder_prior, dacoity_with_murder_prior) = category_stats
+         rape_sodomy_cat_prior, murder_prior, dacoity_with_murder_prior) = category_stats or (0,) * 12
 
-        terrorism_pct_chng = utils.compute_pct_change(terrorism_prev, terrorism_prior)
-        dacoity_pct_chng = utils.compute_pct_change(dacoity_prev, dacoity_prior)
-        robbery_snatching_pct_chng = utils.compute_pct_change(robbery_snatching_prev, robbery_snatching_prior)
-        rape_sodomy_cat_pct_chng = utils.compute_pct_change(rape_sodomy_cat_prev, rape_sodomy_cat_prior)
-        murder_pct_chng = utils.compute_pct_change(murder_prev, murder_prior)
-        dacoity_with_murder_pct_chng = utils.compute_pct_change(dacoity_with_murder_prev, dacoity_with_murder_prior)
+        # Adjust counts
+        terrorism_current, terrorism_previous = utils.adjust_counts(terrorism_prev, terrorism_prior)
+        dacoity_current, dacoity_previous = utils.adjust_counts(dacoity_prev, dacoity_prior)
+        robbery_snatching_current, robbery_snatching_previous = utils.adjust_counts(robbery_snatching_prev, robbery_snatching_prior)
+        rape_sodomy_cat_current, rape_sodomy_cat_previous = utils.adjust_counts(rape_sodomy_cat_prev, rape_sodomy_cat_prior)
+        murder_current, murder_previous = utils.adjust_counts(murder_prev, murder_prior)
+        dacoity_with_murder_current, dacoity_with_murder_previous = utils.adjust_counts(dacoity_with_murder_prev, dacoity_with_murder_prior)
 
+        # Compute percentage change
+        terrorism_pct_chng = utils.compute_pct_change(terrorism_current, terrorism_previous)
+        dacoity_pct_chng = utils.compute_pct_change(dacoity_current, dacoity_previous)
+        robbery_snatching_pct_chng = utils.compute_pct_change(robbery_snatching_current, robbery_snatching_previous)
+        rape_sodomy_cat_pct_chng = utils.compute_pct_change(rape_sodomy_cat_current, rape_sodomy_cat_prior)
+        murder_pct_chng = utils.compute_pct_change(murder_current, murder_previous)
+        dacoity_with_murder_pct_chng = utils.compute_pct_change(dacoity_with_murder_current, dacoity_with_murder_previous)
+
+        # Dictionary to store least performers by category
         category_dicts = defaultdict(dict)
+
+        # Fetch top underperforming districts or PSs
         if len(districts) > 1:
             least_performer_dist_query = f"""
                         WITH base_data AS (
@@ -9846,23 +9968,16 @@ def igp_dashboard_categories():
                                 district_id,
                                 SUM(CASE WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
                                          AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
-                                         THEN 1 ELSE 0 
-                                    END) AS recent_count,
-                                SUM(CASE WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                                         THEN 1 ELSE 0 
-                                    END) AS previous_count
+                                    THEN 1 ELSE 0 END) AS recent_count,
+                                SUM(CASE WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                         AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                    THEN 1 ELSE 0 END) AS previous_count
                             FROM response_time
                             CROSS JOIN LATERAL (
                                 VALUES 
                                     ('terrorism', ARRAY['Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack']),
-                                    ('dacoity', ARRAY['Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
-                                                      'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity']),
-                                    ('robbery_snatching', ARRAY['Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery',
-                                                                'House Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 
-                                                                'Bank/Money Exchange/ ATM Robbery', 'Car Snatching', 
-                                                                'Other Vehicles Snatching', 'Snatching/Jhapatta', 
-                                                                'Motorcycle Snatching', 'Jewellery Shop Robbery', 'Robbery with Murder']),
+                                    ('dacoity', ARRAY['Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity']),
+                                    ('robbery_snatching', ARRAY['Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching', 'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery', 'Robbery with Murder']),
                                     ('rape_sodomy', ARRAY['Rape','Child Abuse / Molestation']),
                                     ('murder', ARRAY['Murder']),
                                     ('dacoity_with_murder', ARRAY['Dacoity with Murder'])
@@ -9881,11 +9996,9 @@ def igp_dashboard_categories():
                             SELECT 
                                 category,
                                 district_id,
-                                previous_count,
-                                recent_count,
                                 ROUND(100.0 * (recent_count - previous_count) / previous_count, 2) AS percentage_change
                             FROM base_data
-                            WHERE previous_count > 0 AND (recent_count - previous_count) > 0
+                            WHERE previous_count > 0 AND recent_count > previous_count
                         ),
                         ranked_changes AS (
                             SELECT *,
@@ -9901,10 +10014,6 @@ def igp_dashboard_categories():
                         ORDER BY category, percentage_change DESC;
                     """
             processed_db_cursor.execute(least_performer_dist_query, query_params)
-            category_performers = processed_db_cursor.fetchall()
-            for row in category_performers:
-                category, district_id, count = row
-                category_dicts[category][configs.DISTRICTS_DICTIONARY.get(district_id, "")] = count
         else:
             least_performer_dist_query = f"""
                         WITH base_data AS (
@@ -9913,23 +10022,16 @@ def igp_dashboard_categories():
                                 police_station,
                                 SUM(CASE WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
                                          AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
-                                         THEN 1 ELSE 0 
-                                    END) AS recent_count,
-                                SUM(CASE WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                         AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
-                                         THEN 1 ELSE 0 
-                                    END) AS previous_count
+                                    THEN 1 ELSE 0 END) AS recent_count,
+                                SUM(CASE WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                         AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                    THEN 1 ELSE 0 END) AS previous_count
                             FROM response_time
                             CROSS JOIN LATERAL (
                                 VALUES 
                                     ('terrorism', ARRAY['Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack']),
-                                    ('dacoity', ARRAY['Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
-                                                      'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity']),
-                                    ('robbery_snatching', ARRAY['Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery',
-                                                                'House Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 
-                                                                'Bank/Money Exchange/ ATM Robbery', 'Car Snatching', 
-                                                                'Other Vehicles Snatching', 'Snatching/Jhapatta', 
-                                                                'Motorcycle Snatching', 'Jewellery Shop Robbery', 'Robbery with Murder']),
+                                    ('dacoity', ARRAY['Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity']),
+                                    ('robbery_snatching', ARRAY['Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery', 'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching', 'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery', 'Robbery with Murder']),
                                     ('rape_sodomy', ARRAY['Rape','Child Abuse / Molestation']),
                                     ('murder', ARRAY['Murder']),
                                     ('dacoity_with_murder', ARRAY['Dacoity with Murder'])
@@ -9948,11 +10050,9 @@ def igp_dashboard_categories():
                             SELECT 
                                 category,
                                 police_station,
-                                previous_count,
-                                recent_count,
                                 ROUND(100.0 * (recent_count - previous_count) / previous_count, 2) AS percentage_change
                             FROM base_data
-                            WHERE previous_count > 0 AND (recent_count - previous_count) > 0
+                            WHERE previous_count > 0 AND recent_count > previous_count
                         ),
                         ranked_changes AS (
                             SELECT *,
@@ -9968,178 +10068,172 @@ def igp_dashboard_categories():
                         ORDER BY category, percentage_change DESC;
                     """
             processed_db_cursor.execute(least_performer_dist_query, query_params)
-            category_performers = processed_db_cursor.fetchall()
-            for row in category_performers:
-                category, police_station, count = row
-                category_dicts[category][police_station] = count
 
-        terrorism_dict = category_dicts.get('terrorism', {})
-        dacoity_dict = category_dicts.get('dacoity', {})
-        robbery_snatching_dict = category_dicts.get('robbery_snatching', {})
-        rape_sodomy_dict = category_dicts.get('rape_sodomy', {})
-        murder_dict = category_dicts.get('murder', {})
-        dacoity_with_murder_dict = category_dicts.get('dacoity_with_murder', {})
+        # Map results to dictionaries
+        category_performers = processed_db_cursor.fetchall()
+        for row in category_performers:
+            category, key, count = row
+            label = configs.DISTRICTS_DICTIONARY.get(key, key) if len(districts) > 1 else key
+            category_dicts[category][label] = count
 
+        # Fetch FIR stats
         fir_stats_query = f"""
-                    SELECT SUM(dacoity),SUM(minorities),
-                           SUM(burglary), SUM(robbery_snatching),
-                           SUM(murder), SUM(dacoity_with_murder), (SUM(rape) + SUM(child_abuse)) AS rape_sodomy,
-                           SUM(terrorist_act)
+                    SELECT 
+                        SUM(dacoity), SUM(minorities),
+                        SUM(burglary), SUM(robbery_snatching),
+                        SUM(murder), SUM(dacoity_with_murder), 
+                        (SUM(rape) + SUM(child_abuse)) AS rape_sodomy,
+                        SUM(terrorist_act)
                     FROM fir_cases
-                    WHERE date(date) >= {period_start_pg}
+                    WHERE date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
                     {district_condition}
                 """
-        processed_db_cursor.execute(fir_stats_query)
+        processed_db_cursor.execute(fir_stats_query, query_params)
         fir_stats = processed_db_cursor.fetchone()
-
         (dacoity_fir, minorities_fir, burglary_fir, robbery_snatching_fir,
          murder_fir, dacoity_with_murder_fir, rape_sodomy_fir,
-         terrorism_fir) = fir_stats
+         terrorism_fir) = fir_stats or (0,) * 8
 
-        params = {
-            'week': {'current_interval': 7, 'previous_interval_end': 14},
-            'month': {'current_interval': 30, 'previous_interval_end': 60}
-        }[period]
+        # VCM Minority Query
+        if period == "last15days_yearly":
+            vcm_minority_query = f"""
+                        SELECT
+                            SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL 14 DAY THEN 1 ELSE 0 END),
+                            SUM(CASE WHEN DATE(created_at) >= (CURDATE() - INTERVAL 14 DAY) - INTERVAL 1 YEAR
+                                     AND DATE(created_at) < CURDATE() - INTERVAL 1 YEAR
+                                THEN 1 ELSE 0 END)
+                        FROM case_final_status
+                        WHERE district_id IS NOT NULL
+                        {district_condition}
+                    """
+        else:
+            mysql_params = {
+                'week': {'current_interval': 7, 'previous_interval': 14},
+                'month': {'current_interval': 30, 'previous_interval': 60},
+                'last90days': {'current_interval': 90, 'previous_interval': 180}
+            }.get(period, {'current_interval': 7, 'previous_interval': 14})
 
-        vcm_minority_query = f"""
-                            SELECT
-                            SUM(CASE WHEN created_at >= CURDATE() - INTERVAL {params['current_interval']} DAY
-                                         AND created_at < CURDATE() + INTERVAL 1 DAY
-                                    THEN 1 ELSE 0 
-                                END) AS current_count,
+            vcm_minority_query = f"""
+                        SELECT
+                            SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL {mysql_params['current_interval']} DAY
+                                     AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                                THEN 1 ELSE 0 END),
+                            SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL {mysql_params['previous_interval']} DAY
+                                     AND DATE(created_at) < CURDATE() - INTERVAL {mysql_params['current_interval']} DAY
+                                THEN 1 ELSE 0 END)
+                        FROM case_final_status
+                        WHERE district_id IS NOT NULL
+                        {district_condition}
+                    """
 
-                                SUM(CASE 
-                                        WHEN created_at >= CURDATE() - INTERVAL {params['previous_interval_end']} DAY
-                                         AND created_at < CURDATE() - INTERVAL {params['current_interval']} DAY
-                                    THEN 1 ELSE 0 
-                                END) AS previous_count
-                            FROM case_final_status
-                            WHERE created_at >= CURDATE() - INTERVAL {params['previous_interval_end']} DAY
-                            AND district_id IS NOT NULL
-                            {district_condition}
-                            """
-        vcm_cursor.execute(vcm_minority_query, )
+        vcm_cursor.execute(vcm_minority_query)
         row = vcm_cursor.fetchone()
-        minority_count_prev = row[0] if row is not None else 0
-        minority_count_prior = row[1] if row is not None else 0
-
+        minority_count_prev = row[0] if row else 0
+        minority_count_prior = row[1] if row else 0
+        minority_count_prev, minority_count_prior = utils.adjust_counts(minority_count_prev, minority_count_prior)
         minority_pct_chng = utils.compute_pct_change(minority_count_prev, minority_count_prior)
 
         minorities_dict = {}
         if len(districts) > 1:
             least_performer_minority_query = f"""
-                            SELECT
-                                district_id,
-                                ROUND(100 * (current_count - previous_count) / previous_count, 2) AS pct_change
-                            FROM (
-                                SELECT
-                                    district_id,
-                                    SUM(CASE 
-                                            WHEN created_at >= CURDATE() - INTERVAL {params['current_interval']} DAY
-                                                 AND created_at < CURDATE() + INTERVAL 1 DAY
-                                            THEN 1 ELSE 0 
-                                        END) AS current_count,
-                                    SUM(CASE 
-                                            WHEN created_at >= CURDATE() - INTERVAL {params['previous_interval_end']} DAY
-                                                 AND created_at < CURDATE() - INTERVAL {params['current_interval']} DAY
-                                            THEN 1 ELSE 0 
-                                        END) AS previous_count
-                                FROM case_final_status
-                                WHERE 
-                                    district_id IS NOT NULL
-                                    {district_condition}
-                                GROUP BY district_id
-                            ) AS period_counts
-                            WHERE previous_count > 0 AND current_count - previous_count > 0
-                            ORDER BY pct_change DESC
-                            LIMIT 3;
-                    """
-            vcm_cursor.execute(least_performer_minority_query)
-            rows = vcm_cursor.fetchall()
-
-            # Build dictionary: {district_id: minority_count}
-            minorities_dict = {configs.DISTRICTS_DICTIONARY[row[0]]: row[1] for row in rows}
+                       SELECT
+                           district_id,
+                           ROUND(100 * (current_count - previous_count) / previous_count, 2) AS pct_change
+                       FROM (
+                           SELECT
+                               district_id,
+                               SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL %(current_interval)s DAY
+                                   THEN 1 ELSE 0 END) AS current_count,
+                               SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY
+                                   AND DATE(created_at) < CURDATE() - INTERVAL %(current_interval)s DAY
+                                   THEN 1 ELSE 0 END) AS previous_count
+                           FROM case_final_status
+                           WHERE district_id IS NOT NULL
+                           {district_condition}
+                           GROUP BY district_id
+                       ) AS period_counts
+                       WHERE previous_count > 0 AND current_count > previous_count
+                       ORDER BY pct_change DESC
+                       LIMIT 3;
+                   """
         else:
             least_performer_minority_query = f"""
-                                        SELECT
-                                            pucar_police_station,
-                                            ROUND(100 * (current_count - previous_count) / previous_count, 2) AS pct_change
-                                        FROM (
-                                            SELECT
-                                                pucar_police_station,
-                                                SUM(CASE 
-                                                        WHEN created_at >= CURDATE() - INTERVAL {params['current_interval']} DAY
-                                                             AND created_at < CURDATE() + INTERVAL 1 DAY
-                                                        THEN 1 ELSE 0 
-                                                    END) AS current_count,
-                                                SUM(CASE 
-                                                        WHEN created_at >= CURDATE() - INTERVAL {params['previous_interval_end']} DAY
-                                                             AND created_at < CURDATE() - INTERVAL {params['current_interval']} DAY
-                                                        THEN 1 ELSE 0 
-                                                    END) AS previous_count
-                                            FROM case_final_status
-                                            WHERE 
-                                                district_id IS NOT NULL
-                                                {district_condition}
-                                            GROUP BY pucar_police_station
-                                        ) AS period_counts
-                                        WHERE previous_count > 0 AND current_count - previous_count > 0
-                                        ORDER BY pct_change DESC
-                                        LIMIT 3;
-                                """
-            vcm_cursor.execute(least_performer_minority_query)
-            rows = vcm_cursor.fetchall()
+                       SELECT
+                           pucar_police_station,
+                           ROUND(100 * (current_count - previous_count) / previous_count, 2) AS pct_change
+                       FROM (
+                           SELECT
+                               pucar_police_station,
+                               SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL %(current_interval)s DAY
+                                   THEN 1 ELSE 0 END) AS current_count,
+                               SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY
+                                   AND DATE(created_at) < CURDATE() - INTERVAL %(current_interval)s DAY
+                                   THEN 1 ELSE 0 END) AS previous_count
+                           FROM case_final_status
+                           WHERE district_id IS NOT NULL
+                           {district_condition}
+                           GROUP BY pucar_police_station
+                       ) AS period_counts
+                       WHERE previous_count > 0 AND current_count > previous_count
+                       ORDER BY pct_change DESC
+                       LIMIT 3;
+                   """
 
-            # Build dictionary: {police_station: minority_count}
-            minorities_dict = {row[0]: row[1] for row in rows}
+        vcm_cursor.execute(least_performer_minority_query, query_params)
+        rows = vcm_cursor.fetchall()
+        for row in rows:
+            key, count = row
+            label = configs.DISTRICTS_DICTIONARY.get(int(key), key) if len(districts) > 1 else key
+            minorities_dict[label] = round(float(count), 2)
 
-
+        # Build dashboard data
         dashboard_data = {
             'terrorist_act': {
-                'prev': terrorism_prev,
-                'prior': terrorism_prior,
+                'prev': terrorism_current,
+                'prior': terrorism_previous,
                 'fir': terrorism_fir,
                 'pct_chng': terrorism_pct_chng,
-                'least_performers': terrorism_dict
+                'least_performers': category_dicts.get('terrorism', {})
             },
             'dacoity': {
-                'prev': dacoity_prev,
-                'prior': dacoity_prior,
+                'prev': dacoity_current,
+                'prior': dacoity_previous,
                 'fir': dacoity_fir,
                 'pct_chng': dacoity_pct_chng,
-                'least_performers': dacoity_dict
+                'least_performers': category_dicts.get('dacoity', {})
             },
             'dacoity_with_murder': {
-                'prev': dacoity_with_murder_prev,
-                'prior': dacoity_with_murder_prior,
+                'prev': dacoity_with_murder_current,
+                'prior': dacoity_with_murder_previous,
                 'pct_chng': dacoity_with_murder_pct_chng,
                 'fir': dacoity_with_murder_fir,
-                'least_performers': dacoity_with_murder_dict
+                'least_performers': category_dicts.get('dacoity_with_murder', {})
             },
             'robbery_snatching': {
-                'prev': robbery_snatching_prev,
-                'prior': robbery_snatching_prior,
+                'prev': robbery_snatching_current,
+                'prior': robbery_snatching_previous,
                 'pct_chng': robbery_snatching_pct_chng,
                 'fir': robbery_snatching_fir,
-                'least_performers': robbery_snatching_dict
+                'least_performers': category_dicts.get('robbery_snatching', {})
             },
             'rape_sodomy': {
-                'prev': rape_sodomy_cat_prev,
+                'prev': rape_sodomy_cat_current,
                 'prior': rape_sodomy_cat_prior,
                 'pct_chng': rape_sodomy_cat_pct_chng,
                 'fir': rape_sodomy_fir,
-                'least_performers': rape_sodomy_dict
+                'least_performers': category_dicts.get('rape_sodomy', {})
             },
             'murder': {
-                'prev': murder_prev,
-                'prior': murder_prior,
+                'prev': murder_current,
+                'prior': murder_previous,
                 'pct_chng': murder_pct_chng,
                 'fir': murder_fir,
-                'least_performers': murder_dict
+                'least_performers': category_dicts.get('murder', {})
             },
             'police_encounter': {
                 'prev': 0,
                 'prior': 0,
+                'pct_chng': 0,
                 'fir': 0,
                 'least_performers': {}
             },
@@ -10147,8 +10241,8 @@ def igp_dashboard_categories():
                 'prev': minority_count_prev,
                 'prior': minority_count_prior,
                 'pct_chng': minority_pct_chng,
-               'fir': minorities_fir,
-               'least_performers': minorities_dict
+                'fir': minorities_fir,
+                'least_performers': minorities_dict
             }
         }
 
@@ -10159,32 +10253,28 @@ def igp_dashboard_categories():
             "success": True,
             "data": {
                 'dashboard_data': dashboard_data,
-                'date_ranges' : utils.get_date_ranges(period)
+                'date_ranges': utils.get_date_ranges(period)
             },
             "message": "Dashboard Insights fetched successfully"
         }
+
         return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
-        if vcm_cursor.close():
-            vcm_cursor.close()
-        if vcm_conn.close():
-            vcm_conn.close()
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}'
-        }), 400
+        }), 500
+
     finally:
         log_db_cursor.close()
         log_db_pool.putconn(log_db_conn)
-
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
-
-        if vcm_cursor.close():
+        if vcm_cursor:
             vcm_cursor.close()
-        if vcm_conn.close():
+        if vcm_conn:
             vcm_conn.close()
 
 
@@ -10199,96 +10289,217 @@ def igp_missing_girl_child():
     vccs_cursor = vccs_conn.cursor()
     vwps_conn = db_config.get_vwps_db_connection()
     vwps_cursor = vwps_conn.cursor()
+
     try:
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
         period = request.form.get('period', 'week')
         police_station_str = request.form.get('police_station')
 
+        # Validate parameters
         districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
             district_str, view_role, period, police_station_str)
+        if error_response:
+            return error_response, status_code
 
+        # Build additional condition based on district/role
         additional_condition = ""
         if view_role == 2 and len(districts) == 1:
             additional_condition = f"AND district_id = {district_ids[0]}"
         elif view_role in [3, 4] and district_ids:
-            additional_condition =  f"AND district_id IN ({', '.join(map(str, district_ids))})"
+            additional_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
 
-        query_params = {
-            "current_interval": "7",
-            "previous_interval_end": "14"
-        } if period == "week" else {
-            "current_interval": "30",
-            "previous_interval_end": "60"
-        }
-
+        # Get date ranges
         date_ranges = utils.get_date_ranges(period)
 
-        vccs_missing_query = f"""
-                    SELECT
-                        SUM(CASE 
-                            WHEN level3_case_nature IN ('Child Lost/ Missing', 'Missing Person reported')
-                                 AND created_at >= CURDATE() - INTERVAL {query_params['current_interval']} DAY
-                                 AND created_at < CURDATE() + INTERVAL 1 DAY
-                            THEN 1 ELSE 0 END) AS children_missing_current,
-                        SUM(CASE 
-                            WHEN is_lost_case = 1 AND is_handed_over = 1
-                                 AND created_at >= CURDATE() - INTERVAL {query_params['current_interval']} DAY
-                                 AND created_at < CURDATE() + INTERVAL 1 DAY
-                            THEN 1 ELSE 0 END) AS children_found_current,
-                        SUM(CASE 
-                            WHEN level3_case_nature IN ('Child Lost/ Missing', 'Missing Person reported')
-                                 AND created_at >= CURDATE() - INTERVAL {query_params['previous_interval_end']} DAY
-                                 AND created_at < CURDATE() - INTERVAL {query_params['current_interval']} DAY
-                            THEN 1 ELSE 0 END) AS children_missing_previous,
-                        SUM(CASE 
-                            WHEN is_lost_case = 1 AND is_handed_over = 1
-                                 AND created_at >= CURDATE() - INTERVAL {query_params['previous_interval_end']} DAY
-                                 AND created_at < CURDATE() - INTERVAL {query_params['current_interval']} DAY
-                            THEN 1 ELSE 0 END) AS children_found_previous
-                    FROM case_final_status
-                    WHERE district_id IS NOT NULL
-                    {additional_condition}
-                """
+        # Define query params based on period
+        if period == "last15days_yearly":
+            current_days = 14
+            vccs_missing_query = f"""
+                SELECT
+                    SUM(CASE 
+                        WHEN level3_case_nature IN ('Child Lost/ Missing', 'Missing Person reported')
+                             AND DATE(created_at) >= CURDATE() - INTERVAL 14 DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS children_missing_current,
+
+                    SUM(CASE 
+                        WHEN is_lost_case = 1 AND is_handed_over = 1
+                             AND DATE(created_at) >= CURDATE() - INTERVAL 14 DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS children_found_current,
+
+                    SUM(CASE 
+                        WHEN level3_case_nature IN ('Child Lost/ Missing', 'Missing Person reported')
+                             AND DATE(created_at) >= (CURDATE() - INTERVAL 14 DAY) - INTERVAL 1 YEAR
+                             AND DATE(created_at) < CURDATE() - INTERVAL 1 YEAR
+                        THEN 1 ELSE 0 END) AS children_missing_previous,
+
+                    SUM(CASE 
+                        WHEN is_lost_case = 1 AND is_handed_over = 1
+                             AND DATE(created_at) >= (CURDATE() - INTERVAL 14 DAY) - INTERVAL 1 YEAR
+                             AND DATE(created_at) < CURDATE() - INTERVAL 1 YEAR
+                        THEN 1 ELSE 0 END) AS children_found_previous,
+
+                    SUM(CASE 
+                        WHEN pucar_level3_case_nature_id IN (594,595,495,493)
+                             AND is_closed = 0
+                             AND (is_handed_over IS NULL OR is_handed_over = 0)
+                             AND DATE(created_at) >= CURDATE() - INTERVAL 14 DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS children_still_missing_current,
+
+                    SUM(CASE 
+                        WHEN pucar_level3_case_nature_id IN (594,595,495,493)
+                             AND is_closed = 0
+                             AND (is_handed_over IS NULL OR is_handed_over = 0)
+                             AND DATE(created_at) >= (CURDATE() - INTERVAL 14 DAY) - INTERVAL 1 YEAR
+                             AND DATE(created_at) < CURDATE() - INTERVAL 1 YEAR
+                        THEN 1 ELSE 0 END) AS children_still_missing_previous
+                FROM case_final_status
+                WHERE district_id IS NOT NULL
+                {additional_condition}
+            """
+        else:
+            interval_map = {
+                "week": {"current_interval": 7, "previous_interval_end": 14},
+                "month": {"current_interval": 30, "previous_interval_end": 60},
+                "last90days": {"current_interval": 90, "previous_interval_end": 180}
+            }.get(period, {"current_interval": 7, "previous_interval_end": 14})
+
+            current_days = interval_map["current_interval"]
+            previous_days = interval_map["previous_interval_end"]
+
+            vccs_missing_query = f"""
+                SELECT
+                    SUM(CASE 
+                        WHEN level3_case_nature IN ('Child Lost/ Missing', 'Missing Person reported')
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {current_days} DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS children_missing_current,
+
+                    SUM(CASE 
+                        WHEN is_lost_case = 1 AND is_handed_over = 1
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {current_days} DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS children_found_current,
+
+                    SUM(CASE 
+                        WHEN level3_case_nature IN ('Child Lost/ Missing', 'Missing Person reported')
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {previous_days} DAY
+                             AND DATE(created_at) < CURDATE() - INTERVAL {current_days} DAY
+                        THEN 1 ELSE 0 END) AS children_missing_previous,
+
+                    SUM(CASE 
+                        WHEN is_lost_case = 1 AND is_handed_over = 1
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {previous_days} DAY
+                             AND DATE(created_at) < CURDATE() - INTERVAL {current_days} DAY
+                        THEN 1 ELSE 0 END) AS children_found_previous,
+
+                    SUM(CASE 
+                        WHEN pucar_level3_case_nature_id IN (594,595,495,493)
+                             AND is_closed = 0
+                             AND (is_handed_over IS NULL OR is_handed_over = 0)
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {current_days} DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS children_still_missing_current,
+
+                    SUM(CASE 
+                        WHEN pucar_level3_case_nature_id IN (594,595,495,493)
+                             AND is_closed = 0
+                             AND (is_handed_over IS NULL OR is_handed_over = 0)
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {previous_days} DAY
+                             AND DATE(created_at) < CURDATE() - INTERVAL {current_days} DAY
+                        THEN 1 ELSE 0 END) AS children_still_missing_previous
+                FROM case_final_status
+                WHERE district_id IS NOT NULL
+                {additional_condition}
+            """
+
+        # Execute VCCS query
         vccs_cursor.execute(vccs_missing_query)
         result = vccs_cursor.fetchone()
-        child_lost_prev, child_found_prev, child_lost_prior, child_found_prior = result or (0, 0, 0, 0)
+        child_lost_prev, child_found_prev, child_lost_prior, child_found_prior, child_still_missing_prev, child_still_missing_prior = result or (0,) * 6
 
-        vwps_missing_query = f"""
-                    SELECT
-                        SUM(CASE WHEN level3_case_nature = 'Missing Person reported' 
-                                 AND created_at >= CURDATE() - INTERVAL {query_params['current_interval']} DAY
-                                 AND created_at < CURDATE() + INTERVAL 1 DAY
-                            THEN 1 ELSE 0 END) AS girls_missing_current,
-                        SUM(CASE WHEN is_lost_case = 1 AND is_handed_over = 1
-                                 AND created_at >= CURDATE() - INTERVAL {query_params['current_interval']} DAY
-                                 AND created_at < CURDATE() + INTERVAL 1 DAY
-                            THEN 1 ELSE 0 END) AS girls_found_current,
-                        SUM(CASE WHEN level3_case_nature = 'Missing Person reported'
-                                 AND created_at >= CURDATE() - INTERVAL {query_params['previous_interval_end']} DAY
-                                 AND created_at < CURDATE() - INTERVAL {query_params['current_interval']} DAY
-                            THEN 1 ELSE 0 END) AS girls_missing_previous,
-                        SUM(CASE WHEN is_lost_case = 1 AND is_handed_over = 1
-                                 AND created_at >= CURDATE() - INTERVAL {query_params['previous_interval_end']} DAY
-                                 AND created_at < CURDATE() - INTERVAL {query_params['current_interval']} DAY
-                            THEN 1 ELSE 0 END) AS girls_found_previous
-                    FROM case_final_status
-                    WHERE district_id IS NOT NULL
-                    {additional_condition}
-                """
+        # VWPS Girls Missing Query
+        if period == "last15days_yearly":
+            vwps_missing_query = f"""
+                SELECT
+                    SUM(CASE 
+                        WHEN level3_case_nature = 'Missing Person reported'
+                             AND DATE(created_at) >= CURDATE() - INTERVAL 14 DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS girls_missing_current,
+
+                    SUM(CASE 
+                        WHEN is_lost_case = 1 AND is_handed_over = 1
+                             AND DATE(created_at) >= CURDATE() - INTERVAL 14 DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS girls_found_current,
+
+                    SUM(CASE 
+                        WHEN level3_case_nature = 'Missing Person reported'
+                             AND DATE(created_at) >= (CURDATE() - INTERVAL 14 DAY) - INTERVAL 1 YEAR
+                             AND DATE(created_at) < CURDATE() - INTERVAL 1 YEAR
+                        THEN 1 ELSE 0 END) AS girls_missing_prior,
+
+                    SUM(CASE 
+                        WHEN is_lost_case = 1 AND is_handed_over = 1
+                             AND DATE(created_at) >= (CURDATE() - INTERVAL 14 DAY) - INTERVAL 1 YEAR
+                             AND DATE(created_at) < CURDATE() - INTERVAL 1 YEAR
+                        THEN 1 ELSE 0 END) AS girls_found_prior
+                FROM case_final_status
+                WHERE district_id IS NOT NULL
+                {additional_condition}
+            """
+        else:
+            vwps_missing_query = f"""
+                SELECT
+                    SUM(CASE 
+                        WHEN level3_case_nature = 'Missing Person reported'
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {current_days} DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS girls_missing_current,
+
+                    SUM(CASE 
+                        WHEN is_lost_case = 1 AND is_handed_over = 1
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {current_days} DAY
+                             AND DATE(created_at) < CURDATE() + INTERVAL 1 DAY
+                        THEN 1 ELSE 0 END) AS girls_found_current,
+
+                    SUM(CASE 
+                        WHEN level3_case_nature = 'Missing Person reported'
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {previous_days} DAY
+                             AND DATE(created_at) < CURDATE() - INTERVAL {current_days} DAY
+                        THEN 1 ELSE 0 END) AS girls_missing_prior,
+
+                    SUM(CASE 
+                        WHEN is_lost_case = 1 AND is_handed_over = 1
+                             AND DATE(created_at) >= CURDATE() - INTERVAL {previous_days} DAY
+                             AND DATE(created_at) < CURDATE() - INTERVAL {current_days} DAY
+                        THEN 1 ELSE 0 END) AS girls_found_prior
+                FROM case_final_status
+                WHERE district_id IS NOT NULL
+                {additional_condition}
+            """
+
+        # Execute VWPS query
         vwps_cursor.execute(vwps_missing_query)
         result = vwps_cursor.fetchone()
         girls_missing_prev, girls_found_prev, girls_missing_prior, girls_found_prior = result or (0, 0, 0, 0)
 
+        # Compute totals
         total_girl_child_prev = child_lost_prev + child_found_prev + girls_missing_prev + girls_found_prev
         total_girl_child_prior = child_lost_prior + child_found_prior + girls_missing_prior + girls_found_prior
 
+        # Calculate percentage changes
         girl_child_pct_chng = {
             'child_missing_pct': utils.compute_pct_change(child_lost_prev, child_lost_prior),
             'found_reunited_pct': utils.compute_pct_change(child_found_prev + girls_found_prev,
-                                                     child_found_prior + girls_found_prior),
+                                                      child_found_prior + girls_found_prior),
             'girls_missing_pct': utils.compute_pct_change(girls_missing_prev, girls_missing_prior),
             'total_girls_children_pct': utils.compute_pct_change(total_girl_child_prev, total_girl_child_prior),
+            'children_still_missing_pct': utils.compute_pct_change(child_still_missing_prev, child_still_missing_prior)
         }
 
         data = {
@@ -10303,7 +10514,9 @@ def igp_missing_girl_child():
             'found_n_reunited_prev': child_found_prev + girls_found_prev,
             'found_n_reunited_prior': child_found_prior + girls_found_prior,
             'girl_child_pct_chng': girl_child_pct_chng,
-            'date_ranges': date_ranges
+            'date_ranges': date_ranges,
+            'children_still_missing_prev': child_still_missing_prev,
+            'children_still_missing_prior': child_still_missing_prior
         }
 
         response = {
@@ -10317,14 +10530,22 @@ def igp_missing_girl_child():
         utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
-            'message': f'Internal server error {e}'
+            'message': f'Internal server error: {e}'
         }), 400
+
     finally:
+        # Close connections
         log_db_cursor.close()
         log_db_pool.putconn(log_db_conn)
 
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+        vccs_cursor.close()
+        vccs_conn.close()
+
+        vwps_cursor.close()
+        vwps_conn.close()
 
 
 @app.route(f"{configs.INSIGHTS_TAB['ENDPOINT']}/rape-sodomy", methods=[configs.INSIGHTS_TAB['METHOD']])
@@ -10360,13 +10581,13 @@ def igp_rape_sodomy():
                             THEN 1 ELSE 0 END) AS sodomy_current,
                         SUM(CASE 
                             WHEN level3_case_nature = 'Rape'
-                                 AND DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                                 AND DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
                             THEN 1 ELSE 0 END) AS rape_previous,
                         SUM(CASE 
                             WHEN level3_case_nature = 'Child Abuse / Molestation'
-                                 AND DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                                 AND DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
                             THEN 1 ELSE 0 END) AS sodomy_previous
                     FROM response_time
                     WHERE police_station IS NOT NULL
@@ -10394,12 +10615,12 @@ def igp_rape_sodomy():
                                  AND DATE(date) < CURRENT_DATE + INTERVAL '1 day' 
                             THEN child_abuse ELSE 0 END) AS child_abuse_current,
                         SUM(CASE 
-                            WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s 
-                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s 
+                            WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s 
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s 
                             THEN rape ELSE 0 END) AS rape_previous,
                         SUM(CASE 
-                            WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s 
-                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s 
+                            WHEN DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s 
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s 
                             THEN child_abuse ELSE 0 END) AS child_abuse_previous
                     FROM fir_cases
                     WHERE date IS NOT NULL
@@ -10510,8 +10731,8 @@ def igp_critical_issues():
                         'Distribution/ Display of hateful sectarian material',
                         'Attack/Damage of Religious Places'
                     ) 
-                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                    AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
                 ) AS political_issues_previous,
                 -- Media Related Issues
                 COUNT(*) FILTER (
@@ -10531,8 +10752,8 @@ def igp_critical_issues():
                         'Distribution/ Display of hateful sectarian material',
                         'Any Other Religious Issue'
                     ) 
-                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                    AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
                 ) AS media_related_issues_previous,
                 -- Religious Issues
                 COUNT(*) FILTER (
@@ -10554,8 +10775,8 @@ def igp_critical_issues():
                         'Derogation of Holy Persons',
                         'Ehtram-e-Ramazan Ordinance 1981'
                     ) 
-                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                    AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
                 ) AS religious_issues_previous,
                 -- Foreigner/Chinese Cases
                 COUNT(*) FILTER (
@@ -10565,8 +10786,8 @@ def igp_critical_issues():
                 ) AS foreign_current,
                 COUNT(*) FILTER (
                     WHERE description ILIKE ANY (ARRAY['%%foreigner%%', '%%foriegner%%', '%%chinese%%'])
-                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
-                    AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
                 ) AS foreign_previous
             FROM filtered_data;
         """
@@ -10674,7 +10895,2297 @@ def igp_1787_complaints():
         log_db_pool.putconn(log_db_conn)
 
 
+@app.route(f"{configs.INSIGHTS_TAB['ENDPOINT']}/pkm_data", methods=[configs.INSIGHTS_TAB['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def igp_pkm_data():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+        police_station_str = request.form.get('police_station') # week or month
+
+        districts = district_str.split(",") if district_str else []
+        district_ids = []
+        if districts:
+            for district in districts:
+                if district == 'Murree':
+                    continue
+                if district in configs.PKM_DISTRICT_MAPPING:
+                    district_ids.append(configs.PKM_DISTRICT_MAPPING[district])
+                else:
+                    return jsonify({
+                        'status': False,
+                        'message': f"Invalid district name: {district}",
+                        'data': None
+                    }), 400
+
+                # Calculate date ranges
+        def get_period_params(period):
+            today = datetime.now()
+            if period == 'week':
+                current_start = today - timedelta(days=7)
+                previous_start = today - timedelta(days=14)
+                previous_end = today - timedelta(days=7)
+            elif period == 'month':
+                current_start = today - timedelta(days=30)
+                previous_start = today - timedelta(days=60)
+                previous_end = today - timedelta(days=30)
+            elif period == 'last90days':
+                current_start = today - timedelta(days=90)
+                previous_start = today - timedelta(days=180)
+                previous_end = today - timedelta(days=90)
+            elif period == 'last15days_yearly':
+                current_start = today - timedelta(days=14)
+                current_end = today
+                previous_start = current_start.replace(year=current_start.year - 1)
+                previous_end = current_end.replace(year=current_end.year - 1)
+            else:
+                raise ValueError("Invalid period")
+            return {
+                'current_start': current_start.strftime('%Y-%m-%d'),
+                'previous_start': previous_start.strftime('%Y-%m-%d'),
+                'previous_end': previous_end.strftime('%Y-%m-%d'),
+                'current_end': (today - timedelta(days=1)).strftime('%Y-%m-%d')
+            }
+
+        query_params = get_period_params(period)
+
+        pkm_service_stats_query = """
+                    WITH filtered_data AS (
+                        SELECT 
+                            service_name,
+                            pending,
+                            complete,
+                            inprogress,
+                            date
+                        FROM pkm_data
+                        WHERE date >= %(previous_start)s AND date < %(current_end)s
+                    )
+                    SELECT 
+                        service_name,
+                        SUM(pending) FILTER (WHERE date >= %(current_start)s AND date < %(current_end)s) AS pending_current,
+                        SUM(pending) FILTER (WHERE date >= %(previous_start)s AND date < %(previous_end)s) AS pending_previous,
+                        SUM(complete) FILTER (WHERE date >= %(current_start)s AND date < %(current_end)s) AS complete_current,
+                        SUM(complete) FILTER (WHERE date >= %(previous_start)s AND date < %(previous_end)s) AS complete_previous,
+                        SUM(inprogress) FILTER (WHERE date >= %(current_start)s AND date < %(current_end)s) AS inprogress_current,
+                        SUM(inprogress) FILTER (WHERE date >= %(previous_start)s AND date < %(previous_end)s) AS inprogress_previous
+                    FROM filtered_data
+                    GROUP BY service_name;
+                """
+
+        processed_db_cursor.execute(pkm_service_stats_query, query_params)
+        results = processed_db_cursor.fetchall()
+
+        service_stats = {}
+        for row in results:
+            service_name, pending_current, pending_previous, complete_current, complete_previous, inprogress_current, inprogress_previous = row
+            service_stats[service_name] = {
+                'pending': {
+                    'prev': pending_current or 0,
+                    'prior': pending_previous or 0,
+                    'pct_chng': utils.compute_pct_change(pending_current or 0, pending_previous or 0)
+                },
+                'complete': {
+                    'prev': complete_current or 0,
+                    'prior': complete_previous or 0,
+                    'pct_chng': utils.compute_pct_change(complete_current or 0, complete_previous or 0)
+                },
+                'inprogress': {
+                    'prev': inprogress_current or 0,
+                    'prior': inprogress_previous or 0,
+                    'pct_chng': utils.compute_pct_change(inprogress_current or 0, inprogress_previous or 0)
+                }
+            }
+
+        data = {
+            'service_stats': service_stats,
+            'date_ranges': utils.get_date_ranges(period)
+        }
+
+        response = {
+            "success": True,
+            "data": data,
+            "message": "PKM Service Stats fetched Successfully"
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/response-time", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_response_time_alerts():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+        police_station_str = request.form.get('police_station')
+
+        districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
+            district_str, view_role, period, police_station_str)
+
+        district_condition, additional_condition, _ = utils.get_district_conditions(view_role, district_ids, districts)
+        query_params = utils.get_query_params(period)
+        rt_alerts_query = f"""
+                    SELECT
+                        COUNT(CASE
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '7 days'
+                                 AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                                 AND %(period)s = 'week'
+                            THEN 1
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '30 days'
+                                 AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                                 AND %(period)s = 'month'
+                            THEN 1
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '90 days'
+                                 AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                                 AND %(period)s = 'last90days'
+                            THEN 1
+                            WHEN %(period)s = 'last15days_yearly'
+                                 AND date(date) >= CURRENT_DATE - INTERVAL '14 days'
+                                 AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                            THEN 1
+                        END) AS current_period_count,
+                        COUNT(CASE
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '14 days'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '7 days'
+                                 AND %(period)s = 'week'
+                            THEN 1
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '60 days'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '30 days'
+                                 AND %(period)s = 'month'
+                            THEN 1
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '180 days'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '90 days'
+                                 AND %(period)s = 'last90days'
+                            THEN 1
+                            WHEN %(period)s = 'last15days_yearly'
+                                 AND date(date) >= (CURRENT_DATE - INTERVAL '14 days') - INTERVAL '1 year'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '1 year'
+                            THEN 1
+                        END) AS previous_period_count
+                    FROM response_time
+                    WHERE
+                        response_time > 2100
+                        AND parent_id = 0
+                        AND district_id IS NOT NULL
+                        AND district_id NOT IN ('0','41','42','43','44','45','46')
+                        AND level3_case_nature NOT IN ('Other Help')
+                        AND level2_case_nature IN (
+                            'Robbery/Snatching', 'Burglary', 'Dacoity',
+                            'Sexual Assault', 'Kiddnapping / Abduction',
+                            'Murder', 'Terrorist Act'
+                        )
+                        {district_condition}
+                """
+        processed_db_cursor.execute(rt_alerts_query, {'period': period})
+        result = processed_db_cursor.fetchone()
+        alerts_count_prev = result[0] if result else 0
+        alerts_count_prior = result[1] if result else 0
+        rt_percentage_change = utils.compute_pct_change(alerts_count_prev, alerts_count_prior)
+
+        # Determine the status
+        if alerts_count_prev > alerts_count_prior:
+            status = 'increased'
+        elif alerts_count_prev < alerts_count_prior:
+            status = 'decreased'
+        else:
+            status = 'unchanged'
+
+        # Generate the description
+        if status == 'unchanged':
+            description = f'The number of response time alerts remained the same at {alerts_count_prev} in the most recent {period}.'
+        else:
+            if rt_percentage_change is not None:
+                description = f'{abs(rt_percentage_change):.1f}% {"increase" if status == "increased" else "decrease"} in response time alerts.'
+            else:
+                description = f'There was an {"increase" if status == "increased" else "decrease"} in response time alerts, but the percentage change could not be calculated.'
+
+        # Construct the response
+        response = {
+            'response_time': {
+                'prev': alerts_count_prev,
+                'prior': alerts_count_prior,
+                'percentage_chng': float(rt_percentage_change) if rt_percentage_change is not None else rt_percentage_change,
+                'status': status,
+                'description': description,
+                'date_ranges': utils.get_date_ranges(period)
+            }
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/reoccurrence", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_reoccurrence():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    predpol_db_conn, predpol_db_cursor = get_db_pg_predictive()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+        police_station_str = request.form.get('police_station')
+
+        districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
+            district_str, view_role, period, police_station_str)
+
+        district_condition, additional_condition, _ = utils.get_district_conditions(view_role, district_ids, districts)
+        query_params = utils.get_query_params(period)
+
+        reoccurrence_query = f"""
+                    SELECT
+                        SUM(CASE
+                            WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(current_interval)s
+                             AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
+                            THEN 1 ELSE 0 
+                        END) AS previous_window_count,
+                        SUM(CASE
+                            WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                             AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            THEN 1 ELSE 0 
+                        END) AS before_previous_window_count
+                    FROM crime_hotspot
+                    WHERE 
+                        case_number IS NOT NULL
+                        AND case_nature IN (
+                            'Any Other Dacoity', 'Any Other Robbery', 'Any Other Theft', 'Bank Burglary', 
+                            'Bank/Money Exchange/ ATM Dacoity', 'Bank/Money Exchange/ ATM Robbery', 
+                            'Car Snatching', 'Car Theft', 'Cattle Dacoity', 'Cattle Robbery', 'Cattle theft', 
+                            'Cycle Theft', 'Dacoity with Murder', 'Highway/Road/Street Dacoity', 
+                            'Highway/Road/Street Robbery', 'House Burglary', 'House Dacoity', 'House Robbery', 
+                            'Jewellery Shop Dacoity', 'Jewellery Shop Robbery', 'Mobile Theft', 'Motorcycle Snatching', 
+                            'Motorcycle Theft', 'Other Burglary', 'Other Vehicles Snatching', 'Other Vehicles Theft', 
+                            'Patrol Pump Dacoity', 'Patrol Pump Robbery', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 
+                            'Robbery with Murder', 'Shop Burglary', 'Shop Dacoity', 'Shop Robbery', 'Snatching/Jhapatta', 
+                            'Transformer/ Motor Theft', 'Weapon Theft'
+                        )
+                        {additional_condition}
+                """
+        predpol_db_cursor.execute(reoccurrence_query, query_params)
+        result = predpol_db_cursor.fetchone()
+        reoccurence_count_prev = result[0] if result is not None else 0
+        reoccurrence_count_prior = result[1] if result is not None else 0
+        reoccurrence_percentage_change = utils.compute_pct_change(reoccurence_count_prev, reoccurrence_count_prior)
+
+        # Determine the status
+        if reoccurence_count_prev > reoccurrence_count_prior:
+            status = 'increased'
+        elif reoccurence_count_prev < reoccurrence_count_prior:
+            status = 'decreased'
+        else:
+            status = 'unchanged'
+
+        # Generate the description
+        if status == 'unchanged':
+            description = f'The number of crime reoccurrences in hotspots remained the same at {reoccurence_count_prev} in the most recent {period}.'
+        else:
+            if reoccurrence_percentage_change is not None:
+                description = f'{abs(reoccurrence_percentage_change):.1f}% {"increase" if status == "increased" else "decrease"} in crime reoccurrences hotspots.'
+            else:
+                description = f'There was an {"increase" if status == "increased" else "decrease"} in crime reoccurrences hotspots, but the percentage change could not be calculated.'
+        # Construct the response
+        response = {
+            'reoccurrence_count': {
+                'prev': reoccurence_count_prev,
+                'prior': reoccurrence_count_prior,
+                'percentage_chng': float(
+                    reoccurrence_percentage_change) if reoccurrence_percentage_change is not None else reoccurrence_percentage_change,
+                'status': status,
+                'description': description,
+                'date_ranges': utils.get_date_ranges(period)
+            }
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+        predpol_db_cursor.close()
+        predictive_db_pool.putconn(predpol_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/conference-calls", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_conference_calls():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+        police_station_str = request.form.get('police_station')
+
+        districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
+            district_str, view_role, period, police_station_str)
+
+        district_condition, additional_condition, _ = utils.get_district_conditions(view_role, district_ids, districts)
+        query_params = utils.get_query_params(period)
+
+        success_conference_call_query = f"""
+                    WITH filtered_data AS (
+                        SELECT 
+                            field3,
+                            DATE(date) AS event_date
+                        FROM response_time
+                        WHERE parent_id = 0
+                          AND district_id IS NOT NULL
+                          AND police_station IS NOT NULL
+                          AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+                          AND DATE(date) >= CURRENT_DATE - INTERVAL '14 days'
+                          AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                          {district_condition}
+                    ),
+                    time_ranges AS (
+                        SELECT 
+                            field3,
+                            CASE 
+                                WHEN event_date >= CURRENT_DATE - INTERVAL '7 days' 
+                                     AND event_date < CURRENT_DATE + INTERVAL '1 day' THEN 'prev'
+                                WHEN event_date >= CURRENT_DATE - INTERVAL '14 days' 
+                                     AND event_date < CURRENT_DATE - INTERVAL '7 days' THEN 'prior'
+                            END AS time_range
+                        FROM filtered_data
+                    )
+                    SELECT 
+                        SUM(CASE WHEN time_range = 'prev' AND field3 = 'Successful Conference call' 
+                                THEN 1 ELSE 0 END) AS prev_success_count,
+                        SUM(CASE WHEN time_range = 'prior' AND field3 = 'Successful Conference call' 
+                                THEN 1 ELSE 0 END) AS prior_success_count,
+                        SUM(CASE WHEN time_range = 'prev' AND field3 IN 
+                                ('Successful Conference call', 'FO did not attend the call', 'Number Powered Off', 'Out of PS Jurisdiction') 
+                                THEN 1 ELSE 0 END) AS prev_total_count,
+                        SUM(CASE WHEN time_range = 'prior' AND field3 IN 
+                                ('Successful Conference call', 'FO did not attend the call', 'Number Powered Off', 'Out of PS Jurisdiction') 
+                                THEN 1 ELSE 0 END) AS prior_total_count
+                    FROM time_ranges;
+                """
+        processed_db_cursor.execute(success_conference_call_query, query_params)
+        successful_conf_prev, successful_conf_prior, total_conf_prev, total_conf_prior = processed_db_cursor.fetchone()
+
+        successful_conference_pct_chng = utils.compute_pct_change(successful_conf_prev, successful_conf_prior)
+
+        # Determine the status
+        if successful_conf_prev > successful_conf_prior:
+            status = 'increased'
+        elif successful_conf_prev < successful_conf_prior:
+            status = 'decreased'
+        else:
+            status = 'unchanged'
+
+        # Generate the description
+        if status == 'unchanged':
+            description = f'The number of successful conference calls remained the same at {successful_conf_prev} in the most recent {period}.'
+        else:
+            description = f'{abs(successful_conference_pct_chng):.1f}% {"increase" if status == "increased" else "decrease"} in successful conference calls.'
+
+        response = {
+            'conference_calls': {
+                    'prev': successful_conf_prev,
+                    'prior': successful_conf_prior,
+                    'percentage_chng': float(successful_conference_pct_chng) if successful_conference_pct_chng is not None else successful_conference_pct_chng,
+                    'total_prev': total_conf_prev,
+                    'total_prior': total_conf_prior,
+                    'date_ranges' : utils.get_date_ranges(period),
+                    'status' : status,
+                    'description' : description
+                }
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/negative-feedback", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_negative_feedback():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+        police_station_str = request.form.get('police_station')
+
+        districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
+            district_str, view_role, period, police_station_str)
+
+        district_condition, additional_condition, _ = utils.get_district_conditions(view_role, district_ids, districts)
+        query_params = utils.get_query_params(period)
+
+        negative_caller_feedback_query = f"""
+                    SELECT 
+                        SUM(CASE 
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                                 AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                                 AND caller_feedback = 'Negative'
+                            THEN 1 ELSE 0 
+                        END) AS current_period_negative_count,
+                        SUM(CASE 
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_start)s
+                                 AND date(date) < CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                 AND caller_feedback = 'Negative'
+                            THEN 1 ELSE 0 
+                        END) AS previous_period_negative_count
+                    FROM response_time
+                    WHERE caller_feedback IS NOT NULL
+                    {district_condition}
+                """
+        processed_db_cursor.execute(negative_caller_feedback_query, query_params)
+        row = processed_db_cursor.fetchone()
+        neg_feedback_count_prev = row[0] if row is not None else 0
+        neg_feedback_count_prior = row[1] if row is not None else 0
+        negative_feedback_pct_change = utils.compute_pct_change(neg_feedback_count_prev, neg_feedback_count_prior)
+
+        # Determine the status
+        if neg_feedback_count_prev > neg_feedback_count_prior:
+            status = 'increased'
+        elif neg_feedback_count_prev < neg_feedback_count_prior:
+            status = 'decreased'
+        else:
+            status = 'unchanged'
+
+        # Generate the description
+        if status == 'unchanged':
+            description = f'The number of negative feedback calls remained the same at {neg_feedback_count_prev} in the most recent {period}.'
+        else:
+            if negative_feedback_pct_change is not None:
+                description = f'{abs(negative_feedback_pct_change):.1f}% {"increase" if status == "increased" else "decrease"} in negative feedback calls'
+            else:
+                description = f'There was an {"increase" if status == "increased" else "decrease"} in negative feedback calls, but the percentage change could not be calculated.'
+
+        response = {
+            'negative_feedback_count': {
+                    'prev': neg_feedback_count_prev,
+                    'prior': neg_feedback_count_prior,
+                    'percentage_chng': float(negative_feedback_pct_change) if negative_feedback_pct_change is not None else negative_feedback_pct_change,
+                    'date_ranges' : utils.get_date_ranges(period),
+                    'status': status,
+                    'descrption' : description
+                }
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/dashboard-categories", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_dashboard_categories():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    vcm_conn = db_config.get_vcm_db_connection()
+    vcm_cursor = vcm_conn.cursor()
+
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+        police_station_str = request.form.get('police_station')
+
+        districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
+            district_str, view_role, period, police_station_str)
+        if error_response:
+            return error_response, status_code
+
+        district_condition, additional_condition, _ = utils.get_district_conditions(view_role, district_ids, districts)
+
+        # Query for category stats (PostgreSQL)
+        if period == "last15days_yearly":
+            category_query = f"""
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                              AND date(date) >= CURRENT_DATE - INTERVAL '14 days'
+                              AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                    ) AS terrorism_current,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN (
+                            'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
+                            'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
+                        )
+                        AND date(date) >= CURRENT_DATE - INTERVAL '14 days'
+                        AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                    ) AS dacoity_current,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN (
+                            'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                            'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                            'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
+                            'Robbery with Murder'
+                        )
+                        AND date(date) >= CURRENT_DATE - INTERVAL '14 days'
+                        AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                    ) AS robbery_snatching_current,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN ('Rape','Child Abuse / Molestation')
+                        AND date(date) >= CURRENT_DATE - INTERVAL '14 days'
+                        AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                    ) AS rape_sodomy_current,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature = 'Murder'
+                        AND date(date) >= CURRENT_DATE - INTERVAL '14 days'
+                        AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                    ) AS murder_current,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature = 'Dacoity with Murder'
+                        AND date(date) >= CURRENT_DATE - INTERVAL '14 days'
+                        AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                    ) AS dacoity_with_murder_current,
+
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                              AND date(date) >= (CURRENT_DATE - INTERVAL '14 days') - INTERVAL '1 year'
+                              AND date(date) < CURRENT_DATE - INTERVAL '1 year'
+                    ) AS terrorism_previous,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN (
+                            'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
+                            'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
+                        )
+                        AND date(date) >= (CURRENT_DATE - INTERVAL '14 days') - INTERVAL '1 year'
+                        AND date(date) < CURRENT_DATE - INTERVAL '1 year'
+                    ) AS dacoity_previous,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN (
+                            'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                            'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                            'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
+                            'Robbery with Murder'
+                        )
+                        AND date(date) >= (CURRENT_DATE - INTERVAL '14 days') - INTERVAL '1 year'
+                        AND date(date) < CURRENT_DATE - INTERVAL '1 year'
+                    ) AS robbery_snatching_previous,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN ('Rape','Child Abuse / Molestation')
+                        AND date(date) >= (CURRENT_DATE - INTERVAL '14 days') - INTERVAL '1 year'
+                        AND date(date) < CURRENT_DATE - INTERVAL '1 year'
+                    ) AS rape_sodomy_previous,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature = 'Murder'
+                        AND date(date) >= (CURRENT_DATE - INTERVAL '14 days') - INTERVAL '1 year'
+                        AND date(date) < CURRENT_DATE - INTERVAL '1 year'
+                    ) AS murder_previous,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature = 'Dacoity with Murder'
+                        AND date(date) >= (CURRENT_DATE - INTERVAL '14 days') - INTERVAL '1 year'
+                        AND date(date) < CURRENT_DATE - INTERVAL '1 year'
+                    ) AS dacoity_with_murder_previous
+                FROM response_time
+                WHERE 
+                    police_station IS NOT NULL
+                    AND response_time IS NOT NULL
+                    AND parent_id = 0
+                    AND response_time > 0
+                    AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
+                    {district_condition};
+            """
+            query_params = None  # No need for params in this case
+        else:
+            category_query = f"""
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                              AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                              AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                    ) AS terrorism_current,
+                    COUNT(*) FILTER (
+                        WHERE level3_case_nature IN (
+                            'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
+                            'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
+                        )
+                        AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                        AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                    ) AS dacoity_current,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature IN (
+                                'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                                'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                                'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
+                                'Robbery with Murder'
+                            )
+                            AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                            AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                        ) AS robbery_snatching_current,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature IN ('Rape','Child Abuse / Molestation')
+                            AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                            AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                        ) AS rape_sodomy_current,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature = 'Murder'
+                            AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                            AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                        ) AS murder_current,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature = 'Dacoity with Murder'
+                            AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                            AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                        ) AS dacoity_with_murder_current,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature IN ('Firing on Police', 'Suicidal Attack/ Bomb Blast/ Terrorist Attack')
+                                  AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                  AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                        ) AS terrorism_previous,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature IN (
+                                'Highway/Road/Street Dacoity', 'House Dacoity', 'Any Other Dacoity', 
+                                'Shop Dacoity', 'Cattle Dacoity', 'Patrol Pump Dacoity', 'Jewellery Shop Dacoity'
+                            )
+                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                        ) AS dacoity_previous,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature IN (
+                                'Highway/Road/Street Robbery', 'Any Other Robbery', 'Cattle Robbery', 'House Robbery',
+                                'Shop Robbery', 'Patrol Pump Robbery', 'Bank/Money Exchange/ ATM Robbery', 'Car Snatching',
+                                'Other Vehicles Snatching', 'Snatching/Jhapatta', 'Motorcycle Snatching', 'Jewellery Shop Robbery',
+                                'Robbery with Murder'
+                            )
+                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                        ) AS robbery_snatching_previous,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature IN ('Rape','Child Abuse / Molestation')
+                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                        ) AS rape_sodomy_previous,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature = 'Murder'
+                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                        ) AS murder_previous,
+                    COUNT(*) FILTER (
+                            WHERE level3_case_nature = 'Dacoity with Murder'
+                            AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                            AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                        ) AS dacoity_with_murder_previous
+                FROM response_time
+                WHERE 
+                    police_station IS NOT NULL
+                    AND response_time IS NOT NULL
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                    AND parent_id = 0
+                    AND response_time > 0
+                    AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
+                    {district_condition};
+            """
+
+            query_params = {
+                'week': {'current_interval': '7 days', 'previous_interval_end': '14 days'},
+                'month': {'current_interval': '30 days', 'previous_interval_end': '60 days'},
+                'last90days': {'current_interval': '90 days', 'previous_interval_end': '180 days'}
+            }[period]
+
+        processed_db_cursor.execute(category_query, query_params or None)
+        category_stats = processed_db_cursor.fetchone()
+
+        # Unpack results
+        (terrorism_prev, dacoity_prev, robbery_snatching_prev, rape_sodomy_cat_prev, murder_prev,
+         dacoity_with_murder_prev, terrorism_prior, dacoity_prior, robbery_snatching_prior,
+         rape_sodomy_cat_prior, murder_prior, dacoity_with_murder_prior) = category_stats or (0,) * 12
+
+        terrorism_current, terrorism_previous = utils.adjust_counts(terrorism_prev, terrorism_prior)
+        dacoity_current, dacoity_previous = utils.adjust_counts(dacoity_prev, dacoity_prior)
+        robbery_snatching_current, robbery_snatching_previous = utils.adjust_counts(robbery_snatching_prev, robbery_snatching_prior)
+        rape_sodomy_cat_current, rape_sodomy_cat_previous = utils.adjust_counts(rape_sodomy_cat_prev, rape_sodomy_cat_prior)
+        murder_current, murder_previous = utils.adjust_counts(murder_prev, murder_prior)
+        dacoity_with_murder_current, dacoity_with_murder_previous = utils.adjust_counts(dacoity_with_murder_prev, dacoity_with_murder_prior)
+
+        terrorism_pct_chng = utils.compute_pct_change(terrorism_current, terrorism_previous)
+        dacoity_pct_chng = utils.compute_pct_change(dacoity_current, dacoity_previous)
+        robbery_snatching_pct_chng = utils.compute_pct_change(robbery_snatching_current, robbery_snatching_previous)
+        rape_sodomy_cat_pct_chng = utils.compute_pct_change(rape_sodomy_cat_current, rape_sodomy_cat_previous)
+        murder_pct_chng = utils.compute_pct_change(murder_current, murder_previous)
+        dacoity_with_murder_pct_chng = utils.compute_pct_change(dacoity_with_murder_current,
+                                                                dacoity_with_murder_previous)
+
+        # VCM Minority Query
+        if period == "last15days_yearly":
+            vcm_minority_query = f"""
+                SELECT
+                    SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL 14 DAY THEN 1 ELSE 0 END) AS current_count,
+                    SUM(CASE WHEN DATE(created_at) >= (CURDATE() - INTERVAL 14 DAY) - INTERVAL 1 YEAR
+                             AND DATE(created_at) < CURDATE() - INTERVAL 1 YEAR
+                        THEN 1 ELSE 0 END) AS previous_count
+                FROM case_final_status
+                WHERE district_id IS NOT NULL
+                {district_condition}
+            """
+        else:
+            params = {
+                'week': {'current_interval': 7, 'previous_interval': 14},
+                'month': {'current_interval': 30, 'previous_interval': 60},
+                'last90days': {'current_interval': 90, 'previous_interval': 180}
+            }.get(period, {'current_interval': 7, 'previous_interval': 14})
+
+            vcm_minority_query = f"""
+                SELECT
+                    SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL {params['current_interval']} DAY THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN DATE(created_at) >= CURDATE() - INTERVAL {params['previous_interval']} DAY
+                             AND DATE(created_at) < CURDATE() - INTERVAL {params['current_interval']} DAY
+                        THEN 1 ELSE 0 END)
+                FROM case_final_status
+                WHERE district_id IS NOT NULL
+                {district_condition}
+            """
+
+        vcm_cursor.execute(vcm_minority_query)
+        row = vcm_cursor.fetchone()
+        minority_count_prev = row[0] if row else 0
+        minority_count_prior = row[1] if row else 0
+        minority_count_prev, minority_count_prior = utils.adjust_counts(minority_count_prev, minority_count_prior)
+        minority_pct_chng = utils.compute_pct_change(minority_count_prev, minority_count_prior)
+
+        # Build dashboard data
+        category_display_names = {
+            'terrorist_act': 'Terrorism incidents',
+            'dacoity': 'Dacoity incidents',
+            'dacoity_with_murder': 'Dacoity with murder incidents',
+            'robbery_snatching': 'Robbery and snatching incidents',
+            'rape_sodomy': 'Rape and sodomy incidents',
+            'murder': 'Murder incidents',
+            'police_encounter': 'Police encounter incidents',
+            'minorities': 'Minority-related incidents'
+        }
+
+        def get_status_and_description(prev, prior, pct_chng, period_name, display_name):
+            if prev > prior:
+                status = 'increased'
+            elif prev < prior:
+                status = 'decreased'
+            else:
+                status = 'unchanged'
+
+            if status == 'unchanged':
+                description = f"The number of {display_name} remained the same at {prev} in the most recent {period_name}."
+            else:
+                if pct_chng is not None:
+                    description = f"{abs(pct_chng):.1f}% {'increase' if status == 'increased' else 'decrease'} in {display_name}"
+                else:
+                    description = f"There was an {'increase' if status == 'increased' else 'decrease'} in {display_name}, but the percentage change could not be calculated."
+
+            return status, description
+
+        dashboard_data = {}
+
+        # Terrorist Act
+        status, description = get_status_and_description(
+            terrorism_current, terrorism_previous, terrorism_pct_chng, period, category_display_names['terrorist_act']
+        )
+        dashboard_data['terrorist_act'] = {
+            'prev': terrorism_current,
+            'prior': terrorism_previous,
+            'pct_chng': terrorism_pct_chng,
+            'status': status,
+            'description': description
+        }
+
+        # Dacoity
+        status, description = get_status_and_description(
+            dacoity_current, dacoity_previous, dacoity_pct_chng, period, category_display_names['dacoity']
+        )
+        dashboard_data['dacoity'] = {
+            'prev': dacoity_current,
+            'prior': dacoity_previous,
+            'pct_chng': dacoity_pct_chng,
+            'status': status,
+            'description': description
+        }
+
+        # Dacoity with Murder
+        status, description = get_status_and_description(
+            dacoity_with_murder_current, dacoity_with_murder_previous, dacoity_with_murder_pct_chng, period,
+            category_display_names['dacoity_with_murder']
+        )
+        dashboard_data['dacoity_with_murder'] = {
+            'prev': dacoity_with_murder_current,
+            'prior': dacoity_with_murder_previous,
+            'pct_chng': dacoity_with_murder_pct_chng,
+            'status': status,
+            'description': description
+        }
+
+        # Robbery Snatching
+        status, description = get_status_and_description(
+            robbery_snatching_current, robbery_snatching_previous, robbery_snatching_pct_chng, period,
+            category_display_names['robbery_snatching']
+        )
+        dashboard_data['robbery_snatching'] = {
+            'prev': robbery_snatching_current,
+            'prior': robbery_snatching_previous,
+            'pct_chng': robbery_snatching_pct_chng,
+            'status': status,
+            'description': description
+        }
+
+        # Rape Sodomy
+        status, description = get_status_and_description(
+            rape_sodomy_cat_current, rape_sodomy_cat_previous, rape_sodomy_cat_pct_chng, period,
+            category_display_names['rape_sodomy']
+        )
+        dashboard_data['rape_sodomy'] = {
+            'prev': rape_sodomy_cat_current,
+            'prior': rape_sodomy_cat_previous,
+            'pct_chng': rape_sodomy_cat_pct_chng,
+            'status': status,
+            'description': description
+        }
+
+        # Murder
+        status, description = get_status_and_description(
+            murder_current, murder_previous, murder_pct_chng, period, category_display_names['murder']
+        )
+        dashboard_data['murder'] = {
+            'prev': murder_current,
+            'prior': murder_previous,
+            'pct_chng': murder_pct_chng,
+            'status': status,
+            'description': description
+        }
+
+        # Minorities
+        status, description = get_status_and_description(
+            minority_count_prev, minority_count_prior, minority_pct_chng, period, category_display_names['minorities']
+        )
+        dashboard_data['minorities'] = {
+            'prev': minority_count_prev,
+            'prior': minority_count_prior,
+            'pct_chng': minority_pct_chng,
+            'status': status,
+            'description': description
+        }
+
+        # Police Encounter
+        status, description = get_status_and_description(
+            0, 0, 0, period, category_display_names['police_encounter']
+        )
+        dashboard_data['police_encounter'] = {
+            'prev': 0,
+            'prior': 0,
+            'pct_chng': 0,
+            'status': status,
+            'description': description,
+            'fir': 0,
+            'least_performers': {}
+        }
+
+        vcm_cursor.close()
+        vcm_conn.close()
+
+        response = {
+            "success": True,
+            "data": {
+                'dashboard_data': dashboard_data,
+                'date_ranges': utils.get_date_ranges(period)
+            },
+            "message": "Dashboard Insights fetched successfully"
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({'status': False, 'message': f'Internal server error: {e}'}), 400
+
+    finally:
+        # Close all connections properly
+        if vcm_cursor:
+            vcm_cursor.close()
+        if vcm_conn:
+            vcm_conn.close()
+        if log_db_cursor:
+            log_db_cursor.close()
+        if log_db_conn:
+            log_db_pool.putconn(log_db_conn)
+        if processed_db_cursor:
+            processed_db_cursor.close()
+        if processed_db_conn:
+            postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/missing-girl-child", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_missing_girl_child():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    vccs_conn = db_config.get_vccs_db_connection()
+    vccs_cursor = vccs_conn.cursor()
+    vwps_conn = db_config.get_vwps_db_connection()
+    vwps_cursor = vwps_conn.cursor()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week') #week , month, last90days
+        police_station_str = request.form.get('police_station')
+
+        districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
+            district_str, view_role, period, police_station_str)
+
+        additional_condition = ""
+        if view_role == 2 and len(districts) == 1:
+            additional_condition = f"AND district_id = {district_ids[0]}"
+        elif view_role in [3, 4] and district_ids:
+            additional_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
+
+        if period == "week":
+            query_params = {
+                "current_interval": "7",
+                "previous_interval_end": "14"
+            }
+        elif period == "month":
+            query_params = {
+                "current_interval": "30",
+                "previous_interval_end": "60"
+            }
+        else:
+            query_params = {
+                "current_interval": "90",
+                "previous_interval_end": "180"
+            }
+
+        date_ranges = utils.get_date_ranges(period)
+
+        vccs_missing_query = f"""
+                    SELECT
+                        SUM(CASE 
+                            WHEN level3_case_nature IN ('Child Lost/ Missing', 'Missing Person reported')
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                                 AND created_at < CURDATE() + INTERVAL 1 DAY
+                            THEN 1 ELSE 0 END) AS children_missing_current,
+                        SUM(CASE 
+                            WHEN is_lost_case = 1 AND is_handed_over = 1
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                                 AND created_at < CURDATE() + INTERVAL 1 DAY
+                            THEN 1 ELSE 0 END) AS children_found_current,
+                        SUM(CASE 
+                            WHEN level3_case_nature IN ('Child Lost/ Missing', 'Missing Person reported')
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['previous_interval_end']} DAY
+                                 AND created_at < CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                            THEN 1 ELSE 0 END) AS children_missing_previous,
+                        SUM(CASE 
+                            WHEN is_lost_case = 1 AND is_handed_over = 1
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['previous_interval_end']} DAY
+                                 AND created_at < CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                            THEN 1 ELSE 0 END) AS children_found_previous,
+                        SUM(CASE 
+                            WHEN pucar_level3_case_nature_id IN (594,595,495,493)
+                                 AND is_closed = 0
+                                 AND (is_handed_over IS NULL OR is_handed_over = 0)
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                                 AND created_at < CURDATE() + INTERVAL 1 DAY
+                            THEN 1 ELSE 0 END) AS children_still_missing_current,
+                        SUM(CASE 
+                            WHEN pucar_level3_case_nature_id IN (594,595,495,493)
+                                 AND is_closed = 0
+                                 AND (is_handed_over IS NULL OR is_handed_over = 0)
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['previous_interval_end']} DAY
+                                 AND created_at < CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                            THEN 1 ELSE 0 END) AS children_still_missing_previous
+                    FROM case_final_status
+                    WHERE district_id IS NOT NULL
+                    {additional_condition}
+                """
+        vccs_cursor.execute(vccs_missing_query)
+        result = vccs_cursor.fetchone()
+        child_lost_prev, child_found_prev, child_lost_prior, child_found_prior,child_still_missing_prev,child_still_missing_prior = result or (0, 0, 0, 0,0,0)
+
+        vwps_missing_query = f"""
+                    SELECT
+                        SUM(CASE WHEN level3_case_nature = 'Missing Person reported' 
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                                 AND created_at < CURDATE() + INTERVAL 1 DAY
+                            THEN 1 ELSE 0 END) AS girls_missing_current,
+                        SUM(CASE WHEN is_lost_case = 1 AND is_handed_over = 1
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                                 AND created_at < CURDATE() + INTERVAL 1 DAY
+                            THEN 1 ELSE 0 END) AS girls_found_current,
+                        SUM(CASE WHEN level3_case_nature = 'Missing Person reported'
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['previous_interval_end']} DAY
+                                 AND created_at < CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                            THEN 1 ELSE 0 END) AS girls_missing_previous,
+                        SUM(CASE WHEN is_lost_case = 1 AND is_handed_over = 1
+                                 AND created_at >= CURDATE() - INTERVAL {query_params['previous_interval_end']} DAY
+                                 AND created_at < CURDATE() - INTERVAL {query_params['current_interval']} DAY
+                            THEN 1 ELSE 0 END) AS girls_found_previous
+                    FROM case_final_status
+                    WHERE district_id IS NOT NULL
+                    {additional_condition}
+                """
+        vwps_cursor.execute(vwps_missing_query)
+        result = vwps_cursor.fetchone()
+        girls_missing_prev, girls_found_prev, girls_missing_prior, girls_found_prior = result or (0, 0, 0, 0)
+
+        total_girl_child_prev = child_lost_prev + child_found_prev + girls_missing_prev + girls_found_prev
+        total_girl_child_prior = child_lost_prior + child_found_prior + girls_missing_prior + girls_found_prior
+
+        girl_child_pct_chng = {
+            'child_missing_pct': utils.compute_pct_change(child_lost_prev, child_lost_prior),
+            'found_reunited_pct': utils.compute_pct_change(child_found_prev + girls_found_prev,
+                                                           child_found_prior + girls_found_prior),
+            'girls_missing_pct': utils.compute_pct_change(girls_missing_prev, girls_missing_prior),
+            'total_girls_children_pct': utils.compute_pct_change(total_girl_child_prev, total_girl_child_prior),
+            'child_still_missing_pct' : utils.compute_pct_change(child_still_missing_prev,child_still_missing_prior)
+        }
+
+        # Define display names for categories
+        category_display_names = {
+            'children_missing': 'Missing children',
+            'girls_missing': 'Missing girls',
+            'found_n_reunited': 'Found and reunited children and girls',
+            'total_girls_children': 'Total missing and found girls and children',
+            'child_still_missing' : 'Children Still missing'
+        }
+
+        # Helper function to compute status and description
+        def get_status_and_description(prev, prior, pct_chng, period, display_name):
+            if prev > prior:
+                status = 'increased'
+            elif prev < prior:
+                status = 'decreased'
+            else:
+                status = 'unchanged'
+
+            if status == 'unchanged':
+                description = f"The number of {display_name} remained the same at {prev} in the most recent {period}."
+            else:
+                description = f"{abs(pct_chng):.1f}% {'increase' if status == 'increased' else 'decrease'} in {display_name}"
+            return status, description
+
+        # Compute status and description for each category
+        children_missing_status, children_missing_description = get_status_and_description(
+            child_lost_prev, child_lost_prior, girl_child_pct_chng['child_missing_pct'], period,
+            category_display_names['children_missing']
+        )
+        girls_missing_status, girls_missing_description = get_status_and_description(
+            girls_missing_prev, girls_missing_prior, girl_child_pct_chng['girls_missing_pct'], period,
+            category_display_names['girls_missing']
+        )
+        found_n_reunited_status, found_n_reunited_description = get_status_and_description(
+            child_found_prev + girls_found_prev, child_found_prior + girls_found_prior,
+            girl_child_pct_chng['found_reunited_pct'], period, category_display_names['found_n_reunited']
+        )
+        total_girls_children_status, total_girls_children_description = get_status_and_description(
+            total_girl_child_prev, total_girl_child_prior, girl_child_pct_chng['total_girls_children_pct'], period,
+            category_display_names['total_girls_children']
+        )
+        children_still_missing_status, children_still_missing_description = get_status_and_description(
+            child_still_missing_prev,
+            child_still_missing_prior,
+            girl_child_pct_chng['child_still_missing_pct'],
+            period,
+            category_display_names['child_still_missing']
+        )
+
+        data = {
+            'total_child_girls_prev': total_girl_child_prev,
+            'total_child_girls_prior': total_girl_child_prior,
+            'girls_missing_prev': girls_missing_prev,
+            'girls_missing_prior': girls_missing_prior,
+            'girls_found_prev': child_found_prev + girls_found_prev,
+            'girls_found_prior': child_found_prior + girls_found_prior,
+            'children_missing_prev': child_lost_prev,
+            'children_missing_prior': child_lost_prior,
+            'found_n_reunited_prev': child_found_prev + girls_found_prev,
+            'found_n_reunited_prior': child_found_prior + girls_found_prior,
+            'girl_child_pct_chng': girl_child_pct_chng,
+            'date_ranges': date_ranges,
+            'children_missing_status': children_missing_status,
+            'children_missing_description': children_missing_description,
+            'girls_missing_status': girls_missing_status,
+            'girls_missing_description': girls_missing_description,
+            'found_n_reunited_status': found_n_reunited_status,
+            'found_n_reunited_description': found_n_reunited_description,
+            'total_girls_children_status': total_girls_children_status,
+            'total_girls_children_description': total_girls_children_description,
+            'children_still_missing_prev' : child_still_missing_prev,
+            'children_still_missing_prior' :  child_still_missing_prior,
+            'children_still_missing_status': children_still_missing_status,
+            'children_still_missing_description' : children_still_missing_description
+
+        }
+
+        response = {
+            "success": True,
+            "data": data,
+            "message": "Missing Girls and Children fetched successfully"
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/rape-sodomy", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_rape_sodomy():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week');
+        police_station_str = request.form.get('police_station')
+
+        districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
+            district_str, view_role, period, police_station_str)
+
+        district_condition, additional_condition, _ = utils.get_district_conditions(view_role, district_ids, districts)
+        period_start_pg, period_start_mysql, query_params = utils.get_period_params(period)
+
+        query_rape_molestation = f"""
+                    SELECT 
+                        SUM(CASE 
+                            WHEN level3_case_nature = 'Rape'
+                                 AND DATE(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                                 AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                            THEN 1 ELSE 0 END) AS rape_current,
+                        SUM(CASE 
+                            WHEN level3_case_nature = 'Child Abuse / Molestation'
+                                 AND DATE(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                                 AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                            THEN 1 ELSE 0 END) AS sodomy_current,
+                        SUM(CASE 
+                            WHEN level3_case_nature = 'Rape'
+                                 AND DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                            THEN 1 ELSE 0 END) AS rape_previous,
+                        SUM(CASE 
+                            WHEN level3_case_nature = 'Child Abuse / Molestation'
+                                 AND DATE(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                                 AND DATE(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                            THEN 1 ELSE 0 END) AS sodomy_previous
+                    FROM response_time
+                    WHERE police_station IS NOT NULL
+                      AND response_time IS NOT NULL
+                      AND parent_id = 0
+                      AND response_time > 0
+                      AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
+                      {district_condition}
+                """
+        processed_db_cursor.execute(query_rape_molestation, query_params)
+        rape_cases_prev, sodomy_cases_prev, rape_cases_prior, sodomy_cases_prior = processed_db_cursor.fetchone()
+
+        total_rape_sodomy_prev = rape_cases_prev + sodomy_cases_prev
+        total_rape_sodomy_prior = rape_cases_prior + sodomy_cases_prior
+
+        rape_sodomy_chng = {
+            'rape_cases_pct_chng': utils.compute_pct_change(rape_cases_prev, rape_cases_prior),
+            'sodomy_cases_pct_chng': utils.compute_pct_change(sodomy_cases_prev, sodomy_cases_prior)
+        }
+
+        category_display_names = {
+            'rape_cases': 'Rape incidents',
+            'sodomy_cases': 'Child abuse/molestation incidents',
+            'total_rape_sodomy': 'Total rape and child abuse/molestation incidents'
+        }
+
+        # Helper function to compute status and description
+        def get_status_and_description(prev, prior, pct_chng, period, display_name):
+            if prev > prior:
+                status = 'increased'
+            elif prev < prior:
+                status = 'decreased'
+            else:
+                status = 'unchanged'
+
+            if status == 'unchanged':
+                description = f"The number of {display_name} remained the same at {prev} in the most recent {period}."
+            else:
+                if pct_chng is not None:
+                    description = f"{abs(pct_chng):.1f}% {'increase' if status == 'increased' else 'decrease'} in {display_name}"
+                else:
+                    description = f"There was an {'increase' if status == 'increased' else 'decrease'} in {display_name}, but the percentage change could not be calculated."
+            return status, description
+
+        rape_cases_status, rape_cases_description = get_status_and_description(
+            rape_cases_prev, rape_cases_prior, rape_sodomy_chng['rape_cases_pct_chng'], period,
+            category_display_names['rape_cases']
+        )
+        sodomy_cases_status, sodomy_cases_description = get_status_and_description(
+            sodomy_cases_prev, sodomy_cases_prior, rape_sodomy_chng['sodomy_cases_pct_chng'], period,
+            category_display_names['sodomy_cases']
+        )
+
+        data = {
+            'rape_cases_prev': rape_cases_prev,
+            'rape_cases_prior': rape_cases_prior,
+            'rape_cases_status': rape_cases_status,
+            'rape_cases_description': rape_cases_description,
+            'sodomy_cases_prev': sodomy_cases_prev,
+            'sodomy_cases_prior': sodomy_cases_prior,
+            'sodomy_cases_status': sodomy_cases_status,
+            'sodomy_cases_description': sodomy_cases_description,
+            'total_rape_sodomy_prev': total_rape_sodomy_prev,
+            'total_rape_sodomy_prior': total_rape_sodomy_prior,
+            'rape_sodomy_pct_chng': rape_sodomy_chng,
+            'date_ranges': utils.get_date_ranges(period)
+        }
+
+        response = {
+            "success": True,
+            "data": data,
+            "message": "Rape and Molestation Stats fetched Successfully"
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/critical-issues", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_critical_issues():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+        police_station_str = request.form.get('police_station')
+
+        districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
+            district_str, view_role, period, police_station_str)
+
+        district_condition, additional_condition, _ = utils.get_district_conditions(view_role, district_ids, districts)
+        period_start_pg, period_start_mysql, query_params = utils.get_period_params(period)
+
+        critical_issues_query = f"""
+            WITH filtered_data AS (
+                SELECT 
+                    level3_case_nature,
+                    description,
+                    date
+                FROM response_time
+                WHERE parent_id = 0
+                    AND district_id IS NOT NULL
+                    {district_condition}
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                    AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+            )
+            SELECT 
+                -- Political Issues
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Assault on Govt. Officials',
+                        'Riot/Mob',
+                        'Unlawful Assembly/Protest/Demonstration',
+                        'Distribution/ Display of hateful sectarian material',
+                        'Attack/Damage of Religious Places'
+                    ) 
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                ) AS political_issues_current,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Assault on Govt. Officials',
+                        'Riot/Mob',
+                        'Unlawful Assembly/Protest/Demonstration',
+                        'Distribution/ Display of hateful sectarian material',
+                        'Attack/Damage of Religious Places'
+                    ) 
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                ) AS political_issues_previous,
+                -- Media Related Issues
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Complaint against PSCA',
+                        'Hate Speech',
+                        'Distribution/ Display of hateful sectarian material',
+                        'Any Other Religious Issue'
+                    ) 
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                ) AS media_related_issues_current,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Complaint against PSCA',
+                        'Hate Speech',
+                        'Distribution/ Display of hateful sectarian material',
+                        'Any Other Religious Issue'
+                    ) 
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                ) AS media_related_issues_previous,
+                -- Religious Issues
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Any Other Religious Issue',
+                        'Attack/Damage of Religious Places',
+                        'Defiling of Holy Book',
+                        'Derogation of Holy Persons',
+                        'Ehtram-e-Ramazan Ordinance 1981'
+                    ) 
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(current_interval)s
+                    AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                ) AS religious_issues_current,
+                COUNT(*) FILTER (
+                    WHERE level3_case_nature IN (
+                        'Any Other Religious Issue',
+                        'Attack/Damage of Religious Places',
+                        'Defiling of Holy Book',
+                        'Derogation of Holy Persons',
+                        'Ehtram-e-Ramazan Ordinance 1981'
+                    ) 
+                    AND date(date) >= CURRENT_DATE - INTERVAL %(previous_interval_end)s
+                    AND date(date) < CURRENT_DATE - INTERVAL %(current_interval)s
+                ) AS religious_issues_previous
+            FROM filtered_data;
+        """
+        processed_db_cursor.execute(critical_issues_query, query_params)
+        (political_issues_prev, political_issues_prior, media_related_issues_prev, media_related_issues_prior,
+         religious_issues_prev, religious_issues_prior) = processed_db_cursor.fetchone()
+
+        political_issues_pct_chng = utils.compute_pct_change(political_issues_prev, political_issues_prior)
+        media_related_issues_pct_chng = utils.compute_pct_change(media_related_issues_prev, media_related_issues_prior)
+        religious_issues_pct_chng = utils.compute_pct_change(religious_issues_prev, religious_issues_prior)
+
+        # Define display names for categories
+        category_display_names = {
+            'political_issues': 'Political issues',
+            'media_related_issues': 'Media-related issues',
+            'religious_issues': 'Religious issues'
+        }
+
+        # Helper function to compute status and description
+        def get_status_and_description(prev, prior, pct_chng, period, display_name):
+            if prev > prior:
+                status = 'increased'
+            elif prev < prior:
+                status = 'decreased'
+            else:
+                status = 'unchanged'
+
+            if status == 'unchanged':
+                description = f"The number of {display_name} remained the same at {prev} in the most recent {period}."
+            else:
+                if pct_chng is not None:
+                    description = f"{abs(pct_chng):.1f}% {'increase' if status == 'increased' else 'decrease'} in {display_name}"
+                else:
+                    description = f"There was an {'increase' if status == 'increased' else 'decrease'} in {display_name}, but the percentage change could not be calculated."
+            return status, description
+
+        # Compute status and description for each category
+        political_issues_status, political_issues_description = get_status_and_description(
+            political_issues_prev, political_issues_prior, political_issues_pct_chng, period,
+            category_display_names['political_issues']
+        )
+        media_related_issues_status, media_related_issues_description = get_status_and_description(
+            media_related_issues_prev, media_related_issues_prior, media_related_issues_pct_chng, period,
+            category_display_names['media_related_issues']
+        )
+        religious_issues_status, religious_issues_description = get_status_and_description(
+            religious_issues_prev, religious_issues_prior, religious_issues_pct_chng, period,
+            category_display_names['religious_issues']
+        )
+
+        critical_issues = {
+            'political_issues': {
+                'prev': political_issues_prev,
+                'prior': political_issues_prior,
+                'pct_chng': political_issues_pct_chng,
+                'status': political_issues_status,
+                'description': political_issues_description
+            },
+            'media_related_issues': {
+                'prev': media_related_issues_prev,
+                'prior': media_related_issues_prior,
+                'pct_chng': media_related_issues_pct_chng,
+                'status': media_related_issues_status,
+                'description': media_related_issues_description
+            },
+            'religious_issues': {
+                'prev': religious_issues_prev,
+                'prior': religious_issues_prior,
+                'pct_chng': religious_issues_pct_chng,
+                'status': religious_issues_status,
+                'description': religious_issues_description
+            }
+        }
+
+        data = {
+            'critical_issues': critical_issues,
+            'date_ranges': utils.get_date_ranges(period)
+        }
+
+        response = {
+            "success": True,
+            "data": data,
+            "message": "Critical Issues Stats fetched Successfully"
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 400
+
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/1787-complaints", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_1787_complaints():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+        police_station_str = request.form.get('police_station')
+
+        districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
+            district_str, view_role, period, police_station_str)
+
+        district_condition, _, additional_condition = utils.get_district_conditions(view_role, district_ids, districts)
+
+        complaints_1787_data = utils.fetch_and_compute_1787_complaint_stats(period, additional_condition)
+
+        data = {
+            '1787_data': complaints_1787_data,
+            'date_ranges': utils.get_date_ranges(period)
+        }
+
+        response = {
+            "success": True,
+            "data": data,
+            "message": "1787 Complaints Stats fetched Successfully"
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/pkm_data", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def executive_summary_pkm_data():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        district_str = request.form.get('district')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+
+        districts = district_str.split(",") if district_str else []
+        district_ids = []
+        if districts:
+            for district in districts:
+                if district == 'Murree':
+                    continue
+                if district in configs.PKM_DISTRICT_MAPPING:
+                    district_ids.append(configs.PKM_DISTRICT_MAPPING[district])
+                else:
+                    return jsonify({
+                        'status': False,
+                        'message': f"Invalid district name: {district}",
+                        'data': None
+                    }), 400
+
+        additional_condition = ""
+        if view_role == 2 and len(districts) == 1:
+            additional_condition = f"AND district_id = {district_ids[0]}"
+        elif view_role in [3, 4] and district_ids:
+            additional_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
+
+        # Calculate date ranges based on period
+        def get_period_params(period):
+            today = datetime.now().date()
+            if period == 'week':
+                current_start = today - timedelta(days=7)
+                previous_start = today - timedelta(days=14)
+                previous_end = today - timedelta(days=7)
+            elif period == 'month':
+                current_start = today - timedelta(days=30)
+                previous_start = today - timedelta(days=60)
+                previous_end = today - timedelta(days=30)
+            elif period == 'last90days':
+                current_start = today - timedelta(days=90)
+                previous_start = today - timedelta(days=180)
+                previous_end = today - timedelta(days=90)
+            elif period == 'last15days_yearly':
+                current_start = today - timedelta(days=14)
+                current_end = today
+                previous_start = current_start.replace(year=current_start.year - 1)
+                previous_end = current_end.replace(year=current_end.year - 1)
+            else:
+                raise ValueError(f"Invalid period: {period}")
+
+            return {
+                'current_start': current_start.strftime('%Y-%m-%d'),
+                'current_end': today.strftime('%Y-%m-%d'),
+                'previous_start': previous_start.strftime('%Y-%m-%d'),
+                'previous_end': previous_end.strftime('%Y-%m-%d'),
+            }
+
+        query_params = get_period_params(period)
+        date_ranges = utils.get_date_ranges(period)
+
+        pkm_service_stats_query = f"""
+            WITH filtered_data AS (
+                SELECT 
+                    service_name,
+                    pending,
+                    complete,
+                    inprogress,
+                    date
+                FROM pkm_data
+                WHERE date >= %(previous_start)s AND date <= %(current_end)s
+                {additional_condition}
+            )
+            SELECT 
+                service_name,
+                SUM(pending) FILTER (WHERE date >= %(current_start)s AND date <= %(current_end)s) AS pending_current,
+                SUM(pending) FILTER (WHERE date >= %(previous_start)s AND date < %(previous_end)s) AS pending_previous,
+                SUM(complete) FILTER (WHERE date >= %(current_start)s AND date <= %(current_end)s) AS complete_current,
+                SUM(complete) FILTER (WHERE date >= %(previous_start)s AND date < %(previous_end)s) AS complete_previous,
+                SUM(inprogress) FILTER (WHERE date >= %(current_start)s AND date <= %(current_end)s) AS inprogress_current,
+                SUM(inprogress) FILTER (WHERE date >= %(previous_start)s AND date < %(previous_end)s) AS inprogress_previous
+            FROM filtered_data
+            GROUP BY service_name;
+        """
+
+        processed_db_cursor.execute(pkm_service_stats_query, query_params)
+        results = processed_db_cursor.fetchall()
+
+        category_display_names = {
+            'Character Certificate': 'Character Certificates',
+            'General Police Verification': 'General Police Verifications',
+            'Employee Registration (ROPE)': 'Employee Registrations (ROPE)',
+            'Tenant Registration': 'Tenant Registrations',
+            'Vehicle Verification': 'Vehicle Verifications',
+            'Loss Report': 'Loss Reports',
+            'Crime Report': 'Crime Reports',
+            'Women Violence Report': 'Women Violence Reports',
+            'Medico Legal Certificate': 'Medico Legal Certificates'
+        }
+
+        def get_status_and_description(prev, prior, pct_chng, period, display_name):
+            if prev > prior:
+                status = 'increased'
+            elif prev < prior:
+                status = 'decreased'
+            else:
+                status = 'unchanged'
+
+            if status == 'unchanged':
+                description = f"The number of completed {display_name} remained the same at {prev} in the most recent {period}."
+            else:
+                if pct_chng is not None:
+                    description = f"{abs(pct_chng):.1f}% {'increase' if status == 'increased' else 'decrease'} in completed {display_name}"
+                else:
+                    description = f"There was an {'increase' if status == 'increased' else 'decrease'} in completed {display_name}, but the percentage change could not be calculated."
+
+            return status, description
+
+        service_stats = {}
+        for row in results:
+            service_name, pending_current, pending_previous, complete_current, complete_previous, inprogress_current, inprogress_previous = row
+            display_name = category_display_names.get(service_name, service_name)
+
+            complete_pct_chng = utils.compute_pct_change(complete_current or 0, complete_previous or 0)
+            complete_status, complete_description = get_status_and_description(
+                complete_current or 0, complete_previous or 0, complete_pct_chng, period, display_name
+            )
+
+            service_stats[service_name] = {
+                'pending': {
+                    'prev': pending_current or 0,
+                    'prior': pending_previous or 0,
+                    'pct_chng': utils.compute_pct_change(pending_current or 0, pending_previous or 0)
+                },
+                'complete': {
+                    'prev': complete_current or 0,
+                    'prior': complete_previous or 0,
+                    'pct_chng': complete_pct_chng,
+                    'status': complete_status,
+                    'description': complete_description
+                },
+                'inprogress': {
+                    'prev': inprogress_current or 0,
+                    'prior': inprogress_previous or 0,
+                    'pct_chng': utils.compute_pct_change(inprogress_current or 0, inprogress_previous or 0)
+                }
+            }
+
+        data = {
+            'service_stats': service_stats,
+            'date_ranges': date_ranges
+        }
+
+        response = {
+            "success": True,
+            "data": data,
+            "message": "PKM Executive Summary fetched successfully"
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(configs.PRISM['ENDPOINT'], methods=[configs.PRISM['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def prism():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        today = datetime.now()
+        delta_date = today - timedelta(days=9)
+        # yesterday = (today - timedelta(days=1)).strftime('%Y-%m-%d')
+        last_week = (today - timedelta(days=7)).strftime('%Y-%m-%d')
+        last_month = (today - timedelta(days=30)).strftime('%Y-%m-%d')
+
+        # Fetch yesterday’s records
+        processed_db_cursor.execute("""
+                    SELECT
+                        rt_caller_name,
+                        level3_case_nature,
+                        rt_case_number,
+                        rt_caller_number,
+                        rt_district,
+                        rt_police_station,
+                        rt_accepted_time,
+                        rt_lat,
+                        rt_long,
+                        enmity_lat,
+                        enmity_long,
+                        distance_meters,
+                        enmity_fir_number
+                    FROM found_enmities_case
+                    WHERE date = %s
+                """, (today.strftime('%Y-%m-%d'),))
+
+        rows = processed_db_cursor.fetchall()
+
+        # Build list of dicts
+        all_cases = []
+        for (caller_name, case_nature, case_number, caller_number, district, police_station,
+             accepted_time, rt_lat, rt_long, enmity_lat, enmity_long, distance, fir_number)  in rows:
+            all_cases.append({
+                "caller_name": caller_name,
+                "level3_case_nature": case_nature,
+                "case_number": case_number,
+                "caller_number": caller_number,
+                "district": district,
+                "police_station": police_station,
+                "accepted_time": accepted_time,
+                "rt_lat" : rt_lat,
+                "rt_long" : rt_long,
+                "enmity_lat" : enmity_lat,
+                "enmity_long" : enmity_long,
+                "distance" : distance,
+                "fir_number" : fir_number,
+                "status": "old_enmities"
+            })
+
+        processed_db_cursor.execute("""
+            SELECT
+                caller_name       AS caller_name,
+                level3_case_nature AS level3_case_nature,
+                case_number       AS case_number,
+                caller_number     AS caller_number,
+                district_id       AS district,
+                police_station_id AS police_station_id,
+                police_station    AS police_station,
+                accepted_time     AS accepted_time,
+                lat               AS lat,
+                long              AS long
+            FROM rising_crimes
+            WHERE date >= %s AND date <= %s
+            AND district_id IS NOT NULL
+        """, (delta_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d')))
+        rising_rows = processed_db_cursor.fetchall()
+
+        grouped_data = defaultdict(lambda: {"coords": [], "cases": []})
+        representative_case_numbers = set()
+
+        for row in rising_rows:
+            (caller_name, case_nature, case_number, caller_number, district, police_station_id,
+             police_station, accepted_time, rt_lat, rt_long) = row
+            key = (case_nature, police_station_id)
+
+            # Store case details as a dictionary matching the original structure
+            case_dict = {
+                "caller_name": caller_name,
+                "level3_case_nature": case_nature,
+                "case_number": case_number,
+                "caller_number": caller_number,
+                "district": configs.DISTRICTS_DICTIONARY.get(int(district)) if district is not None else None,
+                "police_station": police_station,
+                "accepted_time": accepted_time,
+                "lat": float(rt_lat) if rt_lat else None,
+                "long": float(rt_long) if rt_long else None,
+                "status": "rising_crime"
+            }
+            grouped_data[key]["cases"].append(case_dict)
+
+            # Add coordinates if valid
+        for key, data in grouped_data.items():
+            # Select the representative case based on the most recent accepted_time
+            representative_case = max(
+                data["cases"],
+                key=lambda x: x["accepted_time"] if x["accepted_time"] is not None else datetime.min
+            )
+
+            # Build grouped_coords, excluding the representative case's coordinates
+            grouped_coords = [
+                (case["lat"], case["long"])
+                for case in data["cases"]
+                if case is not representative_case and case["lat"] is not None and case["long"] is not None
+            ]
+
+            # Assign grouped_coords to the representative case
+            representative_case["grouped_coords"] = grouped_coords
+            all_cases.append(representative_case)
+            representative_case_numbers.add(representative_case["case_number"])
+
+        # Count alerts
+        processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date = %s", (today.strftime('%Y-%m-%d'),))
+        total_enimities = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
+                                    (last_week, today.strftime('%Y-%m-%d')))
+        last_week_enimities = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
+                                    (last_month, today.strftime('%Y-%m-%d')))
+        last_month_enimities = processed_db_cursor.fetchone()[0]
+
+
+        # Rising crimes
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date = %s
+            AND case_number = ANY(%s)
+        """, (today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
+        total_rising = processed_db_cursor.fetchone()[0]
+
+        # Weekly count (last_week to today)
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date BETWEEN %s AND %s
+            AND case_number = ANY(%s)
+        """, (last_week, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
+        week_rising = processed_db_cursor.fetchone()[0]
+
+        # Monthly count (last_month to today)
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date BETWEEN %s AND %s
+            AND case_number = ANY(%s)
+        """, (last_month, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
+        month_rising = processed_db_cursor.fetchone()[0]
+
+        data = {
+            'cases' : all_cases,
+            'total_alerts': total_enimities+total_rising,
+            'last_week_alerts': last_week_enimities + week_rising,
+            'last_month_alerts': last_month_enimities + month_rising
+        }
+
+        response = {
+            'status': True,
+            'message': 'Case details fetched successfully',
+            'data': data
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.PRISM['ENDPOINT']}/districts", methods=[configs.PRISM['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def prism_districtwise():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        today = datetime.now()
+        last_week = (today - timedelta(days=7)).strftime('%Y-%m-%d')
+        last_month = (today - timedelta(days=30)).strftime('%Y-%m-%d')
+        delta_date = today - timedelta(days=9)
+
+        # Step 1: Fetch representative case numbers from rising_crimes (for total counts)
+        processed_db_cursor.execute("""
+            SELECT
+                caller_name,
+                level3_case_nature,
+                case_number,
+                caller_number,
+                district_id,
+                police_station_id,
+                police_station,
+                accepted_time,
+                lat,
+                long
+            FROM rising_crimes
+            WHERE date >= %s AND date <= %s
+            AND district_id IS NOT NULL
+        """, (delta_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d')))
+        rising_rows = processed_db_cursor.fetchall()
+
+        grouped_data = defaultdict(lambda: {"cases": []})
+        representative_case_numbers = set()
+
+        for row in rising_rows:
+            (caller_name, case_nature, case_number, caller_number, district, police_station_id,
+             police_station, accepted_time, lat, long) = row
+            key = (case_nature, police_station_id)
+            case_dict = {
+                "case_number": case_number,
+                "accepted_time": accepted_time
+            }
+            grouped_data[key]["cases"].append(case_dict)
+
+        for key, data in grouped_data.items():
+            representative_case = max(
+                data["cases"],
+                key=lambda x: x["accepted_time"] if x["accepted_time"] is not None else datetime.min
+            )
+            representative_case_numbers.add(representative_case["case_number"])
+
+        # Step 2: District-wise counts for today from found_enmities_case
+        processed_db_cursor.execute("""
+            SELECT
+                rt_district,
+                COUNT(*)
+            FROM found_enmities_case
+            WHERE date = %s
+            GROUP BY rt_district
+        """, (today.strftime('%Y-%m-%d'),))
+        enmities_district_counts = processed_db_cursor.fetchall()
+
+        # District-wise counts for today from rising_crimes
+        processed_db_cursor.execute("""
+            SELECT
+                district_id,
+                COUNT(DISTINCT (level3_case_nature, police_station)) AS unique_combinations
+            FROM rising_crimes
+            WHERE date = %s
+            GROUP BY district_id
+        """, (today.strftime('%Y-%m-%d'),))
+        rising_district_counts = processed_db_cursor.fetchall()
+
+        # Map district_id to district names
+        rising_district_counts_mapped = [
+            (configs.DISTRICTS_DICTIONARY.get(int(district_id)), count)
+            for district_id, count in rising_district_counts
+            if district_id is not None
+        ]
+
+        # Combine district counts
+        district_total_counts = defaultdict(int)
+        for district, count in enmities_district_counts:
+            if district:  # Exclude None or empty districts
+                district_total_counts[district] += count
+        for district, count in rising_district_counts_mapped:
+            if district:  # Exclude unmapped districts
+                district_total_counts[district] += count
+
+        district_counts_list = [
+            {'district': district, 'count': count}
+            for district, count in district_total_counts.items()
+        ]
+
+        # Step 3: Total counts for found_enmities_case
+        processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date = %s",
+                                   (today.strftime('%Y-%m-%d'),))
+        total_enimities = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
+                                   (last_week, today.strftime('%Y-%m-%d')))
+        last_week_enimities = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
+                                   (last_month, today.strftime('%Y-%m-%d')))
+        last_month_enimities = processed_db_cursor.fetchone()[0]
+
+        # Total counts for rising_crimes (only representative cases)
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date = %s
+            AND case_number = ANY(%s)
+        """, (today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
+        total_rising = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date BETWEEN %s AND %s
+            AND case_number = ANY(%s)
+        """, (last_week, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
+        week_rising = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date BETWEEN %s AND %s
+            AND case_number = ANY(%s)
+        """, (last_month, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
+        month_rising = processed_db_cursor.fetchone()[0]
+
+        # Step 4: Calculate total alerts
+        total_alerts = total_enimities + total_rising
+        last_week_alerts = last_week_enimities + week_rising
+        last_month_alerts = last_month_enimities + month_rising
+
+        # Step 5: Construct response
+        data = {
+            'district_counts': district_counts_list,
+            'total_alerts': total_alerts,
+            'last_week_alerts': last_week_alerts,
+            'last_month_alerts': last_month_alerts
+        }
+
+        response = {
+            'status': True,
+            'message': 'District-wise counts and total alerts fetched successfully',
+            'data': data
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.PRISM['ENDPOINT']}/police_stations", methods=[configs.PRISM['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def prism_police_station():
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    try:
+        # Step 1: Get district from form data
+        district = request.form.get('district')
+        if not district:
+            return jsonify({
+                'status': False,
+                'message': 'District parameter is required'
+            }), 400
+
+        today = datetime.now()
+        last_week = (today - timedelta(days=7)).strftime('%Y-%m-%d')
+        last_month = (today - timedelta(days=30)).strftime('%Y-%m-%d')
+        delta_date = today - timedelta(days=9)
+
+        # Reverse DISTRICTS_DICTIONARY to map district name to district_id
+        district_id = configs.REVERSED_DISTRICTS_DICTIONARY.get(district)
+        if district_id is None:
+            return jsonify({
+                'status': False,
+                'message': f'Invalid district: {district}'
+            }), 400
+
+        # Step 2: Fetch representative case numbers from rising_crimes (for total counts)
+        processed_db_cursor.execute("""
+            SELECT
+                caller_name,
+                level3_case_nature,
+                case_number,
+                caller_number,
+                district_id,
+                police_station_id,
+                police_station,
+                accepted_time,
+                lat,
+                long
+            FROM rising_crimes
+            WHERE date >= %s AND date <= %s
+            AND district_id = %s
+        """, (delta_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d'), str(district_id)))
+        rising_rows = processed_db_cursor.fetchall()
+
+        grouped_data = defaultdict(lambda: {"cases": []})
+        representative_case_numbers = set()
+
+        for row in rising_rows:
+            (caller_name, case_nature, case_number, caller_number, district_id_row,
+             police_station_id, police_station, accepted_time, lat, long) = row
+            key = (case_nature, police_station_id)
+            case_dict = {
+                "case_number": case_number,
+                "accepted_time": accepted_time
+            }
+            grouped_data[key]["cases"].append(case_dict)
+
+        for key, data in grouped_data.items():
+            representative_case = max(
+                data["cases"],
+                key=lambda x: x["accepted_time"] if x["accepted_time"] is not None else datetime.min
+            )
+            representative_case_numbers.add(representative_case["case_number"])
+
+        # Step 3: Police station-wise counts for today from found_enmities_case
+        processed_db_cursor.execute("""
+            SELECT
+                rt_police_station,
+                COUNT(*)
+            FROM found_enmities_case
+            WHERE date = %s AND rt_district = %s
+            GROUP BY rt_police_station
+        """, (today.strftime('%Y-%m-%d'), district))
+        enmities_police_station_counts = processed_db_cursor.fetchall()
+
+        # Police station-wise counts for today from rising_crimes
+        processed_db_cursor.execute("""
+            SELECT
+                police_station,
+                COUNT(DISTINCT (level3_case_nature, police_station)) AS unique_combinations
+            FROM rising_crimes
+            WHERE date = %s AND district_id = %s
+            GROUP BY police_station
+        """, (today.strftime('%Y-%m-%d'), str(district_id)))
+        rising_police_station_counts = processed_db_cursor.fetchall()
+
+        # Combine police station counts
+        police_station_total_counts = defaultdict(int)
+        for police_station, count in enmities_police_station_counts:
+            if police_station:  # Exclude None or empty police stations
+                police_station_total_counts[police_station] += count
+        for police_station, count in rising_police_station_counts:
+            if police_station:  # Exclude None or empty police stations
+                police_station_total_counts[police_station] += count
+
+        police_station_counts_list = [
+            {'police_station': police_station, 'count': count}
+            for police_station, count in police_station_total_counts.items()
+        ]
+
+        # Step 4: Total counts for found_enmities_case
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM found_enmities_case
+            WHERE date = %s AND rt_district = %s
+        """, (today.strftime('%Y-%m-%d'), district))
+        total_enmities = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM found_enmities_case
+            WHERE date BETWEEN %s AND %s AND rt_district = %s
+        """, (last_week, today.strftime('%Y-%m-%d'), district))
+        last_week_enmities = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM found_enmities_case
+            WHERE date BETWEEN %s AND %s AND rt_district = %s
+        """, (last_month, today.strftime('%Y-%m-%d'), district))
+        last_month_enmities = processed_db_cursor.fetchone()[0]
+
+        # Total counts for rising_crimes (only representative cases)
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date = %s AND district_id = %s
+            AND case_number = ANY(%s)
+        """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
+        total_rising = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date BETWEEN %s AND %s AND district_id = %s
+            AND case_number = ANY(%s)
+        """, (last_week, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
+        week_rising = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date BETWEEN %s AND %s AND district_id = %s
+            AND case_number = ANY(%s)
+        """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
+        month_rising = processed_db_cursor.fetchone()[0]
+
+        # Step 5: Calculate total alerts
+        total_alerts = total_enmities + total_rising
+        last_week_alerts = last_week_enmities + week_rising
+        last_month_alerts = last_month_enmities + month_rising
+
+        # Step 6: Construct response
+        data = {
+            'police_station_counts': police_station_counts_list,
+            'total_alerts': total_alerts,
+            'last_week_alerts': last_week_alerts,
+            'last_month_alerts': last_month_alerts
+        }
+
+        response = {
+            'status': True,
+            'message': f'Police station-wise counts and total alerts for district {district} fetched successfully',
+            'data': data
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error {e}'
+        }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_pool.putconn(log_db_conn)
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 if __name__ == '__main__':
-    # app.run(host=configs.HOST, port=5035, debug=False)  # configs.DEBUG_
-    app.run(host=configs.HOST, port=configs.PORT, debug=False)  # configs.DEBUG_
+    app.run(host=configs.HOST, port=5010, debug=False)  # configs.DEBUG_
+    # app.run(host=configs.HOST, port=configs.PORT, debug=False)  # configs.DEBUG_

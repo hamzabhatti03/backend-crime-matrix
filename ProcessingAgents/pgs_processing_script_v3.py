@@ -639,6 +639,115 @@ def insert_fir_trends(db_connection, log_db_conn, log_db_cursor, results):
     finally:
         cursor.close()
 
+def caller_feedback_etl(primary_conn, log_db_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp):
+    """
+    ETL function to extract data from MySQL 'caller_feedback_log_preprocessed' table,
+    transform it, and load into PostgreSQL DB with the same name
+
+    Parameters:
+    - mysql_conn: MySQL connection object
+    - pg_conn: PostgreSQL connection object
+    - pg_log_conn: PostgreSQL connection for logging
+    - pg_log_cursor: PostgreSQL cursor for logging
+    - date_str: Date string in 'YYYY-MM-DD' format to filter data
+    """
+    try:
+        mysql_cursor = primary_conn.cursor()
+
+        # Query to extract data from MySQL
+        query = """
+        SELECT 
+            id,
+            lead_id,
+            time_id,
+            caller_feedback_user,
+            caller_feedback_status,
+            caller_feedback,
+            caller_feedback_modify_at,
+            caller_feedback_comments,
+            DATE(FROM_UNIXTIME(time_id)) AS date
+        FROM 
+            caller_feedback_log_preprocessed
+        WHERE 
+            time_id BETWEEN %s AND %s
+        """
+        mysql_cursor.execute(query, (start_timestamp, end_timestamp))
+        rows = mysql_cursor.fetchall()
+
+        # PostgreSQL cursor
+        pg_cursor = processed_conn.cursor()
+
+        # Insert query for PostgreSQL with ON CONFLICT to handle duplicates
+        insert_query = sql.SQL("""
+        INSERT INTO caller_feedback_log_preprocessed (
+            id, lead_id, time_id, caller_feedback_user, caller_feedback_status,
+            caller_feedback, caller_feedback_modify_at, caller_feedback_comments, date
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        ON CONFLICT (lead_id) DO UPDATE SET
+            time_id = EXCLUDED.time_id,
+            caller_feedback_user = EXCLUDED.caller_feedback_user,
+            caller_feedback_status = EXCLUDED.caller_feedback_status,
+            caller_feedback = EXCLUDED.caller_feedback,
+            caller_feedback_modify_at = EXCLUDED.caller_feedback_modify_at,
+            caller_feedback_comments = EXCLUDED.caller_feedback_comments
+        """)
+
+        # Process and insert each row
+        for row in rows:
+            processed_row = []
+            for i, col in enumerate(row):
+                if i in [0, 1, 2]:  # id, lead_id, time_id (BIGINT columns)
+                    processed_row.append(int(col) if col is not None else None)
+                elif i == 6:  # caller_feedback_modify_at (TIMESTAMP column)
+                    if col is not None:
+                        timestamp = int(col)  # Convert string or int to integer
+                        dt_object = datetime.fromtimestamp(timestamp)
+                        processed_row.append(dt_object.strftime('%Y-%m-%d %H:%M:%S'))
+                    else:
+                        processed_row.append(None)
+                elif i == 8:  # date (TEXT column, from datetime.date)
+                    if isinstance(col, datetime):
+                        processed_row.append(str(col))  # 'YYYY-MM-DD'
+                    else:
+                        processed_row.append(col)
+                elif isinstance(col, bytes):
+                    processed_row.append(col.decode('utf-8'))
+                elif isinstance(col, Decimal):
+                    processed_row.append(float(col))
+                elif isinstance(col, float):
+                    processed_row.append(int(col))
+                else:
+                    processed_row.append(col)
+
+            if len(processed_row) != 9:
+                raise ValueError(f"Expected 9 values, got {len(processed_row)}: {processed_row}")
+
+            try:
+                pg_cursor.execute(insert_query, processed_row)
+            except Exception as exec_error:
+                print(f"Error with row: {processed_row}\n{exec_error}")
+                raise
+
+        # Commit the transaction
+        processed_conn.commit()
+
+    except (psycopg2.Error) as db_error:
+        # Log database errors
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "DB_ERROR", str(db_error))
+        raise
+    except Exception as e:
+        # Log general errors with traceback
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        raise
+    finally:
+        # Close cursors
+        if mysql_cursor :
+            mysql_cursor.close()
+        if pg_cursor:
+            pg_cursor.close()
+
 
 def main(start_date, end_date, start):
     log_db_conn = utils.get_processed_db_connection({
@@ -795,6 +904,19 @@ def main(start_date, end_date, start):
                             lastseen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);
             """)
 
+            processed_cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS caller_feedback_log_preprocessed (
+                            id BIGINT PRIMARY KEY,
+                            lead_id BIGINT UNIQUE,
+                            time_id BIGINT,
+                            caller_feedback_user VARCHAR,
+                            caller_feedback_status VARCHAR,
+                            caller_feedback VARCHAR,
+                            caller_feedback_modify_at TIMESTAMP,
+                            caller_feedback_comments TEXT,
+                            date TEXT);
+            """)
+
             """ Add indexes for optimization """
             processed_cursor.execute(
                 'CREATE INDEX IF NOT EXISTS idx_date_district_ps ON leads_in_counts (date, district_id, police_station)')
@@ -824,24 +946,27 @@ def main(start_date, end_date, start):
             end_timestamp = utils.date_to_unix_time(
                 (current_date + timedelta(days=configs.DELTA_DAYS)).strftime(configs.YMD_TIME)) - 1
 
-            """Calls Stats Processing & Records Insertion in DB"""
+            # """Calls Stats Processing & Records Insertion in DB"""
             results = process_date(db_conn, log_db_conn, log_db_cursor, start_timestamp, end_timestamp)
             insert_results(processed_conn, log_db_conn, log_db_cursor, results, current_date.strftime(configs.YM_DATE))
 
             """Response Time Processing & Records Insertion in DB"""
             response_time(db_conn, log_db_conn, db_cursor, processed_conn, start_timestamp, end_timestamp)
+            #
+            # """Porcesses FIR CASES AND INSERTING"""
+            # process_fir_cases(db_conn, log_db_conn, processed_conn, start_timestamp, end_timestamp,
+            #                   current_date.strftime(configs.YM_DATE))
+            #
+            # """PROCESSES FIR TRENDS AND INSERTING"""
+            # results = fir_trends_processing(db_conn, log_db_conn, log_db_cursor)
+            # insert_fir_trends(processed_conn, log_db_conn, log_db_cursor, results)
 
-            """Porcesses FIR CASES AND INSERTING"""
-            process_fir_cases(db_conn, log_db_conn, processed_conn, start_timestamp, end_timestamp,
-                              current_date.strftime(configs.YM_DATE))
+            # """PROCESSES CALLER FEEDBACK LOGS TABLE AND INSERTING"""
+            # caller_feedback_etl(db_conn, log_db_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp)
 
-            """PROCESSES FIR TRENDS AND INSERTING"""
-            results = fir_trends_processing(db_conn, log_db_conn, log_db_cursor)
-            insert_fir_trends(processed_conn, log_db_conn, log_db_cursor, results)
-
-            fir_data.main(current_date)
-            fb_data.main()
-            ps_vec_locs.main()
+            # fir_data.main(current_date)
+            # fb_data.main()
+            # ps_vec_locs.main()
 
             current_date += timedelta(days=configs.DELTA_DAYS)
         if processed_conn:
@@ -853,6 +978,7 @@ def main(start_date, end_date, start):
                 db_cursor.close()
             db_conn.close()
     except Exception as e:
+        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
         if processed_conn:
             if processed_cursor:
                 processed_cursor.close()
@@ -861,10 +987,14 @@ def main(start_date, end_date, start):
                 if db_cursor:
                     db_cursor.close()
                 db_conn.close()
-        utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        if log_db_conn:
+            if log_db_cursor:
+                log_db_cursor.close()
+            log_db_conn.close()
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('13-03-25', '%d-%m-%y')
-    end_date = datetime.strptime('14-03-25', '%d-%m-%y')
+    start_date = datetime.strptime('07-05-25', '%d-%m-%y')
+    end_date = datetime.strptime('07-05-25', '%d-%m-%y')
+    print("executing")
     main(start_date, end_date, True)
