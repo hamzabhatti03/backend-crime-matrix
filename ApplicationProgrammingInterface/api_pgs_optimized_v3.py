@@ -14,6 +14,8 @@ import traceback
 import os
 from dotenv import load_dotenv
 from functools import wraps
+
+from Utilities.configs import CATEGORY_QUERIES
 from predictive_api import yesterday_forecast_db as yesterday_forecast
 from werkzeug.utils import secure_filename
 from flask import send_from_directory
@@ -1237,7 +1239,6 @@ def punjab_stats_dashboard():
         else:
             re_occurrences_response = {"reoccured_cases": 0}
 
-
         unsuccess_conference_calls_query = f"""
                 Select count(*) Filter (Where level3_case_nature IN ('Firing on Police', 
                                         'Suicidal Attack/ Bomb Blast/ Terrorist Attack') ) as terrorism,
@@ -1253,15 +1254,17 @@ def punjab_stats_dashboard():
 					AND field3 IN ('FO did not attend the call','Number Powered Off','Out of PS Jurisdiction')
 					{district_condition}
         """
-        processed_db_cursor.execute(unsuccess_conference_calls_query,(from_date_str,to_date_str))
-        (unsuccessful_conf_terrorism, unsuccessful_conf_dacoity_with_murder, unsuccessful_conf_murder, unsuccessful_conf_rape) = processed_db_cursor.fetchone()
+        processed_db_cursor.execute(unsuccess_conference_calls_query, (from_date_str, to_date_str))
+        (unsuccessful_conf_terrorism, unsuccessful_conf_dacoity_with_murder, unsuccessful_conf_murder,
+         unsuccessful_conf_rape) = processed_db_cursor.fetchone()
 
         vcm_conf_calls_query = """
                 SELECT lead_id 
                 FROM case_final_status
                 WHERE created_at BETWEEN %s AND %s
         """
-        vcm_cursor.execute(vcm_conf_calls_query,(from_date_obj.strftime('%Y-%m-%d 00:00:00'), to_date_obj.strftime('%Y-%m-%d 23:59:59')))
+        vcm_cursor.execute(vcm_conf_calls_query,
+                           (from_date_obj.strftime('%Y-%m-%d 00:00:00'), to_date_obj.strftime('%Y-%m-%d 23:59:59')))
         lead_ids = [row[0] for row in vcm_cursor.fetchall()]
 
         vcm_cursor.close()
@@ -1273,7 +1276,7 @@ def punjab_stats_dashboard():
                 WHERE lead_id = ANY(%s)
                 AND field3 IN ('FO did not attend the call', 'Number Powered Off', 'Out of PS Jurisdiction')
         """
-        processed_db_cursor.execute(conf_minorities_query,(lead_ids,))
+        processed_db_cursor.execute(conf_minorities_query, (lead_ids,))
         unsuccessful_minorities = processed_db_cursor.fetchone()[0]
 
         vccs_query = ("""
@@ -1285,7 +1288,7 @@ def punjab_stats_dashboard():
                              AND created_at <= %s
                       """)
         vccs_cursor = vccs_conn.cursor()
-        vccs_cursor.execute(vccs_query,(current_date_str,to_date_str))
+        vccs_cursor.execute(vccs_query, (current_date_str, to_date_str))
         children_still_missing = vccs_cursor.fetchone()[0]
 
         vccs_conn.close()
@@ -1347,7 +1350,7 @@ def punjab_stats_dashboard():
                                                                                          'rural': '00:00'}),
                                   'avg_response_time': category_avg_response_dict.get('robbery_snatching',
                                                                                       '00:00')},
-            'theft': {'count': theft, 'fir': theft_fir+burglary_fir,
+            'theft': {'count': theft, 'fir': theft_fir + burglary_fir,
                       'fake/other': 0,
                       'response_times': category_regional_response_dict.get('theft',
                                                                             {'urban': '00:00', 'rural': '00:00'}),
@@ -1421,15 +1424,15 @@ def punjab_stats_dashboard():
             'responsetime_alerts': response_time_alerts,
             'crime_reoccurrence_count': re_occurrences_response,
             'chidlren_still_missing': children_still_missing,
-            'unsuccessful_conference_calls' : {
-                                'total': unsuccessful_conf_dacoity_with_murder + unsuccessful_conf_terrorism + unsuccessful_minorities +
-                                         unsuccessful_conf_murder + unsuccessful_conf_rape + 0,
-                                'religious_issues' : unsuccessful_minorities,
-                                'terrorism': unsuccessful_conf_terrorism,
-                                'dacoity_with_murder':unsuccessful_conf_dacoity_with_murder,
-                                'police_encounter' : 0, #Police encounter is 0
-                                'murder' : unsuccessful_conf_murder,
-                                'rape' : unsuccessful_conf_murder
+            'unsuccessful_conference_calls': {
+                'total': unsuccessful_conf_dacoity_with_murder + unsuccessful_conf_terrorism + unsuccessful_minorities +
+                         unsuccessful_conf_murder + unsuccessful_conf_rape + 0,
+                'religious_issues': unsuccessful_minorities,
+                'terrorism': unsuccessful_conf_terrorism,
+                'dacoity_with_murder': unsuccessful_conf_dacoity_with_murder,
+                'police_encounter': 0,  # Police encounter is 0
+                'murder': unsuccessful_conf_murder,
+                'rape': unsuccessful_conf_murder
             }
         }
 
@@ -2805,13 +2808,13 @@ def pswise_categories():
                         AND district_id = %s
                         AND police_station = %s
                         """
-        processed_db_cursor.execute(alerts_count_query, (from_date, to_date,district_id,police_station))
+        processed_db_cursor.execute(alerts_count_query, (from_date, to_date, district_id, police_station))
         rt_alerts = processed_db_cursor.fetchone()[0]
 
         from_date_obj = datetime.strptime(from_date, "%Y-%m-%d")
         from_date_formatted = from_date_obj.strftime("%d-%m-%Y")
 
-        to_date_obj = datetime.strptime(to_date,"%Y-%m-%d")
+        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d")
         to_date_formatted = to_date_obj.strftime("%d-%m-%Y")
 
         predpol_db_cursor.execute(f"""
@@ -2829,13 +2832,12 @@ def pswise_categories():
                             AND date Between %s AND %s
                             AND district = %s
                             AND police_station = %s
-                """, (from_date_formatted,to_date_formatted,str(district_id),police_station))
+                """, (from_date_formatted, to_date_formatted, str(district_id), police_station))
         re_occurrences_count = predpol_db_cursor.fetchone()
         if re_occurrences_count is not None:
             re_occurrences_response = {"reoccured_cases": re_occurrences_count[0]}
         else:
             re_occurrences_response = {"reoccured_cases": 0}
-
 
         negative_caller_feedback_query = """
                                     Select SUM(CASE WHEN caller_feedback = 'Negative' THEN 1 ELSE 0 END)
@@ -2844,10 +2846,9 @@ def pswise_categories():
                                     AND district_id = %s
                                     AND police_station = %s
                                         """
-        processed_db_cursor.execute(negative_caller_feedback_query, (from_date, to_date,district_id,police_station))
+        processed_db_cursor.execute(negative_caller_feedback_query, (from_date, to_date, district_id, police_station))
         row = processed_db_cursor.fetchone()
         negative_feedback_count = row[0] if row is not None else 0
-
 
         # successful response
         response = {
@@ -2865,8 +2866,8 @@ def pswise_categories():
                 'unsuccessful_conf_calls': unsuccessful_calls,
                 'hotspot_coordinates': filter_lat_longs(coordinates, max_distance_km=3),
                 'response_time_alerts': rt_alerts,
-                'reoccurrence_alerts'  : re_occurrences_response,
-                'negative_feedback_alerts' : negative_feedback_count
+                'reoccurrence_alerts': re_occurrences_response,
+                'negative_feedback_alerts': negative_feedback_count
             }
         }
         return jsonify(response), 200
@@ -2957,7 +2958,7 @@ def punjab_case_details():
         (case_number, description, response_time, responder_id, accepted_time, police_station,
          district_id, region_category, caller_name, caller_number, caller_location,
          level3_case_nature, dispatched_time, first_arrival_time,
-         lat, long, responder_lat, responder_long, reached_time, feedback,negative_feedback_summary) = case_details
+         lat, long, responder_lat, responder_long, reached_time, feedback, negative_feedback_summary) = case_details
 
         responder_name = None
         if responder_id:
@@ -3046,7 +3047,7 @@ def punjab_case_details():
             'responder_lat': responder_lat,
             'responder_long': responder_long,
             'feedback': feedback,
-            'negative_feedback_for_responder' : negative_feedback_summary
+            'negative_feedback_for_responder': negative_feedback_summary
         }
 
         # incase assigned_by and assigned_to are not provided
@@ -8751,6 +8752,67 @@ def igp_insights():
             vcm_conn.close()
 
 
+@app.route('/get_rankings', methods=['POST'])
+def get_rankings():
+    try:
+        processed_db_conn, processed_db_cursor = get_processed_db_connection()
+
+        category = request.form.get('category')
+        view_role = request.form.get('view_role', type=int)
+        period = request.form.get('period', 'week')
+        district_str = request.form.get('district')
+
+        if not category:
+            return jsonify({'status': False, 'message': 'Missing category', 'data': None}), 400
+
+        current_interval = "7 days" if period == 'week' else "30 days"
+        previous_interval_end = "14 days" if period == 'week' else "60 days"
+
+        district_ids = []
+        if district_str:
+            district_ids = [f"'{d.strip()}'" for d in district_str.split(',') if d.strip()]
+
+        if view_role == 2 and len(district_ids) == 1:
+            district_condition = f"AND district_id = {district_ids[0]}"
+        elif view_role in [3, 4] and district_ids:
+            district_condition = f"AND district_id IN ({', '.join(district_ids)})"
+        else:
+            district_condition = ""
+
+        if category not in CATEGORY_QUERIES:
+            return jsonify({'status': False, 'message': f'Unsupported category: {category}', 'data': None}), 400
+
+        query_template = CATEGORY_QUERIES[category]
+        query = query_template.format(
+            district_condition=district_condition,
+            current_interval=current_interval,
+            previous_interval_end=previous_interval_end
+        )
+
+        processed_db_cursor.execute(query)
+        results = processed_db_cursor.fetchall()
+
+        formatted_results = [
+            {'district': configs.DISTRICTS_DICTIONARY.get(int(row[0])) if row[0] is not None else None,
+             'count': float(row[1])}
+            for row in results
+        ]
+
+        mid_index = len(formatted_results) // 2
+        best_performers = formatted_results[:mid_index]
+        worst_performers = formatted_results[mid_index:]
+
+        return jsonify({
+            'status': True,
+            'message': 'Success',
+            'bestPerformers': best_performers,
+            'worstPerformers': worst_performers
+        })
+
+    except Exception as e:
+        return jsonify({'status': False, 'message': str(e), 'data': None}), 500
+
+
 @app.route(configs.VERIFIED_UNVERIFIED_RT['ENDPOINT'], methods=[configs.VERIFIED_UNVERIFIED_RT['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
@@ -8862,7 +8924,7 @@ def verified_unverified_response_time():
                                 AND parent_id = 0
                                 AND district_id = %s
                     """
-            processed_db_cursor.execute(tab_response_time_query, (from_date_str, to_date_str,district_ids[0]))
+            processed_db_cursor.execute(tab_response_time_query, (from_date_str, to_date_str, district_ids[0]))
             (unverified_avg_rt, verified_avg_rt) = processed_db_cursor.fetchone()
         else:
             count_query = f"""
@@ -8897,7 +8959,7 @@ def verified_unverified_response_time():
                         ORDER BY time_id ASC
                         LIMIT %s OFFSET %s
                     """
-            processed_db_cursor.execute(cases_query,(from_date_str,to_date_str,page_size, offset))
+            processed_db_cursor.execute(cases_query, (from_date_str, to_date_str, page_size, offset))
             cases = processed_db_cursor.fetchall()
 
             tab_response_time_query = f"""
@@ -8933,24 +8995,24 @@ def verified_unverified_response_time():
                 "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
                     configs.YMD_HMS) if reached_time else None,
                 "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else 0,
-                "tab" : 'verified' if tab in ['Agent','District'] else 'unverified'
+                "tab": 'verified' if tab in ['Agent', 'District'] else 'unverified'
             }
             for
             case_number, level3_case_nature, caller_name,
             caller_number, created_time, police_station,
-            district_id, time_id, description, reached_time, response_time,tab
+            district_id, time_id, description, reached_time, response_time, tab
             in cases
         ]
 
         response = {
             'status': True,
             'message': 'Verfied and Unverified Response time cases fetched successfully',
-            'data' : {
+            'data': {
                 'cases': cases_list,
-                'verified_response_time' : f"{int(verified_avg_rt // 60)}:{int(verified_avg_rt % 60):02d}" if verified_avg_rt and
-                                                                                                            verified_avg_rt is not None else 0,
-                'unverified_response_time' : f"{int(unverified_avg_rt // 60)}:{int(unverified_avg_rt % 60):02d}" if unverified_avg_rt and
-                                                                                                            unverified_avg_rt is not None else 0,
+                'verified_response_time': f"{int(verified_avg_rt // 60)}:{int(verified_avg_rt % 60):02d}" if verified_avg_rt and
+                                                                                                             verified_avg_rt is not None else 0,
+                'unverified_response_time': f"{int(unverified_avg_rt // 60)}:{int(unverified_avg_rt % 60):02d}" if unverified_avg_rt and
+                                                                                                                   unverified_avg_rt is not None else 0,
                 'pagination': {
                     'current_page': page,
                     'page_size': page_size,
@@ -8959,7 +9021,7 @@ def verified_unverified_response_time():
                 }
             }
         }
-        return jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
@@ -9001,7 +9063,6 @@ def unsuccessful_conference():
                 'message': 'Invalid view role. Use 2 or 3.',
                 'data': None
             }), 400
-
 
         district_ids = []
         if districts:
@@ -9072,9 +9133,9 @@ def unsuccessful_conference():
                         FROM case_final_status
                         WHERE created_at BETWEEN %s AND %s
                 """
-        vcm_cursor.execute(vcm_conf_calls_query,(from_date_obj.strftime('%Y-%m-%d 00:00:00'), to_date_obj.strftime('%Y-%m-%d 23:59:59')))
+        vcm_cursor.execute(vcm_conf_calls_query,
+                           (from_date_obj.strftime('%Y-%m-%d 00:00:00'), to_date_obj.strftime('%Y-%m-%d 23:59:59')))
         lead_ids = [row[0] for row in vcm_cursor.fetchall()]
-
 
         conf_minorities_query = """
                         SELECT case_number, level3_case_nature, caller_name, caller_number,
@@ -9088,9 +9149,9 @@ def unsuccessful_conference():
         vcm_cases = processed_db_cursor.fetchall()
 
         for (
-            pucar_case_number, level3_case_nature, pucar_caller_name, pucar_cli,
-            pucar_accepted_time, pucar_police_station, district_id, pucar_time_id,
-            pucar_cro_comments,first_arrival,response_time
+                pucar_case_number, level3_case_nature, pucar_caller_name, pucar_cli,
+                pucar_accepted_time, pucar_police_station, district_id, pucar_time_id,
+                pucar_cro_comments, first_arrival, response_time
         ) in vcm_cases:
             cases_list.append({
                 "case_number": pucar_case_number,
@@ -9138,6 +9199,7 @@ def unsuccessful_conference():
             vcm_cursor.close()
         if vcm_conn:
             vcm_conn.close()
+
 
 @app.route(f"{configs.INSIGHTS_TAB['ENDPOINT']}/response-time", methods=[configs.INSIGHTS_TAB['METHOD']])
 @limiter.limit(configs.LIMITER)
@@ -9325,10 +9387,10 @@ def igp_response_time_alerts():
                 'percentage_chng': float(
                     rt_percentage_change) if rt_percentage_change is not None else rt_percentage_change,
                 'least_performers': rt_district_dict,
-                'date_ranges'  : utils.get_date_ranges(period)
+                'date_ranges': utils.get_date_ranges(period)
             }
         }
-        return jsonify(response),200
+        return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
@@ -9510,7 +9572,7 @@ def igp_reoccurrence():
                 LIMIT 3;
             """
 
-        # Execute query
+            # Execute query
             predpol_db_cursor.execute(district_reoccurrence_pct_query, query_params)
             result = predpol_db_cursor.fetchall()
             for row in result:
@@ -9521,13 +9583,13 @@ def igp_reoccurrence():
 
         response = {
             'reoccurrence_count': {
-                    'prev': reoccurence_count_prev,
-                    'prior': reoccurrence_count_prior,
-                    'percentage_chng': float(
-                        reoccurrence_percentage_change) if reoccurrence_percentage_change is not None else reoccurrence_percentage_change,
-                    'reoccurrence_least_performers': district_reoccurrence_pct_dict,
-                    'date_ranges'  : utils.get_date_ranges(period)
-                }
+                'prev': reoccurence_count_prev,
+                'prior': reoccurrence_count_prior,
+                'percentage_chng': float(
+                    reoccurrence_percentage_change) if reoccurrence_percentage_change is not None else reoccurrence_percentage_change,
+                'reoccurrence_least_performers': district_reoccurrence_pct_dict,
+                'date_ranges': utils.get_date_ranges(period)
+            }
         }
         return jsonify(response), 200
 
@@ -9703,14 +9765,15 @@ def igp_conference_calls():
 
         response = {
             'conference_calls': {
-                    'prev': successful_conf_prev,
-                    'prior': successful_conf_prior,
-                    'percentage_chng': float(successful_conference_pct_chng) if successful_conference_pct_chng is not None else successful_conference_pct_chng,
-                    'conference_calls_least_performers': conf_district_calls,
-                    'total_prev': total_conf_prev,
-                    'total_prior': total_conf_prior,
-                    'date_ranges' : utils.get_date_ranges(period)
-                }
+                'prev': successful_conf_prev,
+                'prior': successful_conf_prior,
+                'percentage_chng': float(
+                    successful_conference_pct_chng) if successful_conference_pct_chng is not None else successful_conference_pct_chng,
+                'conference_calls_least_performers': conf_district_calls,
+                'total_prev': total_conf_prev,
+                'total_prior': total_conf_prior,
+                'date_ranges': utils.get_date_ranges(period)
+            }
         }
         return jsonify(response), 200
 
@@ -9884,12 +9947,13 @@ def igp_negative_feedback():
 
         response = {
             'negative_feedback_count': {
-                    'prev': neg_feedback_count_prev,
-                    'prior': neg_feedback_count_prior,
-                    'percentage_chng': float(negative_feedback_pct_change) if negative_feedback_pct_change is not None else negative_feedback_pct_change,
-                    'negative_feedback_least_performers': district_negativefeedback_pct_dict,
-                    'date_ranges' : utils.get_date_ranges(period)
-                }
+                'prev': neg_feedback_count_prev,
+                'prior': neg_feedback_count_prior,
+                'percentage_chng': float(
+                    negative_feedback_pct_change) if negative_feedback_pct_change is not None else negative_feedback_pct_change,
+                'negative_feedback_least_performers': district_negativefeedback_pct_dict,
+                'date_ranges': utils.get_date_ranges(period)
+            }
         }
         return jsonify(response), 200
 
@@ -10036,10 +10100,13 @@ def igp_dashboard_categories():
         # Adjust counts
         terrorism_current, terrorism_previous = utils.adjust_counts(terrorism_prev, terrorism_prior)
         dacoity_current, dacoity_previous = utils.adjust_counts(dacoity_prev, dacoity_prior)
-        robbery_snatching_current, robbery_snatching_previous = utils.adjust_counts(robbery_snatching_prev, robbery_snatching_prior)
-        rape_sodomy_cat_current, rape_sodomy_cat_previous = utils.adjust_counts(rape_sodomy_cat_prev, rape_sodomy_cat_prior)
+        robbery_snatching_current, robbery_snatching_previous = utils.adjust_counts(robbery_snatching_prev,
+                                                                                    robbery_snatching_prior)
+        rape_sodomy_cat_current, rape_sodomy_cat_previous = utils.adjust_counts(rape_sodomy_cat_prev,
+                                                                                rape_sodomy_cat_prior)
         murder_current, murder_previous = utils.adjust_counts(murder_prev, murder_prior)
-        dacoity_with_murder_current, dacoity_with_murder_previous = utils.adjust_counts(dacoity_with_murder_prev, dacoity_with_murder_prior)
+        dacoity_with_murder_current, dacoity_with_murder_previous = utils.adjust_counts(dacoity_with_murder_prev,
+                                                                                        dacoity_with_murder_prior)
 
         # Compute percentage change
         terrorism_pct_chng = utils.compute_pct_change(terrorism_current, terrorism_previous)
@@ -10047,7 +10114,8 @@ def igp_dashboard_categories():
         robbery_snatching_pct_chng = utils.compute_pct_change(robbery_snatching_current, robbery_snatching_previous)
         rape_sodomy_cat_pct_chng = utils.compute_pct_change(rape_sodomy_cat_current, rape_sodomy_cat_prior)
         murder_pct_chng = utils.compute_pct_change(murder_current, murder_previous)
-        dacoity_with_murder_pct_chng = utils.compute_pct_change(dacoity_with_murder_current, dacoity_with_murder_previous)
+        dacoity_with_murder_pct_chng = utils.compute_pct_change(dacoity_with_murder_current,
+                                                                dacoity_with_murder_previous)
 
         # Dictionary to store least performers by category
         category_dicts = defaultdict(dict)
@@ -10512,7 +10580,8 @@ def igp_missing_girl_child():
         # Execute VCCS query
         vccs_cursor.execute(vccs_missing_query)
         result = vccs_cursor.fetchone()
-        child_lost_prev, child_found_prev, child_lost_prior, child_found_prior, child_still_missing_prev, child_still_missing_prior = result or (0,) * 6
+        child_lost_prev, child_found_prev, child_lost_prior, child_found_prior, child_still_missing_prev, child_still_missing_prior = result or (
+            0,) * 6
 
         # VWPS Girls Missing Query
         if period == "last15days_yearly":
@@ -10589,7 +10658,7 @@ def igp_missing_girl_child():
         girl_child_pct_chng = {
             'child_missing_pct': utils.compute_pct_change(child_lost_prev, child_lost_prior),
             'found_reunited_pct': utils.compute_pct_change(child_found_prev + girls_found_prev,
-                                                      child_found_prior + girls_found_prior),
+                                                           child_found_prior + girls_found_prior),
             'girls_missing_pct': utils.compute_pct_change(girls_missing_prev, girls_missing_prior),
             'total_girls_children_pct': utils.compute_pct_change(total_girl_child_prev, total_girl_child_prior),
             'children_still_missing_pct': utils.compute_pct_change(child_still_missing_prev, child_still_missing_prior)
@@ -10745,7 +10814,7 @@ def igp_rape_sodomy():
             'fir_rape_sodomy_prev': rape_sodomy_fir_prev,
             'fir_rape_sodomy_prior': rape_sodomy_fir_prior,
             'rape_sodomy_pct_chng': rape_sodomy_chng,
-            'date_ranges' : utils.get_date_ranges(period)
+            'date_ranges': utils.get_date_ranges(period)
         }
 
         response = {
@@ -10901,25 +10970,25 @@ def igp_critical_issues():
                 'pct_chng': political_issues_pct_chng
             },
             'media_related_issues': {
-            'prev': media_related_issues_prev,
-            'prior': media_related_issues_prior,
-            'pct_chng': media_related_issues_pct_chng
-        },
-        'religious_issues': {
-            'prev': religious_issues_prev,
-            'prior': religious_issues_prior,
-            'pct_chng': religious_issues_pct_chng
-        },
-        'foreigner_issue': {
-            'prev': foreigner_issue_prev,
-            'prior': foreigner_issue_prior,
-            'pct_chng': foreigner_issue_pct_chng
-        }
+                'prev': media_related_issues_prev,
+                'prior': media_related_issues_prior,
+                'pct_chng': media_related_issues_pct_chng
+            },
+            'religious_issues': {
+                'prev': religious_issues_prev,
+                'prior': religious_issues_prior,
+                'pct_chng': religious_issues_pct_chng
+            },
+            'foreigner_issue': {
+                'prev': foreigner_issue_prev,
+                'prior': foreigner_issue_prior,
+                'pct_chng': foreigner_issue_pct_chng
+            }
         }
 
         data = {
             'critical_issues': critical_issues,
-            'date_ranges' : utils.get_date_ranges(period)
+            'date_ranges': utils.get_date_ranges(period)
         }
 
         response = {
@@ -10966,7 +11035,7 @@ def igp_1787_complaints():
 
         data = {
             '1787_data': complaints_1787_data,
-            'date_ranges' : utils.get_date_ranges(period)
+            'date_ranges': utils.get_date_ranges(period)
         }
 
         response = {
@@ -10999,7 +11068,7 @@ def igp_pkm_data():
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
         period = request.form.get('period', 'week')
-        police_station_str = request.form.get('police_station') # week or month
+        police_station_str = request.form.get('police_station')  # week or month
 
         districts = district_str.split(",") if district_str else []
         district_ids = []
@@ -11017,6 +11086,7 @@ def igp_pkm_data():
                     }), 400
 
                 # Calculate date ranges
+
         def get_period_params(period):
             today = datetime.now()
             if period == 'week':
@@ -11219,7 +11289,8 @@ def executive_summary_response_time_alerts():
             'response_time': {
                 'prev': alerts_count_prev,
                 'prior': alerts_count_prior,
-                'percentage_chng': float(rt_percentage_change) if rt_percentage_change is not None else rt_percentage_change,
+                'percentage_chng': float(
+                    rt_percentage_change) if rt_percentage_change is not None else rt_percentage_change,
                 'status': status,
                 'description': description,
                 'date_ranges': utils.get_date_ranges(period)
@@ -11417,15 +11488,16 @@ def executive_summary_conference_calls():
 
         response = {
             'conference_calls': {
-                    'prev': successful_conf_prev,
-                    'prior': successful_conf_prior,
-                    'percentage_chng': float(successful_conference_pct_chng) if successful_conference_pct_chng is not None else successful_conference_pct_chng,
-                    'total_prev': total_conf_prev,
-                    'total_prior': total_conf_prior,
-                    'date_ranges' : utils.get_date_ranges(period),
-                    'status' : status,
-                    'description' : description
-                }
+                'prev': successful_conf_prev,
+                'prior': successful_conf_prior,
+                'percentage_chng': float(
+                    successful_conference_pct_chng) if successful_conference_pct_chng is not None else successful_conference_pct_chng,
+                'total_prev': total_conf_prev,
+                'total_prior': total_conf_prior,
+                'date_ranges': utils.get_date_ranges(period),
+                'status': status,
+                'description': description
+            }
         }
         return jsonify(response), 200
 
@@ -11505,13 +11577,14 @@ def executive_summary_negative_feedback():
 
         response = {
             'negative_feedback_count': {
-                    'prev': neg_feedback_count_prev,
-                    'prior': neg_feedback_count_prior,
-                    'percentage_chng': float(negative_feedback_pct_change) if negative_feedback_pct_change is not None else negative_feedback_pct_change,
-                    'date_ranges' : utils.get_date_ranges(period),
-                    'status': status,
-                    'descrption' : description
-                }
+                'prev': neg_feedback_count_prev,
+                'prior': neg_feedback_count_prior,
+                'percentage_chng': float(
+                    negative_feedback_pct_change) if negative_feedback_pct_change is not None else negative_feedback_pct_change,
+                'date_ranges': utils.get_date_ranges(period),
+                'status': status,
+                'descrption': description
+            }
         }
         return jsonify(response), 200
 
@@ -11529,7 +11602,8 @@ def executive_summary_negative_feedback():
         postgresql_pool.putconn(processed_db_conn)
 
 
-@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/dashboard-categories", methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
+@app.route(f"{configs.EXECUTIVE_SUMMARY['ENDPOINT']}/dashboard-categories",
+           methods=[configs.EXECUTIVE_SUMMARY['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
 @validate_ownership
@@ -11749,10 +11823,13 @@ def executive_summary_dashboard_categories():
 
         terrorism_current, terrorism_previous = utils.adjust_counts(terrorism_prev, terrorism_prior)
         dacoity_current, dacoity_previous = utils.adjust_counts(dacoity_prev, dacoity_prior)
-        robbery_snatching_current, robbery_snatching_previous = utils.adjust_counts(robbery_snatching_prev, robbery_snatching_prior)
-        rape_sodomy_cat_current, rape_sodomy_cat_previous = utils.adjust_counts(rape_sodomy_cat_prev, rape_sodomy_cat_prior)
+        robbery_snatching_current, robbery_snatching_previous = utils.adjust_counts(robbery_snatching_prev,
+                                                                                    robbery_snatching_prior)
+        rape_sodomy_cat_current, rape_sodomy_cat_previous = utils.adjust_counts(rape_sodomy_cat_prev,
+                                                                                rape_sodomy_cat_prior)
         murder_current, murder_previous = utils.adjust_counts(murder_prev, murder_prior)
-        dacoity_with_murder_current, dacoity_with_murder_previous = utils.adjust_counts(dacoity_with_murder_prev, dacoity_with_murder_prior)
+        dacoity_with_murder_current, dacoity_with_murder_previous = utils.adjust_counts(dacoity_with_murder_prev,
+                                                                                        dacoity_with_murder_prior)
 
         terrorism_pct_chng = utils.compute_pct_change(terrorism_current, terrorism_previous)
         dacoity_pct_chng = utils.compute_pct_change(dacoity_current, dacoity_previous)
@@ -11979,7 +12056,7 @@ def executive_summary_missing_girl_child():
     try:
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
-        period = request.form.get('period', 'week') #week , month, last90days
+        period = request.form.get('period', 'week')  # week , month, last90days
         police_station_str = request.form.get('police_station')
 
         districts, district_ids, police_stations, period, error_response, status_code = utils.validate_params(
@@ -12051,7 +12128,8 @@ def executive_summary_missing_girl_child():
                 """
         vccs_cursor.execute(vccs_missing_query)
         result = vccs_cursor.fetchone()
-        child_lost_prev, child_found_prev, child_lost_prior, child_found_prior,child_still_missing_prev,child_still_missing_prior = result or (0, 0, 0, 0,0,0)
+        child_lost_prev, child_found_prev, child_lost_prior, child_found_prior, child_still_missing_prev, child_still_missing_prior = result or (
+            0, 0, 0, 0, 0, 0)
 
         vwps_missing_query = f"""
                     SELECT
@@ -12088,7 +12166,7 @@ def executive_summary_missing_girl_child():
                                                            child_found_prior + girls_found_prior),
             'girls_missing_pct': utils.compute_pct_change(girls_missing_prev, girls_missing_prior),
             'total_girls_children_pct': utils.compute_pct_change(total_girl_child_prev, total_girl_child_prior),
-            'child_still_missing_pct' : utils.compute_pct_change(child_still_missing_prev,child_still_missing_prior)
+            'child_still_missing_pct': utils.compute_pct_change(child_still_missing_prev, child_still_missing_prior)
         }
 
         # Define display names for categories
@@ -12097,7 +12175,7 @@ def executive_summary_missing_girl_child():
             'girls_missing': 'Missing girls',
             'found_n_reunited': 'Found and reunited children and girls',
             'total_girls_children': 'Total missing and found girls and children',
-            'child_still_missing' : 'Children Still missing'
+            'child_still_missing': 'Children Still missing'
         }
 
         # Helper function to compute status and description
@@ -12161,10 +12239,10 @@ def executive_summary_missing_girl_child():
             'found_n_reunited_description': found_n_reunited_description,
             'total_girls_children_status': total_girls_children_status,
             'total_girls_children_description': total_girls_children_description,
-            'children_still_missing_prev' : child_still_missing_prev,
-            'children_still_missing_prior' :  child_still_missing_prior,
+            'children_still_missing_prev': child_still_missing_prev,
+            'children_still_missing_prior': child_still_missing_prior,
             'children_still_missing_status': children_still_missing_status,
-            'children_still_missing_description' : children_still_missing_description
+            'children_still_missing_description': children_still_missing_description
 
         }
 
@@ -12780,7 +12858,7 @@ def prism():
         # Build list of dicts
         all_cases = []
         for (caller_name, case_nature, case_number, caller_number, district, police_station,
-             accepted_time, rt_lat, rt_long, enmity_lat, enmity_long, distance, fir_number)  in rows:
+             accepted_time, rt_lat, rt_long, enmity_lat, enmity_long, distance, fir_number) in rows:
             all_cases.append({
                 "caller_name": caller_name,
                 "level3_case_nature": case_nature,
@@ -12789,12 +12867,12 @@ def prism():
                 "district": district,
                 "police_station": police_station,
                 "accepted_time": accepted_time,
-                "rt_lat" : rt_lat,
-                "rt_long" : rt_long,
-                "enmity_lat" : enmity_lat,
-                "enmity_long" : enmity_long,
-                "distance" : distance,
-                "fir_number" : fir_number,
+                "rt_lat": rt_lat,
+                "rt_long": rt_long,
+                "enmity_lat": enmity_lat,
+                "enmity_long": enmity_long,
+                "distance": distance,
+                "fir_number": fir_number,
                 "status": "old_enmities"
             })
 
@@ -12860,7 +12938,8 @@ def prism():
             representative_case_numbers.add(representative_case["case_number"])
 
         # Count alerts
-        processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date = %s", (today.strftime('%Y-%m-%d'),))
+        processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date = %s",
+                                    (today.strftime('%Y-%m-%d'),))
         total_enimities = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
@@ -12870,7 +12949,6 @@ def prism():
         processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
                                     (last_month, today.strftime('%Y-%m-%d')))
         last_month_enimities = processed_db_cursor.fetchone()[0]
-
 
         # Rising crimes
         processed_db_cursor.execute("""
@@ -12900,8 +12978,8 @@ def prism():
         month_rising = processed_db_cursor.fetchone()[0]
 
         data = {
-            'cases' : all_cases,
-            'total_alerts': total_enimities+total_rising,
+            'cases': all_cases,
+            'total_alerts': total_enimities + total_rising,
             'last_week_alerts': last_week_enimities + week_rising,
             'last_month_alerts': last_month_enimities + month_rising
         }
@@ -13025,15 +13103,15 @@ def prism_districtwise():
 
         # Step 3: Total counts for found_enmities_case
         processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date = %s",
-                                   (today.strftime('%Y-%m-%d'),))
+                                    (today.strftime('%Y-%m-%d'),))
         total_enimities = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
-                                   (last_week, today.strftime('%Y-%m-%d')))
+                                    (last_week, today.strftime('%Y-%m-%d')))
         last_week_enimities = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
-                                   (last_month, today.strftime('%Y-%m-%d')))
+                                    (last_month, today.strftime('%Y-%m-%d')))
         last_month_enimities = processed_db_cursor.fetchone()[0]
 
         # Total counts for rising_crimes (only representative cases)

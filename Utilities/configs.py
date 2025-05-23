@@ -581,6 +581,140 @@ COMB_DASHBOARD_COND = {
     'Resolved_vcm': " final_status_id = 6"
 }
 
+CATEGORY_QUERIES = {
+    'response_time_change': """
+        SELECT 
+            district_id,
+            (
+                (
+                    SUM(CASE 
+                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{current_interval}'
+                             AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                        THEN 1 ELSE 0 
+                    END) 
+                    - 
+                    SUM(CASE 
+                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                             AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                        THEN 1 ELSE 0 
+                    END)
+                )::numeric
+                /
+                NULLIF(SUM(CASE 
+                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                    THEN 1 ELSE 0 
+                END), 0)
+            ) * 100 AS rt_percentage_change
+        FROM response_time
+        WHERE 
+            response_time > 2100
+            AND parent_id = 0
+            AND district_id IS NOT NULL
+            AND district_id NOT IN ('0','41','42','43','44','45','46')
+            AND level3_case_nature NOT IN ('Other Help')
+            AND level2_case_nature IN (
+                'Robbery/Snatching', 'Burglary', 'Dacoity', 
+                'Sexual Assault', 'Kiddnapping / Abduction', 
+                'Murder', 'Terrorist Act'
+            )
+            {district_condition}
+        GROUP BY district_id
+        HAVING SUM(CASE 
+                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                   THEN 1 ELSE 0 
+               END) > 0
+        ORDER BY rt_percentage_change DESC;
+    """,
+
+    'successful_conference_calls': """
+        SELECT 
+            district_id,
+            (
+                (
+                    SUM(CASE 
+                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{current_interval}'
+                             AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                        THEN 1 ELSE 0 
+                    END) 
+                    - 
+                    SUM(CASE 
+                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                             AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                        THEN 1 ELSE 0 
+                    END)
+                )::numeric
+                /
+                NULLIF(SUM(CASE 
+                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                    THEN 1 ELSE 0 
+                END), 0)
+            ) * 100 AS conf_calls_pct_change
+        FROM response_time
+        WHERE parent_id = 0
+            AND district_id IS NOT NULL
+            AND district_id NOT IN ('0','41','42','43','44','45','46')
+            AND field3 = 'Successful Conference call'
+            AND police_station IS NOT NULL
+            {district_condition}
+        GROUP BY district_id
+        HAVING SUM(CASE 
+                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                   THEN 1 ELSE 0 
+               END) > 0
+        ORDER BY conf_calls_pct_change ASC;
+    """,
+
+    'negative_feedback_calls': """
+        SELECT 
+            district_id,
+            (
+                (
+                    SUM(CASE 
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '{current_interval}'
+                                 AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                                 AND caller_feedback = 'Negative'
+                        THEN 1 ELSE 0 
+                    END)
+                    -
+                    SUM(CASE 
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                                 AND caller_feedback = 'Negative'
+                        THEN 1 ELSE 0 
+                    END)
+                )::numeric
+                /
+                NULLIF(
+                    SUM(CASE 
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                                 AND caller_feedback = 'Negative'
+                        THEN 1 ELSE 0 
+                    END),
+                    0
+                )
+            ) * 100 AS negative_feedback_pct_change
+        FROM response_time
+        WHERE 
+            date(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+            AND caller_feedback IS NOT NULL
+            AND district_id IS NOT NULL
+            {district_condition}
+        GROUP BY district_id
+        HAVING SUM(CASE 
+                    WHEN date(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND date(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                         AND caller_feedback = 'Negative'
+                   THEN 1 ELSE 0 
+               END) > 0.0
+        ORDER BY negative_feedback_pct_change DESC;
+    """
+}
+
 FIR_API_URL = "https://police15.psca.gop.pk/public/fir/police-stations"
 
 RANKS_USERNAME = {
