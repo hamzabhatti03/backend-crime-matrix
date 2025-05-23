@@ -13091,11 +13091,11 @@ def prism_districtwise():
         # Combine district counts
         district_total_counts = defaultdict(int)
         for district, count in enmities_district_counts:
-            if district:  # Exclude None or empty districts
-                district_total_counts[district] += count
+            if district:
+                district_total_counts[district] += int(count)
         for district, count in rising_district_counts_mapped:
-            if district:  # Exclude unmapped districts
-                district_total_counts[district] += count
+            if district:
+                district_total_counts[district] += int(count)
 
         # Step 3: Add counts from early_event.xlsx
         early_event_today = early_event_week = early_event_month = 0
@@ -13108,12 +13108,12 @@ def prism_districtwise():
                     'message': 'Excel file must contain "district" and "police_station" columns'
                 }), 400
             early_event_counts = event_alert_df.groupby('district')['police_station'].nunique()
-            early_event_today = early_event_counts.sum()
-            early_event_week = early_event_today  # assuming same count for demo purposes
+            early_event_today = int(early_event_counts.sum())
+            early_event_week = early_event_today
             early_event_month = early_event_today
             for district, count in early_event_counts.items():
                 if district:
-                    district_total_counts[district] += count
+                    district_total_counts[district] += int(count)
         except Exception as e:
             return jsonify({
                 'status': False,
@@ -13121,22 +13121,22 @@ def prism_districtwise():
             }), 500
 
         district_counts_list = [
-            {'district': district, 'count': count}
+            {'district': district, 'count': int(count)}
             for district, count in district_total_counts.items()
         ]
 
         # Step 4: Total counts for found_enmities_case
         processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date = %s",
                                     (today.strftime('%Y-%m-%d'),))
-        total_enimities = processed_db_cursor.fetchone()[0]
+        total_enimities = int(processed_db_cursor.fetchone()[0])
 
         processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
                                     (last_week, today.strftime('%Y-%m-%d')))
-        last_week_enimities = processed_db_cursor.fetchone()[0]
+        last_week_enimities = int(processed_db_cursor.fetchone()[0])
 
         processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date BETWEEN %s AND %s",
                                     (last_month, today.strftime('%Y-%m-%d')))
-        last_month_enimities = processed_db_cursor.fetchone()[0]
+        last_month_enimities = int(processed_db_cursor.fetchone()[0])
 
         # Total counts for rising_crimes (only representative cases)
         processed_db_cursor.execute("""
@@ -13145,7 +13145,7 @@ def prism_districtwise():
             WHERE date = %s
             AND case_number = ANY(%s)
         """, (today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
-        total_rising = processed_db_cursor.fetchone()[0]
+        total_rising = int(processed_db_cursor.fetchone()[0])
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
@@ -13153,7 +13153,7 @@ def prism_districtwise():
             WHERE date BETWEEN %s AND %s
             AND case_number = ANY(%s)
         """, (last_week, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
-        week_rising = processed_db_cursor.fetchone()[0]
+        week_rising = int(processed_db_cursor.fetchone()[0])
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
@@ -13161,12 +13161,12 @@ def prism_districtwise():
             WHERE date BETWEEN %s AND %s
             AND case_number = ANY(%s)
         """, (last_month, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
-        month_rising = processed_db_cursor.fetchone()[0]
+        month_rising = int(processed_db_cursor.fetchone()[0])
 
         # Step 5: Calculate total alerts (including early_event)
-        total_alerts = total_enimities + total_rising + early_event_today
-        last_week_alerts = last_week_enimities + week_rising + early_event_week
-        last_month_alerts = last_month_enimities + month_rising + early_event_month
+        total_alerts = int(total_enimities + total_rising + early_event_today)
+        last_week_alerts = int(last_week_enimities + week_rising + early_event_week)
+        last_month_alerts = int(last_month_enimities + month_rising + early_event_month)
 
         # Step 6: Construct response
         data = {
