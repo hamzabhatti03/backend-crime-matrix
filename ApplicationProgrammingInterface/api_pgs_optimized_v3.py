@@ -13097,12 +13097,31 @@ def prism_districtwise():
             if district:  # Exclude unmapped districts
                 district_total_counts[district] += count
 
+        # Step 3: Add counts from early_event.xlsx
+        try:
+            excel_file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'DatabaseManager', 'early_event.xlsx')
+            event_alert_df = pd.read_excel(excel_file_path)
+            if 'district' not in event_alert_df.columns or 'police_station' not in event_alert_df.columns:
+                return jsonify({
+                    'status': False,
+                    'message': 'Excel file must contain "district" and "police_station" columns'
+                }), 400
+            early_event_counts = event_alert_df.groupby('district')['police_station'].nunique()
+            for district, count in early_event_counts.items():
+                if district:
+                    district_total_counts[district] += count
+        except Exception as e:
+            return jsonify({
+                'status': False,
+                'message': f'Error reading Excel file: {e}'
+            }), 500
+
         district_counts_list = [
             {'district': district, 'count': count}
             for district, count in district_total_counts.items()
         ]
 
-        # Step 3: Total counts for found_enmities_case
+        # Step 4: Total counts for found_enmities_case
         processed_db_cursor.execute("SELECT COUNT(*) FROM found_enmities_case WHERE date = %s",
                                     (today.strftime('%Y-%m-%d'),))
         total_enimities = processed_db_cursor.fetchone()[0]
@@ -13140,12 +13159,12 @@ def prism_districtwise():
         """, (last_month, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
         month_rising = processed_db_cursor.fetchone()[0]
 
-        # Step 4: Calculate total alerts
+        # Step 5: Calculate total alerts
         total_alerts = total_enimities + total_rising
         last_week_alerts = last_week_enimities + week_rising
         last_month_alerts = last_month_enimities + month_rising
 
-        # Step 5: Construct response
+        # Step 6: Construct response
         data = {
             'district_counts': district_counts_list,
             'total_alerts': total_alerts,
