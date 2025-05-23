@@ -29,7 +29,7 @@ import time
 # from Services import firebase
 import requests
 import ast
-from collections import defaultdict
+from collections import defaultdict, Counter
 from requests.auth import HTTPBasicAuth
 
 load_dotenv()
@@ -1289,6 +1289,9 @@ def punjab_stats_dashboard():
         children_still_missing = vccs_cursor.fetchone()[0]
 
         vccs_conn.close()
+
+        theft_fir = theft_fir if theft_fir is not None else 0
+        burglary_fir = burglary_fir if burglary_fir is not None else 0
 
         dashboard_data = {
             'terrorist_act': {'count': terrorism, 'fir': terrorism_fir,
@@ -13162,38 +13165,72 @@ def prism_police_station():
 
         # Step 3: Fetch case details for today from found_enmities_case
         processed_db_cursor.execute("""
-                SELECT
-                    rt_police_station,
-                    level3_case_nature,
-                    rt_case_number,
-                    rt_accepted_time
-                FROM found_enmities_case
-                WHERE date = %s AND rt_district = %s
-            """, (today.strftime('%Y-%m-%d'), str(district)))
+            SELECT
+                rt_police_station,
+                level3_case_nature,
+                rt_case_number,
+                rt_accepted_time
+            FROM found_enmities_case
+            WHERE date = %s AND rt_district = %s
+        """, (today.strftime('%Y-%m-%d'), str(district)))
         enmities_cases = processed_db_cursor.fetchall()
 
         # Fetch case details for today from rising_crimes
         processed_db_cursor.execute("""
-                SELECT
-                    police_station,
-                    level3_case_nature,
-                    case_number,
-                    accepted_time
-                FROM rising_crimes
-                WHERE date = %s AND district_id = %s
-            """, (today.strftime('%Y-%m-%d'), str(district_id)))
+            SELECT
+                police_station,
+                level3_case_nature,
+                case_number,
+                accepted_time
+            FROM rising_crimes
+            WHERE date = %s AND district_id = %s
+        """, (today.strftime('%Y-%m-%d'), str(district_id)))
         rising_cases = processed_db_cursor.fetchall()
 
-        # Step 4: Combine and group cases by police_station
+        # Step 4: Calculate peak hours for rising_crimes (last 30 days)
+        processed_db_cursor.execute("""
+            SELECT
+                police_station,
+                level3_case_nature,
+                accepted_time
+            FROM rising_crimes
+            WHERE district_id = %s AND date >= %s
+        """, (str(district_id), last_month))
+        rising_peak_cases = processed_db_cursor.fetchall()
+
+        # Calculate peak hours
+        peak_hour_data = defaultdict(lambda: defaultdict(list))
+        for police_station, case_nature, accepted_time in rising_peak_cases:
+            if accepted_time:
+                try:
+                    accepted_datetime = datetime.strptime(accepted_time, '%Y-%m-%d %H:%M:%S')
+                    hour = accepted_datetime.hour
+                    peak_hour_data[police_station][case_nature].append(hour)
+                except ValueError as e:
+                    print(f"Error parsing accepted_time '{accepted_time}': {e}")
+                    continue
+
+        peak_hours = {}
+        for police_station, natures in peak_hour_data.items():
+            peak_hours[police_station] = {}
+            for case_nature, hours in natures.items():
+                if hours:
+                    most_common_hour = Counter(hours).most_common(1)[0][0]
+                    peak_hours[police_station][case_nature] = f"{most_common_hour:02d}:00"
+                else:
+                    peak_hours[police_station][case_nature] = "N/A"
+
+        # Step 5: Combine and group cases by police_station
         police_station_cases = defaultdict(list)
+        police_station_natures = defaultdict(set)
 
         # Helper function to determine risk level
         def get_risk_level(case_nature):
             high_risk = ["Murder", "Highway/Road/Street Robbery",
-                         "Male Kidnapping/ Abduction","Attempt to Kidnap / Abduct",
+                         "Male Kidnapping/ Abduction", "Attempt to Kidnap / Abduct",
                          "Female Kidnapping/ Abduction"]
-            medium_risk = ["Snatching/Jhapatta", "House Burglary","Motorcycle Snatching",
-                           "Attempt to Suicide","Aerial Firing","Attempt to Murder"]
+            medium_risk = ["Snatching/Jhapatta", "House Burglary", "Motorcycle Snatching",
+                           "Attempt to Suicide", "Aerial Firing", "Attempt to Murder"]
             if case_nature in high_risk:
                 return "high"
             elif case_nature in medium_risk:
@@ -13201,85 +13238,90 @@ def prism_police_station():
             else:
                 return "low"
 
-        # Process found_enmities_case
+        # Process found_enmities_case with description
         for (police_station, case_nature, case_number, accepted_time) in enmities_cases:
             if police_station and case_nature:
-                risk_alert = get_risk_level(case_nature)
-                case_dict = {
-                    "case_number": case_number,
-                    "level3_case_nature": case_nature,
-                    "event": "old_enmities",
-                    "risk_alert": risk_alert,
-                    "accepted_time": accepted_time
-                }
-                police_station_cases[police_station].append(case_dict)
+                if case_nature not in police_station_natures[police_station]:
+                    risk_alert = get_risk_level(case_nature)
+                    case_dict = {
+                        "case_number": case_number,
+                        "level3_case_nature": case_nature,
+                        "event": "old_enmities",
+                        "risk_alert": risk_alert,
+                        "accepted_time": accepted_time,
+                        "description": "This was identified in old enmities cases due to similarity of locations."
+                    }
+                    police_station_cases[police_station].append(case_dict)
+                    police_station_natures[police_station].add(case_nature)
 
-        # Process rising_crimes
+        # Process rising_crimes with peak_hour
         for (police_station, case_nature, case_number, accepted_time) in rising_cases:
             if police_station and case_nature:
-                risk_alert = get_risk_level(case_nature)
-                case_dict = {
-                    "case_number": case_number,
-                    "level3_case_nature": case_nature,
-                    "event": "rising_crime",
-                    "risk_alert": risk_alert,
-                    "accepted_time": accepted_time
-                }
-                police_station_cases[police_station].append(case_dict)
+                if case_nature not in police_station_natures[police_station]:
+                    peak_hour = peak_hours.get(police_station, {}).get(case_nature, "N/A")
+                    case_dict = {
+                        "case_number": case_number,
+                        "level3_case_nature": case_nature,
+                        "event": "rising_crime",
+                        "peak_hour": peak_hour,
+                        "accepted_time": accepted_time
+                    }
+                    police_station_cases[police_station].append(case_dict)
+                    police_station_natures[police_station].add(case_nature)
 
-        # Step 5: Total counts for found_enmities_case
+        # Step 6: Total counts for found_enmities_case
         processed_db_cursor.execute("""
-                SELECT COUNT(*)
-                FROM found_enmities_case
-                WHERE date = %s AND rt_district = %s
-            """, (today.strftime('%Y-%m-%d'), district))
+            SELECT COUNT(*)
+            FROM found_enmities_case
+            WHERE date = %s AND rt_district = %s
+        """, (today.strftime('%Y-%m-%d'), district))
         total_enmities = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
-                SELECT COUNT(*)
-                FROM found_enmities_case
-                WHERE date BETWEEN %s AND %s AND rt_district = %s
-            """, (last_week, today.strftime('%Y-%m-%d'), district))
+            SELECT COUNT(*)
+            FROM found_enmities_case
+            WHERE date BETWEEN %s AND %s AND rt_district = %s
+        """, (last_week, today.strftime('%Y-%m-%d'), district))
         last_week_enmities = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
-                SELECT COUNT(*)
-                FROM found_enmities_case
-                WHERE date BETWEEN %s AND %s AND rt_district = %s
-            """, (last_month, today.strftime('%Y-%m-%d'), district))
+            SELECT COUNT(*)
+            FROM found_enmities_case
+            WHERE date BETWEEN %s AND %s AND rt_district = %s
+        """, (last_month, today.strftime('%Y-%m-%d'), district))
         last_month_enmities = processed_db_cursor.fetchone()[0]
 
         # Total counts for rising_crimes (only representative cases)
         processed_db_cursor.execute("""
-                SELECT COUNT(*)
-                FROM rising_crimes
-                WHERE date = %s AND district_id = %s
-                AND case_number = ANY(%s)
-            """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date = %s AND district_id = %s
+            AND case_number = ANY(%s)
+        """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         total_rising = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
-                SELECT COUNT(*)
-                FROM rising_crimes
-                WHERE date BETWEEN %s AND %s AND district_id = %s
-                AND case_number = ANY(%s)
-            """, (last_week, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date BETWEEN %s AND %s AND district_id = %s
+            AND case_number = ANY(%s)
+        """, (last_week, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         week_rising = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
-                SELECT COUNT(*)
-                FROM rising_crimes
-                WHERE date BETWEEN %s AND %s AND district_id = %s
-                AND case_number = ANY(%s)
-            """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
+            SELECT COUNT(*)
+            FROM rising_crimes
+            WHERE date BETWEEN %s AND %s AND district_id = %s
+            AND case_number = ANY(%s)
+        """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         month_rising = processed_db_cursor.fetchone()[0]
 
-        # Step 6: Calculate total alerts
+        # Step 7: Calculate total alerts
         total_alerts = total_enmities + total_rising
         last_week_alerts = last_week_enmities + week_rising
         last_month_alerts = last_month_enmities + month_rising
 
-        # Step 7: Construct response
+        # Step 8: Construct response
         data = {
             'police_station_cases': [
                 {
@@ -13295,7 +13337,7 @@ def prism_police_station():
 
         response = {
             'status': True,
-            'message': f'Police station-wise cases and total alerts for district {district} fetched successfully',
+            'message': f'Police station-wise cases, peak hours, and total alerts for district {district} fetched successfully',
             'data': data
         }
 

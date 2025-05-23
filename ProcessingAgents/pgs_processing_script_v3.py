@@ -952,21 +952,21 @@ def main(start_date, end_date, start):
 
             """Response Time Processing & Records Insertion in DB"""
             response_time(db_conn, log_db_conn, db_cursor, processed_conn, start_timestamp, end_timestamp)
-            #
-            # """Porcesses FIR CASES AND INSERTING"""
-            # process_fir_cases(db_conn, log_db_conn, processed_conn, start_timestamp, end_timestamp,
-            #                   current_date.strftime(configs.YM_DATE))
-            #
-            # """PROCESSES FIR TRENDS AND INSERTING"""
-            # results = fir_trends_processing(db_conn, log_db_conn, log_db_cursor)
-            # insert_fir_trends(processed_conn, log_db_conn, log_db_cursor, results)
 
-            # """PROCESSES CALLER FEEDBACK LOGS TABLE AND INSERTING"""
-            # caller_feedback_etl(db_conn, log_db_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp)
+            """Porcesses FIR CASES AND INSERTING"""
+            process_fir_cases(db_conn, log_db_conn, processed_conn, start_timestamp, end_timestamp,
+                              current_date.strftime(configs.YM_DATE))
 
-            # fir_data.main(current_date)
-            # fb_data.main()
-            # ps_vec_locs.main()
+            """PROCESSES FIR TRENDS AND INSERTING"""
+            results = fir_trends_processing(db_conn, log_db_conn, log_db_cursor)
+            insert_fir_trends(processed_conn, log_db_conn, log_db_cursor, results)
+
+            """PROCESSES CALLER FEEDBACK LOGS TABLE AND INSERTING"""
+            caller_feedback_etl(db_conn, log_db_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp)
+
+            fir_data.main(current_date)
+            fb_data.main()
+            ps_vec_locs.main()
 
             current_date += timedelta(days=configs.DELTA_DAYS)
         if processed_conn:
@@ -994,7 +994,7 @@ def main(start_date, end_date, start):
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('07-05-25', '%d-%m-%y')
-    end_date = datetime.strptime('07-05-25', '%d-%m-%y')
+    start_date = datetime.strptime('23-05-25', '%d-%m-%y')
+    end_date = datetime.strptime('23-05-25', '%d-%m-%y')
     print("executing")
     main(start_date, end_date, True)
