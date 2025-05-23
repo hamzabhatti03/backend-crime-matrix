@@ -33,6 +33,7 @@ import requests
 import ast
 from collections import defaultdict, Counter
 from requests.auth import HTTPBasicAuth
+import pandas as pd
 
 load_dotenv()
 
@@ -13202,7 +13203,25 @@ def prism_police_station():
                 'message': f'Invalid district: {district}'
             }), 400
 
-        # Step 2: Fetch representative case numbers from rising_crimes (for total counts)
+        # Step 2: Load event_alert cases from Excel file
+        excel_file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'DatabaseManager', 'early_event.xlsx')
+        try:
+            event_alert_df = pd.read_excel(excel_file_path)
+            if 'district' not in event_alert_df.columns or 'police_station' not in event_alert_df.columns:
+                return jsonify({
+                    'status': False,
+                    'message': 'Excel file must contain "district" and "police_station" columns'
+                }), 400
+        except Exception as e:
+            return jsonify({
+                'status': False,
+                'message': f'Error reading Excel file: {e}'
+            }), 500
+
+        # Filter event_alert cases for the requested district
+        event_alert_cases = event_alert_df[event_alert_df['district'] == district][['police_station']].drop_duplicates()
+
+        # Step 3: Fetch representative case numbers from rising_crimes (for total counts)
         processed_db_cursor.execute("""
             SELECT
                 caller_name,
@@ -13241,7 +13260,7 @@ def prism_police_station():
             )
             representative_case_numbers.add(representative_case["case_number"])
 
-        # Step 3: Fetch case details for today from found_enmities_case
+        # Step 4: Fetch case details for today from found_enmities_case
         processed_db_cursor.execute("""
             SELECT
                 rt_police_station,
@@ -13265,7 +13284,7 @@ def prism_police_station():
         """, (today.strftime('%Y-%m-%d'), str(district_id)))
         rising_cases = processed_db_cursor.fetchall()
 
-        # Step 4: Calculate peak hours for rising_crimes (last 30 days)
+        # Step 5: Calculate peak hours for rising_crimes (last 30 days)
         processed_db_cursor.execute("""
             SELECT
                 police_station,
@@ -13298,7 +13317,7 @@ def prism_police_station():
                 else:
                     peak_hours[police_station][case_nature] = "N/A"
 
-        # Step 5: Combine and group cases by police_station
+        # Step 6: Combine and group cases by police_station
         police_station_cases = defaultdict(list)
         police_station_natures = defaultdict(set)
 
@@ -13347,7 +13366,23 @@ def prism_police_station():
                     police_station_cases[police_station].append(case_dict)
                     police_station_natures[police_station].add(case_nature)
 
-        # Step 6: Total counts for found_enmities_case
+        # Process event_alert cases from Excel
+        total_event_alerts = 0
+        for _, row in event_alert_cases.iterrows():
+            police_station = row['police_station']
+            case_nature = "Cattle Theft"
+            if police_station and case_nature not in police_station_natures[police_station]:
+
+                case_dict = {
+                    "level3_case_nature": case_nature,
+                    "event": "early_warning_alert",
+                    "risk_alert": "eid_ul_adha"
+                }
+                police_station_cases[police_station].append(case_dict)
+                police_station_natures[police_station].add(case_nature)
+                total_event_alerts += 1
+
+        # Step 7: Total counts for found_enmities_case
         processed_db_cursor.execute("""
             SELECT COUNT(*)
             FROM found_enmities_case
@@ -13394,12 +13429,12 @@ def prism_police_station():
         """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         month_rising = processed_db_cursor.fetchone()[0]
 
-        # Step 7: Calculate total alerts
-        total_alerts = total_enmities + total_rising
+        # Step 8: Calculate total alerts
+        total_alerts = total_enmities + total_rising + total_event_alerts
         last_week_alerts = last_week_enmities + week_rising
         last_month_alerts = last_month_enmities + month_rising
 
-        # Step 8: Construct response
+        # Step 9: Construct response
         data = {
             'police_station_cases': [
                 {
@@ -13415,7 +13450,7 @@ def prism_police_station():
 
         response = {
             'status': True,
-            'message': f'Police station-wise cases, peak hours, and total alerts for district {district} fetched successfully',
+            'message': f'Police station-wise cases, peak hours, event alerts, and total alerts for district {district} fetched successfully',
             'data': data
         }
 
