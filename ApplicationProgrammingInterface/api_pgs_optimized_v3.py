@@ -13098,6 +13098,7 @@ def prism_districtwise():
                 district_total_counts[district] += count
 
         # Step 3: Add counts from early_event.xlsx
+        early_event_today = early_event_week = early_event_month = 0
         try:
             excel_file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'DatabaseManager', 'early_event.xlsx')
             event_alert_df = pd.read_excel(excel_file_path)
@@ -13107,6 +13108,9 @@ def prism_districtwise():
                     'message': 'Excel file must contain "district" and "police_station" columns'
                 }), 400
             early_event_counts = event_alert_df.groupby('district')['police_station'].nunique()
+            early_event_today = early_event_counts.sum()
+            early_event_week = early_event_today  # assuming same count for demo purposes
+            early_event_month = early_event_today
             for district, count in early_event_counts.items():
                 if district:
                     district_total_counts[district] += count
@@ -13159,10 +13163,10 @@ def prism_districtwise():
         """, (last_month, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
         month_rising = processed_db_cursor.fetchone()[0]
 
-        # Step 5: Calculate total alerts
-        total_alerts = total_enimities + total_rising
-        last_week_alerts = last_week_enimities + week_rising
-        last_month_alerts = last_month_enimities + month_rising
+        # Step 5: Calculate total alerts (including early_event)
+        total_alerts = total_enimities + total_rising + early_event_today
+        last_week_alerts = last_week_enimities + week_rising + early_event_week
+        last_month_alerts = last_month_enimities + month_rising + early_event_month
 
         # Step 6: Construct response
         data = {
