@@ -1240,6 +1240,7 @@ def punjab_stats_dashboard():
         else:
             re_occurrences_response = {"reoccured_cases": 0}
 
+
         unsuccess_conference_calls_query = f"""
                 Select count(*) Filter (Where level3_case_nature IN ('Firing on Police', 
                                         'Suicidal Attack/ Bomb Blast/ Terrorist Attack') ) as terrorism,
@@ -1255,17 +1256,15 @@ def punjab_stats_dashboard():
 					AND field3 IN ('FO did not attend the call','Number Powered Off','Out of PS Jurisdiction')
 					{district_condition}
         """
-        processed_db_cursor.execute(unsuccess_conference_calls_query, (from_date_str, to_date_str))
-        (unsuccessful_conf_terrorism, unsuccessful_conf_dacoity_with_murder, unsuccessful_conf_murder,
-         unsuccessful_conf_rape) = processed_db_cursor.fetchone()
+        processed_db_cursor.execute(unsuccess_conference_calls_query,(from_date_str,to_date_str))
+        (unsuccessful_conf_terrorism, unsuccessful_conf_dacoity_with_murder, unsuccessful_conf_murder, unsuccessful_conf_rape) = processed_db_cursor.fetchone()
 
         vcm_conf_calls_query = """
                 SELECT lead_id 
                 FROM case_final_status
                 WHERE created_at BETWEEN %s AND %s
         """
-        vcm_cursor.execute(vcm_conf_calls_query,
-                           (from_date_obj.strftime('%Y-%m-%d 00:00:00'), to_date_obj.strftime('%Y-%m-%d 23:59:59')))
+        vcm_cursor.execute(vcm_conf_calls_query,(from_date_obj.strftime('%Y-%m-%d 00:00:00'), to_date_obj.strftime('%Y-%m-%d 23:59:59')))
         lead_ids = [row[0] for row in vcm_cursor.fetchall()]
 
         vcm_cursor.close()
@@ -1277,7 +1276,7 @@ def punjab_stats_dashboard():
                 WHERE lead_id = ANY(%s)
                 AND field3 IN ('FO did not attend the call', 'Number Powered Off', 'Out of PS Jurisdiction')
         """
-        processed_db_cursor.execute(conf_minorities_query, (lead_ids,))
+        processed_db_cursor.execute(conf_minorities_query,(lead_ids,))
         unsuccessful_minorities = processed_db_cursor.fetchone()[0]
 
         vccs_query = ("""
@@ -1285,11 +1284,11 @@ def punjab_stats_dashboard():
                      Where pucar_level3_case_nature_id IN (594,595,495,493)
                              AND is_closed = 0
                              AND (is_handed_over IS NULL OR is_handed_over = 0)
-                             AND created_at >= %s
+                             AND created_at >= '2024-07-25 00:00:00'
                              AND created_at <= %s
                       """)
         vccs_cursor = vccs_conn.cursor()
-        vccs_cursor.execute(vccs_query, (current_date_str, to_date_str))
+        vccs_cursor.execute(vccs_query,(to_date_str,))
         children_still_missing = vccs_cursor.fetchone()[0]
 
         vccs_conn.close()
@@ -1351,7 +1350,7 @@ def punjab_stats_dashboard():
                                                                                          'rural': '00:00'}),
                                   'avg_response_time': category_avg_response_dict.get('robbery_snatching',
                                                                                       '00:00')},
-            'theft': {'count': theft, 'fir': theft_fir + burglary_fir,
+            'theft': {'count': theft, 'fir': theft_fir+burglary_fir,
                       'fake/other': 0,
                       'response_times': category_regional_response_dict.get('theft',
                                                                             {'urban': '00:00', 'rural': '00:00'}),
@@ -1425,15 +1424,15 @@ def punjab_stats_dashboard():
             'responsetime_alerts': response_time_alerts,
             'crime_reoccurrence_count': re_occurrences_response,
             'chidlren_still_missing': children_still_missing,
-            'unsuccessful_conference_calls': {
-                'total': unsuccessful_conf_dacoity_with_murder + unsuccessful_conf_terrorism + unsuccessful_minorities +
-                         unsuccessful_conf_murder + unsuccessful_conf_rape + 0,
-                'religious_issues': unsuccessful_minorities,
-                'terrorism': unsuccessful_conf_terrorism,
-                'dacoity_with_murder': unsuccessful_conf_dacoity_with_murder,
-                'police_encounter': 0,  # Police encounter is 0
-                'murder': unsuccessful_conf_murder,
-                'rape': unsuccessful_conf_murder
+            'unsuccessful_conference_calls' : {
+                                'total': unsuccessful_conf_dacoity_with_murder + unsuccessful_conf_terrorism + unsuccessful_minorities +
+                                         unsuccessful_conf_murder + unsuccessful_conf_rape + 0,
+                                'religious_issues' : unsuccessful_minorities,
+                                'terrorism': unsuccessful_conf_terrorism,
+                                'dacoity_with_murder':unsuccessful_conf_dacoity_with_murder,
+                                'police_encounter' : 0, #Police encounter is 0
+                                'murder' : unsuccessful_conf_murder,
+                                'rape' : unsuccessful_conf_murder
             }
         }
 
@@ -1605,8 +1604,9 @@ def punjab_more_info():
                         SELECT pucar_district_id, COUNT(*) AS count
                         FROM case_final_status
                         WHERE created_at BETWEEN '2024-07-25 00:00:00' AND %s
-                          AND level3_case_nature IN ({level3_list})
-                          AND pucar_district_id NOT IN ('0', '41', '42', '43', '44', '45')
+                         AND pucar_level3_case_nature_id IN (594,595,495,493)
+                             AND is_closed = 0
+                             AND (is_handed_over IS NULL OR is_handed_over = 0)
                           {additional_condition}
                         GROUP BY pucar_district_id HAVING COUNT(*) > 0;
                     """
@@ -1622,7 +1622,9 @@ def punjab_more_info():
                         SELECT pucar_district_id, pucar_police_station_id, pucar_police_station, COUNT(*) AS count
                         FROM case_final_status
                         WHERE created_at BETWEEN '2024-07-25 00:00:00' AND %s
-                          AND level3_case_nature IN ({level3_list})
+                          AND pucar_level3_case_nature_id IN (594,595,495,493)
+                             AND is_closed = 0
+                             AND (is_handed_over IS NULL OR is_handed_over = 0)
                           {additional_condition}
                         GROUP BY pucar_district_id, pucar_police_station HAVING COUNT(*) > 0;
                     """
@@ -1655,11 +1657,13 @@ def punjab_more_info():
             # Case details
             cases_query = f"""
                         SELECT pucar_case_number, level3_case_nature, pucar_caller_name, 
-                               pucar_accepted_time, pucar_cli, pucar_police_station, 
+                               created_at, pucar_cli, pucar_police_station, 
                                pucar_district_id, pucar_cro_comments
                         FROM case_final_status
                         WHERE created_at BETWEEN '2024-07-25 00:00:00' AND %s
-                          AND level3_case_nature IN ({level3_list})
+                          AND pucar_level3_case_nature_id IN (594,595,495,493)
+                             AND is_closed = 0
+                             AND (is_handed_over IS NULL OR is_handed_over = 0)
                           {additional_condition};
                     """
             vccs_cursor.execute(cases_query, [to_date_str])
@@ -1669,7 +1673,7 @@ def punjab_more_info():
                     "case_number": case_no,
                     "case_nature": case_nature,
                     "caller_name": caller_name,
-                    "assigned_time": accepted_time,
+                    "time_id": accepted_time.strftime(configs.YMD_HMS),
                     "cli": caller_number,
                     "police_station": police_station,
                     "status": 'Completed',
@@ -2809,13 +2813,13 @@ def pswise_categories():
                         AND district_id = %s
                         AND police_station = %s
                         """
-        processed_db_cursor.execute(alerts_count_query, (from_date, to_date, district_id, police_station))
+        processed_db_cursor.execute(alerts_count_query, (from_date, to_date,district_id,police_station))
         rt_alerts = processed_db_cursor.fetchone()[0]
 
         from_date_obj = datetime.strptime(from_date, "%Y-%m-%d")
         from_date_formatted = from_date_obj.strftime("%d-%m-%Y")
 
-        to_date_obj = datetime.strptime(to_date, "%Y-%m-%d")
+        to_date_obj = datetime.strptime(to_date,"%Y-%m-%d")
         to_date_formatted = to_date_obj.strftime("%d-%m-%Y")
 
         predpol_db_cursor.execute(f"""
@@ -2833,12 +2837,13 @@ def pswise_categories():
                             AND date Between %s AND %s
                             AND district = %s
                             AND police_station = %s
-                """, (from_date_formatted, to_date_formatted, str(district_id), police_station))
+                """, (from_date_formatted,to_date_formatted,str(district_id),police_station))
         re_occurrences_count = predpol_db_cursor.fetchone()
         if re_occurrences_count is not None:
             re_occurrences_response = {"reoccured_cases": re_occurrences_count[0]}
         else:
             re_occurrences_response = {"reoccured_cases": 0}
+
 
         negative_caller_feedback_query = """
                                     Select SUM(CASE WHEN caller_feedback = 'Negative' THEN 1 ELSE 0 END)
@@ -2847,9 +2852,10 @@ def pswise_categories():
                                     AND district_id = %s
                                     AND police_station = %s
                                         """
-        processed_db_cursor.execute(negative_caller_feedback_query, (from_date, to_date, district_id, police_station))
+        processed_db_cursor.execute(negative_caller_feedback_query, (from_date, to_date,district_id,police_station))
         row = processed_db_cursor.fetchone()
         negative_feedback_count = row[0] if row is not None else 0
+
 
         # successful response
         response = {
@@ -2867,8 +2873,8 @@ def pswise_categories():
                 'unsuccessful_conf_calls': unsuccessful_calls,
                 'hotspot_coordinates': filter_lat_longs(coordinates, max_distance_km=3),
                 'response_time_alerts': rt_alerts,
-                'reoccurrence_alerts': re_occurrences_response,
-                'negative_feedback_alerts': negative_feedback_count
+                'reoccurrence_alerts'  : re_occurrences_response,
+                'negative_feedback_alerts' : negative_feedback_count
             }
         }
         return jsonify(response), 200
@@ -2886,6 +2892,9 @@ def pswise_categories():
 
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+        predpol_db_cursor.close()
+        predictive_db_pool.putconn(predpol_db_conn)
 
 
 @app.route(configs.PUNJABTODAY_CASE_DETAILS['ENDPOINT'],
