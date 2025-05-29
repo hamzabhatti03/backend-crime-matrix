@@ -5662,7 +5662,7 @@ def crime_trends():
             "district_id IS NOT NULL",
             "police_station IS NOT NULL",
             "parent_id = 0",
-            "DATE(date) > '2025-06-01'"
+            "DATE(date) > '2024-06-01'"
         ]
         params = {'case_types': case_types}
 
@@ -5783,6 +5783,7 @@ def crime_trends():
             ) AS percentage_change
         FROM fir_trends
         WHERE 1=1
+        AND DATE(date) > '2024-09-01'
         """
 
         if district_str:
