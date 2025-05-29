@@ -8766,6 +8766,7 @@ def igp_insights():
 def get_rankings():
     try:
         processed_db_conn, processed_db_cursor = get_processed_db_connection()
+        predpol_db_conn, predpol_db_cursor = get_db_pg_predictive()
 
         category = request.form.get('category')
         view_role = request.form.get('view_role', type=int)
@@ -8799,8 +8800,12 @@ def get_rankings():
             previous_interval_end=previous_interval_end
         )
 
-        processed_db_cursor.execute(query)
-        results = processed_db_cursor.fetchall()
+        if category == 'crime_reoccurrences':
+            predpol_db_cursor.execute(query)
+            results = predpol_db_cursor.fetchall()
+        else:
+            processed_db_cursor.execute(query)
+            results = processed_db_cursor.fetchall()
 
         formatted_results = [
             {'district': configs.DISTRICTS_DICTIONARY.get(int(row[0])) if row[0] is not None else None,
