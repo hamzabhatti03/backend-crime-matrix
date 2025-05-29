@@ -92,7 +92,7 @@ DISTRICTS_MAPPING = [(1, "Sheikhupura"), (2, "Nankana Sb"), (3, "Kasur"), (4, "G
                      (24, "T.T. Singh"), (25, "Multan"), (27, "Lodhran"), (28, "Khanewal"), (29, "Vehari"),
                      (30, "Sahiwal"), (31, "Okara"), (32, "Pakpattan"), (33, "D.G. Khan"), (34, "Rajanpur"),
                      (35, "Muzaffargarh"), (36, "Layyah"), (37, "Bahawalpur"), (38, "Bahawalnagar"),
-                     (39, "Rahimyar Khan"), (40, "Lahore"), (46, "Murree"), (43, "Kot Addu"),(44, "Wazirabad")]
+                     (39, "Rahimyar Khan"), (40, "Lahore"), (46, "Murree"), (43, "Kot Addu"), (44, "Wazirabad")]
 
 # , (41, "Lahore-Test"), (42, "Female-15"), (43, "Kot Addu"),(44, "Wazirabad"), (45, "Potohari-15")
 
@@ -183,13 +183,12 @@ CAP = ['Kidnapping for Ransom', 'Attempt to Kidnap / Abduct', 'Assault on Govt. 
        'Murder', 'Street Fight', 'Hurt / Injuries', 'Criminal Intimidation (Threat with Weapon)',
        'Male Kidnapping/ Abduction', 'Attempt to Murder', 'Other Assault']
 
-
 """MODULARITY OF API QUERIES"""
 # common columns that are frequently used
 PROCESSED_COLUMNS = [
     "total_calls", "siraiki", "punjabi", "potohari", "english", "traffic", "vwps",
     "app_alerts", "transfered", "call_backs", "video_calls", "estimated_response_time",
-    "succ_conf_calls","unsucc_conf_calls", "vccs", "vcm", "generated_cases"
+    "succ_conf_calls", "unsucc_conf_calls", "vccs", "vcm", "generated_cases"
 ]
 
 # Base query for processed_data table
@@ -204,8 +203,7 @@ AND district_id IS NOT NULL
 PROCESSED_COLUMNS_WITH_DISTRICT_ID = ["district_id"] + PROCESSED_COLUMNS
 PROCESSED_COLUMNS_WITH_DATE = ["date"] + PROCESSED_COLUMNS
 
-
-#common additional conditions
+# common additional conditions
 DATE_CONDITION = " date = ? "
 DATE_RANGE_CONDITION = " AND date BETWEEN ? AND ? "
 DATE_RANGE_EXTENDED_CONDITION = " AND (((date = ?) AND (hour BETWEEN '20' AND '23')) OR ((date = ?) AND (hour BETWEEN '00' AND '07'))) "
@@ -214,7 +212,6 @@ AGENT_CONDITION = " AND agent = ? "
 HOUR_RANGE_CONDITION = " AND hour BETWEEN '08' AND '19' "
 UNIX_DATETIME_CONDITION = " AND datetime(time_id, 'unixepoch','localtime') BETWEEN ? AND ?"
 UNIX_DATE_CONDITION = " AND DATE(datetime(time_id, 'unixepoch','localtime')) BETWEEN ? AND ?"
-
 
 """REGIONAL_RESPONSE_TIME_AVG QUERY COMPONENTS FOR DASHBOARD AND REPORTS"""
 # Base query components
@@ -259,7 +256,6 @@ AGENT_STATS_BASE_QUERY = """
         {group_by_str}
         {order_by_str}
 """
-
 
 AGENT_STATS_COMMON_COLUMNS = {
     "hoax_calls": "sum(hoax_calls) as hoax_calls",
@@ -324,7 +320,7 @@ RESPONSE_TIME_STATS_RANGES = [
 ]
 
 """ PUNJAB EMERGENCY-i APIs ENDPOINTS AND METHODS"""
-REGISTER = {'ENDPOINT' : '/register', 'METHOD' : 'POST'}
+REGISTER = {'ENDPOINT': '/register', 'METHOD': 'POST'}
 LOGIN = {'ENDPOINT': '/login', 'METHOD': 'POST'}
 DASHBOARD_PUNJAB = {'ENDPOINT': '/dashboard_punjab', 'METHOD': 'POST'}
 PUNJAB_MORE_INFO = {'ENDPOINT': '/punjab_more_info', 'METHOD': 'POST'}
@@ -373,8 +369,7 @@ UNSUCCESSFUL_CONFERENCE_CALLS = {'ENDPOINT': '/unsuccessful_conference_calls/cri
 EXECUTIVE_SUMMARY = {'ENDPOINT': '/executive_summary', 'METHOD': 'POST'}
 PRISM = {'ENDPOINT': '/prism', 'METHOD': 'POST'}
 
-
-PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
+PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'}  # currently unused API
 
 """CATEGORIES MAPPING"""
 CATEGORIES = {
@@ -413,7 +408,8 @@ CATEGORIES = {
                      'Criminal Intimidation (Threat with Weapon)'],
     'other_property': ['Attempt to Illegal Possession of Land/ Premises'],  # level3
     'child_abuse': ['Rape', 'Child Abuse / Molestation'],  # level3
-    'children_still_missing': ['Child Lost/ Missing','Child Kidnapping','Missing Person reported','Kidnapping for Ransom']
+    'children_still_missing': ['Child Lost/ Missing', 'Child Kidnapping', 'Missing Person reported',
+                               'Kidnapping for Ransom']
 }
 
 REGIONAL_CATEGORY_RT_QUERY = """        
@@ -712,7 +708,88 @@ CATEGORY_QUERIES = {
                    THEN 1 ELSE 0 
                END) > 0.0
         ORDER BY negative_feedback_pct_change DESC;
-    """
+    """,
+
+    'crime_reoccurrences': """
+    SELECT 
+        district,
+        (
+            (
+                SUM(CASE 
+                    WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{current_interval}'
+                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
+                    THEN 1 ELSE 0 END
+                ) -
+                SUM(CASE 
+                    WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL '{current_interval}'
+                    THEN 1 ELSE 0 END
+                )
+            )::NUMERIC
+            /
+            NULLIF(
+                SUM(CASE 
+                    WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL '{current_interval}'
+                    THEN 1 ELSE 0 END
+                ), 0
+            )
+        ) * 100 AS reoccurrence_percentage_change
+    FROM crime_hotspot
+    WHERE 
+        TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+        AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
+        AND case_number IS NOT NULL
+        AND district IS NOT NULL
+        AND case_nature IN (
+            'Any Other Dacoity', 'Any Other Robbery', 'Any Other Theft', 'Bank Burglary', 
+            'Bank/Money Exchange/ ATM Dacoity', 'Bank/Money Exchange/ ATM Robbery', 
+            'Car Snatching', 'Car Theft', 'Cattle Dacoity', 'Cattle Robbery', 'Cattle theft', 
+            'Cycle Theft', 'Dacoity with Murder', 'Highway/Road/Street Dacoity', 
+            'Highway/Road/Street Robbery', 'House Burglary', 'House Dacoity', 'House Robbery', 
+            'Jewellery Shop Dacoity', 'Jewellery Shop Robbery', 'Mobile Theft', 'Motorcycle Snatching', 
+            'Motorcycle Theft', 'Other Burglary', 'Other Vehicles Snatching', 'Other Vehicles Theft', 
+            'Patrol Pump Dacoity', 'Patrol Pump Robbery', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 
+            'Robbery with Murder', 'Shop Burglary', 'Shop Dacoity', 'Shop Robbery', 'Snatching/Jhapatta', 
+            'Transformer/ Motor Theft', 'Weapon Theft'
+        )
+        {district_condition}
+    GROUP BY district
+    HAVING 
+        SUM(CASE 
+            WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                 AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL '{current_interval}'
+            THEN 1 ELSE 0 END
+        ) != 0
+    ORDER BY reoccurrence_percentage_change DESC;
+""",
+
+    'minority_issues': """
+    SELECT
+        district_id,
+        ROUND(100 * (current_count - previous_count) / previous_count, 2) AS pct_change
+    FROM (
+        SELECT
+            district_id,
+            SUM(CASE 
+                    WHEN created_at >= CURDATE() - INTERVAL {current_interval} DAY
+                         AND created_at < CURDATE() + INTERVAL 1 DAY
+                    THEN 1 ELSE 0 
+                END) AS current_count,
+            SUM(CASE 
+                    WHEN created_at >= CURDATE() - INTERVAL {previous_interval_end} DAY
+                         AND created_at < CURDATE() - INTERVAL {current_interval} DAY
+                    THEN 1 ELSE 0 
+                END) AS previous_count
+        FROM case_final_status
+        WHERE 
+            district_id IS NOT NULL
+            {district_condition}
+        GROUP BY district_id
+    ) AS period_counts
+    WHERE previous_count > 0 AND current_count - previous_count > 0
+    ORDER BY pct_change DESC;
+"""
 }
 
 FIR_API_URL = "https://police15.psca.gop.pk/public/fir/police-stations"
@@ -837,7 +914,7 @@ LAHORE_DIVISION_MAPPING = {
     'Rang Mehal': 'City Division',
     'Tibbi City': 'City Division',
     'Race Course': 'Civiline Division',
-    'Women Race Course' : 'Civiline Division'
+    'Women Race Course': 'Civiline Division'
 
 }
 
@@ -858,28 +935,28 @@ GUJRANWALA_DIVISION_MAPPING = {
     'Kamoke': 'Sadar Division',
     'Noushera Virka': 'Sadar Division',
     'Wazirabad': 'Wazirabad Division',
-    'Model Town' : 'City Division',
-    'Kotwali' : 'City Division',
-    'Khiali' : 'City Division',
-    'Qila Dedar Singh' : 'City Division',
-    'Satellite Town' : 'Civil Line Division',
-    'Peoples Colony' : 'Civil Line Division'
+    'Model Town': 'City Division',
+    'Kotwali': 'City Division',
+    'Khiali': 'City Division',
+    'Qila Dedar Singh': 'City Division',
+    'Satellite Town': 'Civil Line Division',
+    'Peoples Colony': 'Civil Line Division'
 }
 
 FAISALABAD_DIVISION_MAPPING = {
-    'Jarranwala' : 'Jarranwala Division',
-    'Gulberg' : 'Lyallpur Division',
-    'Sargodha Road' : 'Madina Town Division',
-    'Tandlianwala' : 'Sadar Division',
-    'Batala Colony' : 'Iqbal Town Division' ,
-    'Sadar F/abad' : 'Iqbal Town Division',
-    'Kotwali' : 'Lyallpur Division',
-    'Nishatabad' : 'Madina Town Division',
-    'Factory Area' : 'Iqbal Town Division',
-    'Civil Lines' : 'Lyallpur Division',
-    'People Colony' : 'Madina Town Division',
-    'Khurrianwala' : 'Jarranwala Division',
-    'Sammundri' : 'Sadar Division' ,
+    'Jarranwala': 'Jarranwala Division',
+    'Gulberg': 'Lyallpur Division',
+    'Sargodha Road': 'Madina Town Division',
+    'Tandlianwala': 'Sadar Division',
+    'Batala Colony': 'Iqbal Town Division',
+    'Sadar F/abad': 'Iqbal Town Division',
+    'Kotwali': 'Lyallpur Division',
+    'Nishatabad': 'Madina Town Division',
+    'Factory Area': 'Iqbal Town Division',
+    'Civil Lines': 'Lyallpur Division',
+    'People Colony': 'Madina Town Division',
+    'Khurrianwala': 'Jarranwala Division',
+    'Sammundri': 'Sadar Division',
 }
 
 # Define API endpoints
@@ -954,61 +1031,61 @@ district_eng_urdu = {
 }
 
 district_code_mapping = {
-                "swl": "sahiwal",
-                "lhr": "lahore",
-                "rwp": "rawalpindi",
-                "fsd": "faisalabad",
-                "mux": "multan",
-                "grw": "gujranwala",
-                "bwp": "bahawalpur",
-                "sgd": "sargodha",
-                "ryk": "rahimyar khan",
-                "skp": "sheikhupura",
-                "grt": "gujrat",
-                "skt": "sialkot",
-                "mzg": "muzaffargarh",
-                "ckl": "chakwal",
-                "bwn": "bahawalnagar",
-                "att": "attock",
-                "cot": "chiniot",
-                "dgk": "dgkhan",
-                "hfz": "hafizabad",
-                "jhg": "jhang",
-                "jm": "jhelum",
-                "jhm": "jhelum",
-                "ksr": "kasur",
-                "knw": "khanewal",
-                "khl": "khanewal",
-                "ksb": "khushab",
-                "lya": "layyah",
-                "ldh": "lodharan",
-                "mbd": "mbdin",
-                "mwl": "mianwali",
-                "nrl": "narowal",
-                "nks": "nankana sb",
-                "oka": "okara",
-                "pp": "pakpattan",
-                "rjr": "rajanpur",
-                "tts": "ttsingh",
-                "vri": "vehari",
-                "shk": "sheikhupura",
-                "mtn": "multan",
-                "vhr": "vehari",
-                "mzf": "muzaffargarh",
-                "hsn": "attock",
-                "rjp": "rajanpur",
-                "bkr": "bhakkar",
-                "cht": "chiniot",
-                "hfd": "hafizabad",
-                "khb": "khushab",
-                "nrw": "narowal",
-                "nsb": "nankana sb",
-                "pkt": "pakpatan",
-                "wab": "wazirabad",
-                "kta": "kotaddu",
-                "mur": "murree",
-                "atk": "attock"
-            }
+    "swl": "sahiwal",
+    "lhr": "lahore",
+    "rwp": "rawalpindi",
+    "fsd": "faisalabad",
+    "mux": "multan",
+    "grw": "gujranwala",
+    "bwp": "bahawalpur",
+    "sgd": "sargodha",
+    "ryk": "rahimyar khan",
+    "skp": "sheikhupura",
+    "grt": "gujrat",
+    "skt": "sialkot",
+    "mzg": "muzaffargarh",
+    "ckl": "chakwal",
+    "bwn": "bahawalnagar",
+    "att": "attock",
+    "cot": "chiniot",
+    "dgk": "dgkhan",
+    "hfz": "hafizabad",
+    "jhg": "jhang",
+    "jm": "jhelum",
+    "jhm": "jhelum",
+    "ksr": "kasur",
+    "knw": "khanewal",
+    "khl": "khanewal",
+    "ksb": "khushab",
+    "lya": "layyah",
+    "ldh": "lodharan",
+    "mbd": "mbdin",
+    "mwl": "mianwali",
+    "nrl": "narowal",
+    "nks": "nankana sb",
+    "oka": "okara",
+    "pp": "pakpattan",
+    "rjr": "rajanpur",
+    "tts": "ttsingh",
+    "vri": "vehari",
+    "shk": "sheikhupura",
+    "mtn": "multan",
+    "vhr": "vehari",
+    "mzf": "muzaffargarh",
+    "hsn": "attock",
+    "rjp": "rajanpur",
+    "bkr": "bhakkar",
+    "cht": "chiniot",
+    "hfd": "hafizabad",
+    "khb": "khushab",
+    "nrw": "narowal",
+    "nsb": "nankana sb",
+    "pkt": "pakpatan",
+    "wab": "wazirabad",
+    "kta": "kotaddu",
+    "mur": "murree",
+    "atk": "attock"
+}
 
 IMAGE_FOLDER = "static/images"
 ALLOWED_IMG_EXTENSIONS = {"png", "jpg", "jpeg"}
