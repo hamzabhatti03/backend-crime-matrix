@@ -8831,6 +8831,7 @@ def get_rankings():
 def verified_unverified_response_time():
     log_db_conn, log_db_cursor = get_log_pg_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
+
     try:
         from_date_str = request.form.get('fromDate')
         to_date_str = request.form.get('toDate')
@@ -8840,10 +8841,12 @@ def verified_unverified_response_time():
         username = request.form.get('username')
         page = request.form.get('page', default=1, type=int)
         page_size = request.form.get('page_size', default=7, type=int)
+        status = request.form.get('status')  # New parameter
 
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
 
+        # Validate view_role
         if view_role not in [1, 2, 3, 4, 5]:
             return jsonify({
                 'status': False,
@@ -8851,20 +8854,36 @@ def verified_unverified_response_time():
                 'data': None
             }), 400
 
-            # Validate pagination parameters
+        # Validate pagination
         if page < 1:
             return jsonify({
                 'status': False,
                 'message': 'Page number must be greater than 0',
                 'data': None
             }), 400
-        if page_size < 1 or page_size > 50:  # Set reasonable upper limit
+        if page_size < 1 or page_size > 1000:
             return jsonify({
                 'status': False,
                 'message': 'Page size must be between 1 and 1000',
                 'data': None
             }), 400
 
+        # Validate status
+        if status not in [None, '', 'verified', 'unverified']:
+            return jsonify({
+                'status': False,
+                'message': 'Invalid status. Must be None, "verified", or "unverified".',
+                'data': None
+            }), 400
+
+        # Build police_status_condition
+        police_status_condition = ""
+        if status == 'verified':
+            police_status_condition = "AND police_status = 1"
+        elif status == 'unverified':
+            police_status_condition = "AND police_status = 2"
+
+        # Build district_condition
         district_ids = []
         if districts:
             for district in districts:
@@ -8888,6 +8907,7 @@ def verified_unverified_response_time():
 
         offset = (page - 1) * page_size
 
+        # Build and execute queries
         if len(districts) == 1 and districts[0]:
             count_query = f"""
                 SELECT COUNT(*) 
@@ -8898,12 +8918,13 @@ def verified_unverified_response_time():
                     AND district_id IS NOT NULL
                     AND district_id NOT IN ('0','41','42','43','44','45')
                     AND district_id = %s
+                    {police_status_condition}
             """
             cases_query = f"""
                 SELECT 
                     case_number, level3_case_nature, caller_name, caller_number,
                     accepted_time, police_station, district_id, time_id,
-                    description, first_arrival_time, response_time, tab
+                    description, first_arrival_time, response_time, police_status
                 FROM response_time
                 WHERE date BETWEEN %s AND %s
                     AND parent_id = 0
@@ -8911,6 +8932,7 @@ def verified_unverified_response_time():
                     AND district_id IS NOT NULL
                     AND district_id NOT IN ('0','41','42','43','44','45')
                     AND district_id = %s
+                    {police_status_condition}
                 ORDER BY time_id ASC
                 LIMIT %s OFFSET %s
             """
@@ -8921,109 +8943,108 @@ def verified_unverified_response_time():
             cases = processed_db_cursor.fetchall()
 
             tab_response_time_query = f"""
-                            Select AVG(response_time) Filter (
-                                    WHERE tab = 'Manual' ) as avg_wireless,
-                                    AVG(response_time) Filter (
-                                    WHERE tab IN ('Agent','District') ) as avg_tab
-                            From response_time
-                            Where 
-                                district_id NOT IN ('0','41','42','43','44','45')
-                                AND date Between %s AND %s
-                                AND district_id IS NOT NULL
-                                AND response_time is NOT NULL 
-                                AND response_time > 0
-                                AND parent_id = 0
-                                AND district_id = %s
-                    """
+                SELECT 
+                    AVG(response_time) FILTER (WHERE police_status = 2) as avg_unverified,
+                    AVG(response_time) FILTER (WHERE police_status = 1) as avg_verified
+                FROM response_time
+                WHERE 
+                    district_id NOT IN ('0','41','42','43','44','45')
+                    AND date BETWEEN %s AND %s
+                    AND district_id IS NOT NULL
+                    AND response_time IS NOT NULL 
+                    AND response_time > 0
+                    AND parent_id = 0
+                    AND district_id = %s
+                    {police_status_condition}
+            """
             processed_db_cursor.execute(tab_response_time_query, (from_date_str, to_date_str, district_ids[0]))
             (unverified_avg_rt, verified_avg_rt) = processed_db_cursor.fetchone()
         else:
             count_query = f"""
-                        SELECT COUNT(*) 
-                        FROM response_time
-                        WHERE date BETWEEN %s AND %s
-                            AND parent_id = 0
-                            AND response_time is NOT NULL AND response_time > 0
-                            AND district_id IS NOT NULL
-                            AND district_id NOT IN ('0','41','42','43','44','45')
-                            {district_condition}
-                    """
-
-            # Execute count query
+                SELECT COUNT(*) 
+                FROM response_time
+                WHERE date BETWEEN %s AND %s
+                    AND parent_id = 0
+                    AND response_time IS NOT NULL AND response_time > 0
+                    AND district_id IS NOT NULL
+                    AND district_id NOT IN ('0','41','42','43','44','45')
+                    {district_condition}
+                    {police_status_condition}
+            """
             processed_db_cursor.execute(count_query, (from_date_str, to_date_str))
             total_records = processed_db_cursor.fetchone()[0]
-
             total_pages = (total_records + page_size - 1) // page_size
 
             cases_query = f"""
-                        SELECT 
-                            case_number, level3_case_nature, caller_name, caller_number,
-                            accepted_time, police_station, district_id, time_id,
-                            description, first_arrival_time, response_time,tab
-                        FROM response_time
-                        WHERE date BETWEEN %s AND %s
-                            AND parent_id = 0
-                            AND response_time is NOT NULL AND response_time > 0
-                            AND district_id IS NOT NULL
-                            AND district_id NOT IN ('0','41','42','43','44','45')
-                            {district_condition}
-                        ORDER BY time_id ASC
-                        LIMIT %s OFFSET %s
-                    """
+                SELECT 
+                    case_number, level3_case_nature, caller_name, caller_number,
+                    accepted_time, police_station, district_id, time_id,
+                    description, first_arrival_time, response_time, police_status
+                FROM response_time
+                WHERE date BETWEEN %s AND %s
+                    AND parent_id = 0
+                    AND response_time IS NOT NULL AND response_time > 0
+                    AND district_id IS NOT NULL
+                    AND district_id NOT IN ('0','41','42','43','44','45')
+                    {district_condition}
+                    {police_status_condition}
+                ORDER BY time_id ASC
+                LIMIT %s OFFSET %s
+            """
             processed_db_cursor.execute(cases_query, (from_date_str, to_date_str, page_size, offset))
             cases = processed_db_cursor.fetchall()
 
             tab_response_time_query = f"""
-                            Select AVG(response_time) Filter (
-                                    WHERE tab = 'Manual' ) as avg_wireless,
-                                    AVG(response_time) Filter (
-                                    WHERE tab IN ('Agent','District') ) as avg_tab
-                            From response_time
-                            Where 
-                                district_id NOT IN ('0','41','42','43','44','45')
-                                AND date Between %s AND %s
-                                AND district_id IS NOT NULL
-                                AND response_time is NOT NULL 
-                                AND response_time > 0
-                                AND parent_id = 0
-                                {district_condition}
-                    """
+                SELECT 
+                    AVG(response_time) FILTER (WHERE police_status = 2) as avg_unverified,
+                    AVG(response_time) FILTER (WHERE police_status = 1) as avg_verified
+                FROM response_time
+                WHERE 
+                    district_id NOT IN ('0','41','42','43','44','45')
+                    AND date BETWEEN %s AND %s
+                    AND district_id IS NOT NULL
+                    AND response_time IS NOT NULL 
+                    AND response_time > 0
+                    AND parent_id = 0
+                    {district_condition}
+                    {police_status_condition}
+            """
             processed_db_cursor.execute(tab_response_time_query, (from_date_str, to_date_str))
             (unverified_avg_rt, verified_avg_rt) = processed_db_cursor.fetchone()
 
+        # Build cases list
         cases_list = [
             {
-                "case_number": case_number,
-                "case_nature": level3_case_nature,
-                "caller_name": caller_name,
-                "assigned_time": created_time,
-                "cli": caller_number,
-                "police_station": police_station,
+                "case_number": case[0],
+                "case_nature": case[1],
+                "caller_name": case[2],
+                "assigned_time": case[4],
+                "cli": case[3],
+                "police_station": case[5],
                 "status": 'Completed',
-                "district": configs.DISTRICTS_DICTIONARY.get(int(district_id)),
-                "time_id": datetime.fromtimestamp(int(time_id)).strftime(configs.YMD_HMS),
-                "description": description,
-                "reached_time": datetime.fromtimestamp(int(reached_time)).strftime(
-                    configs.YMD_HMS) if reached_time else None,
-                "response_time": f"{int(response_time // 60)}:{int(response_time % 60):02d}" if response_time else 0,
-                "tab": 'verified' if tab in ['Agent', 'District'] else 'unverified'
+                "district": configs.DISTRICTS_DICTIONARY.get(int(case[6])),
+                "time_id": datetime.fromtimestamp(int(case[7])).strftime(configs.YMD_HMS),
+                "description": case[8],
+                "reached_time": datetime.fromtimestamp(int(case[9])).strftime(configs.YMD_HMS) if case[9] else None,
+                "response_time": f"{int(case[10] // 60)}:{int(case[10] % 60):02d}" if case[10] else 0,
+                "tab": 'verified' if case[11] == 1 else 'unverified'
             }
-            for
-            case_number, level3_case_nature, caller_name,
-            caller_number, created_time, police_station,
-            district_id, time_id, description, reached_time, response_time, tab
-            in cases
+            for case in cases
         ]
+
+        # Format average response times
+        def format_response_time(rt):
+            if rt is None or rt == 0:
+                return "0:00"
+            return f"{int(rt // 60)}:{int(rt % 60):02d}"
 
         response = {
             'status': True,
-            'message': 'Verfied and Unverified Response time cases fetched successfully',
+            'message': 'Verified and Unverified Response time cases fetched successfully',
             'data': {
                 'cases': cases_list,
-                'verified_response_time': f"{int(verified_avg_rt // 60)}:{int(verified_avg_rt % 60):02d}" if verified_avg_rt and
-                                                                                                             verified_avg_rt is not None else 0,
-                'unverified_response_time': f"{int(unverified_avg_rt // 60)}:{int(unverified_avg_rt % 60):02d}" if unverified_avg_rt and
-                                                                                                                   unverified_avg_rt is not None else 0,
+                'verified_response_time': format_response_time(verified_avg_rt),
+                'unverified_response_time': format_response_time(unverified_avg_rt),
                 'pagination': {
                     'current_page': page,
                     'page_size': page_size,
@@ -9032,18 +9053,19 @@ def verified_unverified_response_time():
                 }
             }
         }
+
         return jsonify(response), 200
 
     except Exception as e:
         utils.log_to_pg_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
-            'message': f'Internal server error {e}'
+            'message': f'Internal server error: {e}'
         }), 400
+
     finally:
         log_db_cursor.close()
         log_db_pool.putconn(log_db_conn)
-
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
 
@@ -13317,20 +13339,24 @@ def prism_police_station():
         """, (today.strftime('%Y-%m-%d'), str(district_id)))
         rising_cases = processed_db_cursor.fetchall()
 
-        # Step 5: Calculate peak hours for rising_crimes (last 30 days)
+        # Step 5: Calculate peak hours and high risk zones for rising_crimes (last 30 days)
         processed_db_cursor.execute("""
             SELECT
                 police_station,
                 level3_case_nature,
-                accepted_time
+                accepted_time,
+                caller_location
             FROM rising_crimes
             WHERE district_id = %s AND date >= %s
         """, (str(district_id), last_month))
         rising_peak_cases = processed_db_cursor.fetchall()
 
-        # Calculate peak hours
+        # Calculate peak hours and collect road names
         peak_hour_data = defaultdict(lambda: defaultdict(list))
-        for police_station, case_nature, accepted_time in rising_peak_cases:
+        road_names = defaultdict(list)
+        road_pattern = r'\b(\w+\s+road)\b'  # Pattern for "road" only
+        for police_station, case_nature, accepted_time, caller_location in rising_peak_cases:
+            # Peak hour calculation
             if accepted_time:
                 try:
                     accepted_datetime = datetime.strptime(accepted_time, '%Y-%m-%d %H:%M:%S')
@@ -13339,7 +13365,43 @@ def prism_police_station():
                 except ValueError as e:
                     print(f"Error parsing accepted_time '{accepted_time}': {e}")
                     continue
+            # Collect road names for high risk zones
+            if caller_location:
+                matches = re.findall(road_pattern, caller_location, re.IGNORECASE)
+                if matches:
+                    road_name = matches[-1].title()  # Take the last match and capitalize
+                    road_names[(police_station, case_nature)].append(road_name)
 
+        processed_db_cursor.execute("""
+                SELECT
+                    police_station,
+                    level3_case_nature,
+                    caller_location
+                FROM anomaly_detection
+                WHERE district_id = %s AND date >= %s
+            """, (str(district_id), last_month))
+        anomaly_detection_cases = processed_db_cursor.fetchall()
+
+        # Collect road names for anomaly_detection
+        anomaly_road_names = defaultdict(list)
+        for police_station, case_nature, caller_location in anomaly_detection_cases:
+            if caller_location:
+                match = re.search(road_pattern, caller_location, re.IGNORECASE)
+                if match:
+                    road_name = match.group(1).strip().title()  # e.g., "Main Road"
+                    anomaly_road_names[(police_station, case_nature)].append(road_name)
+
+        # Calculate high risk zones for anomaly_detection
+        anomaly_high_risk_zones = {}
+        for key, names in anomaly_road_names.items():
+            if names:
+                most_common_road = Counter(names).most_common(1)[0][0]
+                anomaly_high_risk_zones[key] = most_common_road
+            else:
+                anomaly_high_risk_zones[key] = "N/A"
+
+
+        # Calculate peak hours
         peak_hours = {}
         for police_station, natures in peak_hour_data.items():
             peak_hours[police_station] = {}
@@ -13349,6 +13411,15 @@ def prism_police_station():
                     peak_hours[police_station][case_nature] = f"{most_common_hour:02d}:00"
                 else:
                     peak_hours[police_station][case_nature] = "N/A"
+
+        # Calculate high risk zones
+        high_risk_zones = {}
+        for key, names in road_names.items():
+            if names:
+                most_common_road = Counter(names).most_common(1)[0][0]
+                high_risk_zones[key] = most_common_road
+            else:
+                high_risk_zones[key] = "N/A"
 
         # Step 6: Combine and group cases by police_station
         police_station_cases = defaultdict(list)
@@ -13368,6 +13439,34 @@ def prism_police_station():
             else:
                 return "low"
 
+        # Fetch case details for today from anomaly_detection
+        processed_db_cursor.execute("""
+            SELECT
+                police_station,
+                level3_case_nature,
+                case_number,
+                accepted_time
+            FROM anomaly_detection
+            WHERE date = %s AND district_id = %s
+        """, (today.strftime('%Y-%m-%d'), str(district_id)))
+        anomaly_detection_cases = processed_db_cursor.fetchall()
+
+        for (police_station, case_nature, case_number, accepted_time) in anomaly_detection_cases:
+            if police_station and case_nature:
+                if case_nature not in police_station_natures[police_station]:
+                    peak_hour = peak_hours.get(police_station, {}).get(case_nature, "N/A")
+                    high_risk_zone = anomaly_high_risk_zones.get((police_station, case_nature), "N/A")
+                    case_dict = {
+                        "case_number": case_number,
+                        "level3_case_nature": case_nature,
+                        "event": "anomaly_detection",
+                        "peak_hour": peak_hour,
+                        "accepted_time": accepted_time,
+                        "high_risk_zone" : high_risk_zone
+                    }
+                    police_station_cases[police_station].append(case_dict)
+                    police_station_natures[police_station].add(case_nature)
+
         # Process found_enmities_case with description
         for (police_station, case_nature, case_number, accepted_time) in enmities_cases:
             if police_station and case_nature:
@@ -13384,17 +13483,19 @@ def prism_police_station():
                     police_station_cases[police_station].append(case_dict)
                     police_station_natures[police_station].add(case_nature)
 
-        # Process rising_crimes with peak_hour
+        # Process rising_crimes with peak_hour and high_risk_zone
         for (police_station, case_nature, case_number, accepted_time) in rising_cases:
             if police_station and case_nature:
                 if case_nature not in police_station_natures[police_station]:
                     peak_hour = peak_hours.get(police_station, {}).get(case_nature, "N/A")
+                    high_risk_zone = high_risk_zones.get((police_station, case_nature), "N/A")
                     case_dict = {
                         "case_number": case_number,
                         "level3_case_nature": case_nature,
                         "event": "rising_crime",
                         "peak_hour": peak_hour,
-                        "accepted_time": accepted_time
+                        "accepted_time": accepted_time,
+                        "high_risk_zone": high_risk_zone  # Will now be "Avenue Road" for Kahna
                     }
                     police_station_cases[police_station].append(case_dict)
                     police_station_natures[police_station].add(case_nature)
@@ -13405,7 +13506,6 @@ def prism_police_station():
             police_station = row['police_station']
             case_nature = "Cattle Theft"
             if police_station and case_nature not in police_station_natures[police_station]:
-
                 case_dict = {
                     "level3_case_nature": case_nature,
                     "event": "early_warning_alert",
@@ -13462,10 +13562,31 @@ def prism_police_station():
         """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         month_rising = processed_db_cursor.fetchone()[0]
 
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM anomaly_detection
+            WHERE date = %s AND district_id = %s
+        """, (today.strftime('%Y-%m-%d'), str(district_id)))
+        today_anomaly = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM anomaly_detection
+            WHERE date BETWEEN %s AND %s AND district_id = %s
+        """, (last_week, today.strftime('%Y-%m-%d'), str(district_id)))
+        last_week_anomaly = processed_db_cursor.fetchone()[0]
+
+        processed_db_cursor.execute("""
+            SELECT COUNT(*)
+            FROM anomaly_detection
+            WHERE date BETWEEN %s AND %s AND district_id = %s
+        """, (last_month, today.strftime('%Y-%m-%d'), str(district_id)))
+        last_month_anomaly = processed_db_cursor.fetchone()[0]
+
         # Step 8: Calculate total alerts
-        total_alerts = total_enmities + total_rising + total_event_alerts
-        last_week_alerts = last_week_enmities + week_rising
-        last_month_alerts = last_month_enmities + month_rising
+        total_alerts = total_enmities + total_rising + total_event_alerts + today_anomaly
+        last_week_alerts = last_week_enmities + week_rising + total_event_alerts + last_week_anomaly
+        last_month_alerts = last_month_enmities + month_rising + total_event_alerts + last_month_anomaly
 
         # Step 9: Construct response
         data = {
@@ -13483,7 +13604,7 @@ def prism_police_station():
 
         response = {
             'status': True,
-            'message': f'Police station-wise cases, peak hours, event alerts, and total alerts for district {district} fetched successfully',
+            'message': f'Police station-wise cases, Rising Crime, event alerts, Old Enmities, Anomaly Detection and total alerts for {district} fetched successfully',
             'data': data
         }
 

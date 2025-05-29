@@ -264,7 +264,8 @@ def response_time(primary_conn, log_db_conn, log_db_cursor, processed_conn, star
             d.reached_lat,
             d.reached_long,
             l.caller_feedback,
-            l.feedback_comment
+            l.feedback_comment,
+            l.police_status
         FROM 
             `15_preprocessed` l
         LEFT JOIN 
@@ -277,7 +278,7 @@ def response_time(primary_conn, log_db_conn, log_db_cursor, processed_conn, star
         GROUP BY 
             l.lead_id, l.time_id, l.case_number, l.first_arrival_time, l.cli, 
             l.district_id, l.police_station_id,
-            l.accepted_time, l.level1_case_nature, l.level2_case_nature, l.level3_case_nature, l.field3,l.caller_feedback, l.feedback_comment;
+            l.accepted_time, l.level1_case_nature, l.level2_case_nature, l.level3_case_nature, l.field3,l.caller_feedback, l.feedback_comment,l.police_status;
         """
 
         primary_cursor.execute(query, (start_timestamp, end_timestamp))
@@ -292,7 +293,7 @@ def response_time(primary_conn, log_db_conn, log_db_cursor, processed_conn, star
             queue, district_id, region_category, created_time, tab, completed_time, caller_name, caller_number,
             job_status, caller_location, complete_by, level1_case_nature, level2_case_nature,
             level3_case_nature, responder_lat, responder_long, field3, lat, long, reached_lat, reached_long,
-            caller_feedback,feedback_comments
+            caller_feedback,feedback_comments,police_status
         ) VALUES (
             {placeholders}
         )
@@ -323,10 +324,11 @@ def response_time(primary_conn, log_db_conn, log_db_cursor, processed_conn, star
             caller_location = EXCLUDED.caller_location,
             field3 = EXCLUDED.field3,
             lat = EXCLUDED.lat,
-            long = EXCLUDED.long
+            long = EXCLUDED.long,
+            police_status = EXCLUDED.police_status
             ;
         """).format(
-            placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(40))
+            placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(41))
         )
 
         for row in rows:
@@ -343,7 +345,7 @@ def response_time(primary_conn, log_db_conn, log_db_cursor, processed_conn, star
                 else:
                     processed_row.append(col)
 
-            if len(processed_row) != 40:
+            if len(processed_row) != 41:
                 raise ValueError(f"Expected 40 values, got {len(processed_row)}: {processed_row}")
 
             try:
@@ -833,7 +835,8 @@ def main(start_date, end_date, start):
                                 reached_lat TEXT,
                                 reached_long TEXT,
                                 caller_feedback TEXT,
-                                feedback_comments TEXT
+                                feedback_comments TEXT,
+                                police_status TEXT
                             )
                         ''')
 
@@ -946,27 +949,27 @@ def main(start_date, end_date, start):
             end_timestamp = utils.date_to_unix_time(
                 (current_date + timedelta(days=configs.DELTA_DAYS)).strftime(configs.YMD_TIME)) - 1
 
-            # """Calls Stats Processing & Records Insertion in DB"""
-            results = process_date(db_conn, log_db_conn, log_db_cursor, start_timestamp, end_timestamp)
-            insert_results(processed_conn, log_db_conn, log_db_cursor, results, current_date.strftime(configs.YM_DATE))
+            # # """Calls Stats Processing & Records Insertion in DB"""
+            # results = process_date(db_conn, log_db_conn, log_db_cursor, start_timestamp, end_timestamp)
+            # insert_results(processed_conn, log_db_conn, log_db_cursor, results, current_date.strftime(configs.YM_DATE))
 
             """Response Time Processing & Records Insertion in DB"""
             response_time(db_conn, log_db_conn, db_cursor, processed_conn, start_timestamp, end_timestamp)
 
-            """Porcesses FIR CASES AND INSERTING"""
-            process_fir_cases(db_conn, log_db_conn, processed_conn, start_timestamp, end_timestamp,
-                              current_date.strftime(configs.YM_DATE))
-
-            """PROCESSES FIR TRENDS AND INSERTING"""
-            results = fir_trends_processing(db_conn, log_db_conn, log_db_cursor)
-            insert_fir_trends(processed_conn, log_db_conn, log_db_cursor, results)
-
-            """PROCESSES CALLER FEEDBACK LOGS TABLE AND INSERTING"""
-            caller_feedback_etl(db_conn, log_db_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp)
-
-            fir_data.main(current_date)
-            fb_data.main()
-            ps_vec_locs.main()
+            # """Porcesses FIR CASES AND INSERTING"""
+            # process_fir_cases(db_conn, log_db_conn, processed_conn, start_timestamp, end_timestamp,
+            #                   current_date.strftime(configs.YM_DATE))
+            #
+            # """PROCESSES FIR TRENDS AND INSERTING"""
+            # results = fir_trends_processing(db_conn, log_db_conn, log_db_cursor)
+            # insert_fir_trends(processed_conn, log_db_conn, log_db_cursor, results)
+            #
+            # """PROCESSES CALLER FEEDBACK LOGS TABLE AND INSERTING"""
+            # caller_feedback_etl(db_conn, log_db_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp)
+            #
+            # fir_data.main(current_date)
+            # fb_data.main()
+            # ps_vec_locs.main()
 
             current_date += timedelta(days=configs.DELTA_DAYS)
         if processed_conn:
@@ -994,7 +997,7 @@ def main(start_date, end_date, start):
 
 
 if __name__ == '__main__':
-    start_date = datetime.strptime('23-05-25', '%d-%m-%y')
-    end_date = datetime.strptime('23-05-25', '%d-%m-%y')
+    start_date = datetime.strptime('01-05-25', '%d-%m-%y')
+    end_date = datetime.strptime('29-05-25', '%d-%m-%y')
     print("executing")
     main(start_date, end_date, True)
