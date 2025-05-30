@@ -8884,9 +8884,9 @@ def verified_unverified_response_time():
         # Build police_status_condition
         police_status_condition = ""
         if status == 'verified':
-            police_status_condition = "AND police_status = 1"
+            police_status_condition = "AND police_status = '1'"
         elif status == 'unverified':
-            police_status_condition = "AND police_status = 2"
+            police_status_condition = "AND police_status = '2'"
 
         # Build district_condition
         district_ids = []
@@ -8949,8 +8949,8 @@ def verified_unverified_response_time():
 
             tab_response_time_query = f"""
                 SELECT 
-                    AVG(response_time) FILTER (WHERE police_status = 2) as avg_unverified,
-                    AVG(response_time) FILTER (WHERE police_status = 1) as avg_verified
+                    AVG(response_time) FILTER (WHERE police_status = '2') as avg_unverified,
+                    AVG(response_time) FILTER (WHERE police_status = '1') as avg_verified
                 FROM response_time
                 WHERE 
                     district_id NOT IN ('0','41','42','43','44','45')
@@ -9001,8 +9001,8 @@ def verified_unverified_response_time():
 
             tab_response_time_query = f"""
                 SELECT 
-                    AVG(response_time) FILTER (WHERE police_status = 2) as avg_unverified,
-                    AVG(response_time) FILTER (WHERE police_status = 1) as avg_verified
+                    AVG(response_time) FILTER (WHERE police_status = '2') as avg_unverified,
+                    AVG(response_time) FILTER (WHERE police_status = '1') as avg_verified
                 FROM response_time
                 WHERE 
                     district_id NOT IN ('0','41','42','43','44','45')
@@ -9032,7 +9032,7 @@ def verified_unverified_response_time():
                 "description": case[8],
                 "reached_time": datetime.fromtimestamp(int(case[9])).strftime(configs.YMD_HMS) if case[9] else None,
                 "response_time": f"{int(case[10] // 60)}:{int(case[10] % 60):02d}" if case[10] else 0,
-                "tab": 'verified' if case[11] == 1 else 'unverified'
+                "tab": 'verified' if case[11] == '1' else 'unverified'
             }
             for case in cases
         ]
