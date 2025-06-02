@@ -368,6 +368,7 @@ VERIFIED_UNVERIFIED_RT = {'ENDPOINT': '/verified_unverified_rt', 'METHOD': 'POST
 UNSUCCESSFUL_CONFERENCE_CALLS = {'ENDPOINT': '/unsuccessful_conference_calls/critical', 'METHOD': 'POST'}
 EXECUTIVE_SUMMARY = {'ENDPOINT': '/executive_summary', 'METHOD': 'POST'}
 PRISM = {'ENDPOINT': '/prism', 'METHOD': 'POST'}
+PSCA_COVERED_AREAS = {'ENDPOINT': '/psca_covered_areas', 'METHOD': 'POST'}
 
 PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'}  # currently unused API
 

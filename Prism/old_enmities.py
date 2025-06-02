@@ -2,8 +2,8 @@
 process_enmities.py
 
 Continuously (every WINDOW_HOURS) finds all response_time cases in the last WINDOW_HOURS
-whose level3_case_nature is in a given list, finds any old_enmities within 300 m,
-and upserts new pairs into found_enmities_case.
+whose level3_case_nature is in a given list, finds any old_enmities within 300m radius,
+and upserts new pairs into found_old_enmities.
 """
 import sys
 import os
@@ -17,7 +17,7 @@ from Utilities.utils import get_processed_db_connection
 from Utilities import configs
 
 # Configurable
-WINDOW_HOURS = 4
+WINDOW_HOURS = 4 #720 hours default
 MAX_DISTANCE_METERS = 300
 
 CASE_NATURES = [
@@ -61,7 +61,7 @@ def main():
         cursor = conn.cursor()
 
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS found_enmities_case (
+        CREATE TABLE IF NOT EXISTS found_old_enmities (
             date TEXT,
             rt_caller_name TEXT,
             rt_caller_number TEXT,
@@ -70,6 +70,11 @@ def main():
             rt_case_number TEXT NOT NULL,
             enmity_fir_number TEXT NOT NULL,
             rt_police_station TEXT,
+            rt_location TEXT,
+            rt_description TEXT,
+            rt_response_time DOUBLE PRECISION,
+            rt_caller_feedback TEXT,
+            rt_feedback_comments TEXT,
             enmities_police_station TEXT NOT NULL,
             rt_lat DOUBLE PRECISION,
             rt_long DOUBLE PRECISION,
@@ -81,13 +86,14 @@ def main():
         );
         """)
         conn.commit()
-        logging.info("Ensured found_enmities_case table exists.")
+        logging.info("Ensured found_old_enmities table exists.")
 
         insert_sql = """
-        INSERT INTO found_enmities_case (
+        INSERT INTO found_old_enmities (
             date, rt_caller_name, rt_caller_number, rt_district, rt_accepted_time,
             rt_case_number, enmity_fir_number, rt_police_station, enmities_police_station,
-            rt_lat, rt_long, enmity_lat, enmity_long, level3_case_nature, distance_meters
+            rt_lat, rt_long, enmity_lat, enmity_long, level3_case_nature, distance_meters, rt_location,  
+            rt_description, rt_response_time, rt_caller_feedback, rt_feedback_comments
         ) VALUES %s
         ON CONFLICT DO NOTHING;
         """
@@ -102,7 +108,8 @@ def main():
             SELECT
               date, caller_name, caller_number, district_id, accepted_time,
               case_number, long AS rt_long, lat AS rt_lat,
-              level3_case_nature, police_station AS rt_police_station
+              level3_case_nature, police_station AS rt_police_station, caller_location AS rt_location, description,
+              response_time, caller_feedback, feedback_comments
             FROM response_time
             WHERE time_id::bigint BETWEEN %s AND %s
               AND level3_case_nature in ({placeholders})
@@ -122,7 +129,9 @@ def main():
         logging.info("  → %d old_enmities rows loaded", len(enm_rows))
 
         to_insert = []
-        for date, caller_name, caller_number, district_id, accepted_time, case_number, rt_long, rt_lat, nature, rt_ps in rt_rows:
+        for (date, caller_name, caller_number, district_id, accepted_time, 
+             case_number, rt_long, rt_lat, nature, rt_ps, rt_location,
+             rt_description, rt_response_time, rt_caller_feedback, rt_feedback_comments) in rt_rows:
             for enm_fir, enm_ps, enm_long, enm_lat in enm_rows:
                 dist = haversine(rt_long, rt_lat, enm_long, enm_lat)
                 if dist is not None and dist <= MAX_DISTANCE_METERS:
@@ -131,7 +140,8 @@ def main():
                         configs.DISTRICTS_DICTIONARY[int(district_id)],
                         accepted_time, case_number, enm_fir,
                         rt_ps, enm_ps, rt_lat, rt_long, enm_lat, enm_long,
-                        nature, dist
+                        nature, dist, rt_location, rt_description, rt_response_time, 
+                        rt_caller_feedback, rt_feedback_comments
                     ))
 
         logging.info("  → %d matching enmity pairs found", len(to_insert))
@@ -139,7 +149,7 @@ def main():
         if to_insert:
             execute_values(cursor, insert_sql, to_insert, page_size=100)
             conn.commit()
-            logging.info("Inserted new pairs into found_enmities_case.")
+            logging.info("Inserted new pairs into found_old_enmities.")
 
     except Exception:
         logging.exception("Error during cron job execution")

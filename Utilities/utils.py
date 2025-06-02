@@ -1151,6 +1151,172 @@ def compute_pct_change(current: int, prior: int) -> Optional[float]:
 
 
 def fetch_and_compute_1787_complaint_stats(period: str, dist_cond: str) -> Dict[str, Any]:
+    # 1) Build your interval params
+    if period == "week":
+        params = {"current_interval": 7, "previous_interval_end": 14}
+    else:
+        params = {"current_interval": 30, "previous_interval_end": 60}
+
+    # 2) Run your query
+    query = f"""
+        SELECT
+            -- Category 1: Non-FIR Registration
+            MAX(CASE WHEN category = 1 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS non_fir_registration_pending_prev,
+            MAX(CASE WHEN category = 1 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prev,
+            MAX(CASE WHEN category = 1 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS non_fir_registration_completed_prev,
+            MAX(CASE WHEN category = 1 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS non_fir_registration_pending_prior,
+            MAX(CASE WHEN category = 1 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prior,
+            MAX(CASE WHEN category = 1 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS non_fir_registration_completed_prior,
+            -- Category 2: Under Investigation
+            MAX(CASE WHEN category = 2 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS under_investigation_pending_prev,
+            MAX(CASE WHEN category = 2 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS under_investigation_total_prev,
+            MAX(CASE WHEN category = 2 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS under_investigation_completed_prev,
+            MAX(CASE WHEN category = 2 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS under_investigation_pending_prior,
+            MAX(CASE WHEN category = 2 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS under_investigation_total_prior,
+            MAX(CASE WHEN category = 2 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS under_investigation_completed_prior,
+            -- Category 3: Complaint Against Police
+            MAX(CASE WHEN category = 3 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_police_pending_prev,
+            MAX(CASE WHEN category = 3 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prev,
+            MAX(CASE WHEN category = 3 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_police_completed_prev,
+            MAX(CASE WHEN category = 3 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_police_pending_prior,
+            MAX(CASE WHEN category = 3 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prior,
+            MAX(CASE WHEN category = 3 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_police_completed_prior,
+            -- Category 4: Complaint Against Services
+            MAX(CASE WHEN category = 4 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_services_pending_prev,
+            MAX(CASE WHEN category = 4 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prev,
+            MAX(CASE WHEN category = 4 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_services_completed_prev,
+            MAX(CASE WHEN category = 4 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_services_pending_prior,
+            MAX(CASE WHEN category = 4 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prior,
+            MAX(CASE WHEN category = 4 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_services_completed_prior,
+            -- Category 5: Departmental Issue
+            MAX(CASE WHEN category = 5 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS departmental_issue_pending_prev,
+            MAX(CASE WHEN category = 5 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prev,
+            MAX(CASE WHEN category = 5 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS departmental_issue_completed_prev,
+            MAX(CASE WHEN category = 5 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS departmental_issue_pending_prior,
+            MAX(CASE WHEN category = 5 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prior,
+            MAX(CASE WHEN category = 5 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS departmental_issue_completed_prior
+        FROM (
+            SELECT
+                category,
+                CASE
+                    WHEN DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= CURDATE() - INTERVAL %(current_interval)s DAY
+                         AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < CURDATE() + INTERVAL 1 DAY THEN 'current'
+                    ELSE 'previous'
+                END AS period,
+                CASE
+                    WHEN complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue') THEN 'pending'
+                    WHEN complaint_status = 'Closed (Disposed)' THEN 'completed'
+                END AS status_group,
+                COUNT(*) AS complaint_count
+            FROM complaints_view
+            WHERE source = 2
+                AND complaint_date IS NOT NULL
+                AND DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY
+                AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY
+                AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                {dist_cond}
+            GROUP BY category, period, status_group
+            UNION ALL
+            SELECT
+                category,
+                CASE
+                    WHEN DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= CURDATE() - INTERVAL %(current_interval)s DAY
+                         AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < CURDATE() + INTERVAL 1 DAY THEN 'current'
+                    ELSE 'previous'
+                END AS period,
+                'total' AS status_group,
+                COUNT(*) AS complaint_count
+            FROM complaints_view
+            WHERE source = 2
+                AND complaint_date IS NOT NULL
+                AND DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY
+                AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY
+            GROUP BY category, period
+        ) AS aggregated_complaints;
+    """
+    conn = db_config.get_1787_db_connection()
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(query, params)
+        row = cursor.fetchone()  # type: Dict[str, int]
+
+    # 3) Define the mapping of top-level keys → column-name prefixes
+    category_map = {
+        "investigation": "under_investigation",
+        "fir_registration": "non_fir_registration",
+        "complaint_against_police": "complaint_against_police",
+        "complaint_against_service_delivery": "complaint_against_services",
+        "departmental_issue": "departmental_issue",
+    }
+    statuses = ["pending", "total", "completed"]
+    intervals = {"prev": "_prev", "prior": "_prior"}
+
+    # 4) Define display names for categories and statuses
+    category_display_names = {
+        "fir_registration": "FIR registration complaints",
+        "investigation": "investigation complaints",
+        "complaint_against_police": "complaints against police",
+        "complaint_against_service_delivery": "complaints against service delivery",
+        "departmental_issue": "departmental issue complaints"
+    }
+    status_display_names = {
+        "pending": "pending",
+        "total": "total",
+        "completed": "completed"
+    }
+
+    # 5) Helper function to compute status and description
+    def get_status_and_description(prev, prior, pct_chng, period, display_name):
+        if prev > prior:
+            status = 'increased'
+        elif prev < prior:
+            status = 'decreased'
+        else:
+            status = 'unchanged'
+
+        if status == 'unchanged':
+            description = f"The number of {display_name} remained the same at {prev} in the most recent {period}."
+        else:
+            description = f"This represents a {abs(pct_chng):.1f}% {'increase' if status == 'increased' else 'decrease'} in {display_name}"
+        return status, description
+
+    # 6) Build the nested dict with status and description
+    result = {}
+    for top_key, prefix in category_map.items():
+        result[top_key] = {}
+        for status in statuses:
+            # Pull out the two raw counts
+            current_key = f"{prefix}_{status}{intervals['prev']}"
+            prior_key = f"{prefix}_{status}{intervals['prior']}"
+
+            curr_val = row.get(current_key, 0) if row else 0
+            prior_val = row.get(prior_key, 0) if row else 0
+            pct = compute_pct_change(curr_val, prior_val)
+
+            # Compute status and description
+            display_name = f"{status_display_names[status]} {category_display_names[top_key]}"
+            status_val, description_val = get_status_and_description(
+                curr_val, prior_val, pct, period, display_name
+            )
+
+            result[top_key][status] = {
+                "prev": curr_val,
+                "prior": prior_val,
+                "pct_chng": pct,
+                "status": status_val,
+                "description": description_val
+            }
+
+    if cursor:
+        cursor.close()
+    if conn:
+        conn.close()
+    return result
+
+
+
+
+def fetch_and_compute_1787_complaint_stats_executive_summary(period: str, dist_cond: str) -> Dict[str, Any]:
     """
     Fetch and compute complaint statistics for the specified period and district condition.
 
@@ -1389,7 +1555,7 @@ def get_query_params(period):
 
 
 def get_date_ranges(period):
-    today = datetime.today().date()
+    today = datetime.today().date() - timedelta(days=1)
     if period == "last15days_yearly":
         current_start = today - timedelta(days=14)
         current_end = today

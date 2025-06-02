@@ -1,10 +1,10 @@
 """
-Data Aggregation and Metrics Processing Script for IGP_INSIGHTS DASHBOARD
+Data Aggregation and Metrics Processing Script for igp_insights DASHBOARD
 
 This script aggregates operational and performance metrics from multiple databases (test1124 , db_predictive_policing, 1787_db and db_child_safety)
 for crime statistics, police response tracking, and service quality monitoring. It calculates comparative
 metrics across predefined time periods (weekly, monthly, yearly and 90 days) and stores the results in a centralized
-'daily_metrics' table for reporting and analysis.
+'igp_insights' table for reporting and analysis.
 
 Key Features:
 1. **Multi-Database Integration**:
@@ -27,7 +27,7 @@ Key Features:
    - Critical Incident Monitoring (Political, Religious, Foreign-related issues)
 
 4. **Automatic Table Management**:
-   - Creates 'daily_metrics' table if not exists
+   - Creates 'igp_insights' table if not exists
    - Uses upsert (INSERT ... ON CONFLICT) for idempotent updates
 
 5. **Error Handling**:
@@ -67,7 +67,7 @@ import mysql.connector
 from mysql.connector import Error as MySQLError
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from Utilities.utils import get_processed_db_connection
-from Utilities.db_config import get_1787_db_connection,get_vccs_db_connection
+from Utilities.db_config import get_1787_db_connection
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,60 +79,77 @@ logging.basicConfig(
 PERIODS = {
     "week": {
         "current": {
-            "start": lambda today: today - timedelta(days=8),  # Yesterday - 7 days
-            "end": lambda today: today - timedelta(days=1)     # Yesterday
+            "start": lambda today: today - timedelta(days=7),
+            "end": lambda today: today
         },
         "previous": {
-            "start": lambda today: today - timedelta(days=15),  # 2 weeks before yesterday
-            "end": lambda today: today - timedelta(days=9)      # Week before yesterday
+            "start": lambda today: today - timedelta(days=14),
+            "end": lambda today: today - timedelta(days=7)
         },
     },
     "month": {
         "current": {
-            "start": lambda today: today - timedelta(days=30),  # Yesterday - 30
-            "end": lambda today: today - timedelta(days=1)     # Yesterday
+            "start": lambda today: today - timedelta(days=30),
+            "end": lambda today: today
         },
         "previous": {
-            "start": lambda today: today - timedelta(days=60),  # Yesterday - 60
-            "end": lambda today: today - timedelta(days=31)     # Yesterday - 30
-}
+            "start": lambda today: today - timedelta(days=60),
+            "end": lambda today: today - timedelta(days=30)
+        }
     },
     "last90days": {
         "current": {
             "start": lambda today: today - timedelta(days=90),
-            "end": lambda today: today - timedelta(days=1)
+            "end": lambda today: today
         },
         "previous": {
             "start": lambda today: today - timedelta(days=180),
-            "end": lambda today: today - timedelta(days=91)
-}
+            "end": lambda today: today - timedelta(days=90)
+        }
     },
     "last15days_yearly": {
         "current": {
-            "start": lambda today: today - timedelta(days=15),
+            "start": lambda today: today - timedelta(days=14),
             "end": lambda today: today - timedelta(days=1)
         },
         "previous": {
-            "start": lambda today: (today - timedelta(days=15)) - timedelta(days=365),
-            "end": lambda today: (today - timedelta(days=1)) - timedelta(days=365)
+            "start": lambda today: (today - timedelta(days=14)).replace(year=today.year - 1),
+            "end": lambda today: (today - timedelta(days=1)).replace(year=today.year - 1)
         }
     },
 }
 
 def connect_to_mysql():
     try:
-        conn = mysql.connector.connect(
+        vccs_conn = mysql.connector.connect(
             host=os.getenv('DB_HOST'),
             database=os.getenv('VCCS_DB_NAME'),
             user=os.getenv('DB_USER'),
             password=os.getenv('DB_PASSWORD'),
             buffered=True  # Ensure buffered cursor
         )
-        if conn.is_connected():
-            logging.info("Successfully connected to MySQL database")
-            return conn
+
+        vwps_conn = mysql.connector.connect(
+            host=os.getenv('DB_HOST'),
+            database=os.getenv('VWPS_DB_NAME'),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASSWORD'),
+            buffered=True  # Ensure buffered cursor
+        )
+
+        vcm_conn = mysql.connector.connect(
+            host=os.getenv('DB_HOST'),
+            database=os.getenv('VCM_DB_NAME'),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASSWORD'),
+            buffered=True  # Ensure buffered cursor
+        )
+
+        if vccs_conn.is_connected() and vwps_conn.is_connected():
+            logging.info("Successfully connected to VCCS,VCM AND VWPS database")
+            return vccs_conn, vwps_conn, vcm_conn
         else:
-            logging.error("Failed to establish MySQL connection")
+            logging.error("Failed to establish VCCS AND VWPS database connection")
             raise MySQLError("Connection not established")
     except MySQLError as e:
         logging.error(f"Error connecting to MySQL: {str(e)}", exc_info=True)
@@ -142,7 +159,7 @@ def connect_to_mysql():
 def create_tables(conn):
     with conn.cursor() as cur:
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS daily_metrics (
+            CREATE TABLE IF NOT EXISTS igp_insights (
                 metric_name VARCHAR(50) NOT NULL,
                 period_type VARCHAR(20) NOT NULL,
                 district_id INTEGER NULL,
@@ -159,7 +176,7 @@ def create_tables(conn):
             );
         """)
     conn.commit()
-    logging.info("Ensured daily_metrics table exists.")
+    logging.info("Ensured igp_insights table exists.")
 
 
 def calculate_dates(period, today):
@@ -339,6 +356,77 @@ def get_dashboard_categories_query():
     """
 
 
+def get_minorities_query():
+    return """
+        SELECT 
+            district_id,
+            pucar_police_station,
+            SUM(CASE 
+                WHEN DATE(created_at) >= %s 
+                     AND DATE(created_at) < %s 
+                THEN 1 ELSE 0 
+            END) AS minorities_current,
+            SUM(CASE 
+                WHEN DATE(created_at) >= %s 
+                     AND DATE(created_at) < %s 
+                THEN 1 ELSE 0 
+            END) AS minorities_previous
+        FROM case_final_status
+        WHERE district_id IS NOT NULL
+          AND pucar_police_station IS NOT NULL
+          AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
+          AND DATE(created_at) >= %s
+          AND DATE(created_at) < %s
+        GROUP BY district_id, pucar_police_station;
+    """
+
+
+def get_category_fir_cases_query():
+    return """
+        SELECT 
+            district_id,
+            police_station,
+            SUM(CASE WHEN DATE(date) >= %(current_start)s AND DATE(date) < %(current_end)s
+                THEN dacoity ELSE 0 END) AS dacoity_fir_current,
+            SUM(CASE WHEN DATE(date) >= %(previous_start)s AND DATE(date) < %(previous_end)s
+                THEN dacoity ELSE 0 END) AS dacoity_fir_prior,
+            SUM(CASE WHEN DATE(date) >= %(current_start)s AND DATE(date) < %(current_end)s
+                THEN minorities ELSE 0 END) AS minorities_fir_current,
+            SUM(CASE WHEN DATE(date) >= %(previous_start)s AND DATE(date) < %(previous_end)s
+                THEN minorities ELSE 0 END) AS minorities_fir_prior,
+            SUM(CASE WHEN DATE(date) >= %(current_start)s AND DATE(date) < %(current_end)s
+                THEN burglary ELSE 0 END) AS burglary_fir_current,
+            SUM(CASE WHEN DATE(date) >= %(previous_start)s AND DATE(date) < %(previous_end)s
+                THEN burglary ELSE 0 END) AS burglary_fir_prior,
+            SUM(CASE WHEN DATE(date) >= %(current_start)s AND DATE(date) < %(current_end)s
+                THEN robbery_snatching ELSE 0 END) AS robbery_snatching_fir_current,
+            SUM(CASE WHEN DATE(date) >= %(previous_start)s AND DATE(date) < %(previous_end)s
+                THEN robbery_snatching ELSE 0 END) AS robbery_snatching_fir_prior,
+            SUM(CASE WHEN DATE(date) >= %(current_start)s AND DATE(date) < %(current_end)s
+                THEN murder ELSE 0 END) AS murder_fir_current,
+            SUM(CASE WHEN DATE(date) >= %(previous_start)s AND DATE(date) < %(previous_end)s
+                THEN murder ELSE 0 END) AS murder_fir_prior,
+            SUM(CASE WHEN DATE(date) >= %(current_start)s AND DATE(date) < %(current_end)s
+                THEN dacoity_with_murder ELSE 0 END) AS dacoity_with_murder_fir_current,
+            SUM(CASE WHEN DATE(date) >= %(previous_start)s AND DATE(date) < %(previous_end)s
+                THEN dacoity_with_murder ELSE 0 END) AS dacoity_with_murder_fir_prior,
+            SUM(CASE WHEN DATE(date) >= %(current_start)s AND DATE(date) < %(current_end)s
+                THEN (rape + child_abuse) ELSE 0 END) AS rape_sodomy_fir_current,
+            SUM(CASE WHEN DATE(date) >= %(previous_start)s AND DATE(date) < %(previous_end)s
+                THEN (rape + child_abuse) ELSE 0 END) AS rape_sodomy_fir_prior,
+            SUM(CASE WHEN DATE(date) >= %(current_start)s AND DATE(date) < %(current_end)s
+                THEN terrorist_act ELSE 0 END) AS terrorism_fir_current,
+            SUM(CASE WHEN DATE(date) >= %(previous_start)s AND DATE(date) < %(previous_end)s
+                THEN terrorist_act ELSE 0 END) AS terrorism_fir_prior
+        FROM fir_cases
+        WHERE district_id IS NOT NULL
+          AND police_station IS NOT NULL
+          AND district_id NOT IN ('0', '41', '42', '43', '44', '45', '46')
+          AND DATE(date) >= %(previous_start)s
+          AND DATE(date) < %(current_end)s
+        GROUP BY district_id, police_station;
+    """
+
 def get_vccs_missing_query():
     return """
         SELECT 
@@ -392,6 +480,45 @@ def get_vccs_missing_query():
           AND DATE(created_at) < %(current_end)s
         GROUP BY pucar_district_id, pucar_police_station;
     """
+
+def get_vwps_missing_query():
+    return """
+        SELECT 
+            district_id,
+            pucar_police_station,
+            SUM(CASE 
+                WHEN level3_case_nature = 'Missing Person reported'
+                     AND DATE(created_at) >= %s 
+                     AND DATE(created_at) < %s 
+                THEN 1 ELSE 0 
+            END) AS girls_missing_current,
+            SUM(CASE 
+                WHEN is_lost_case = 1 AND is_handed_over = 1
+                     AND DATE(created_at) >= %s 
+                     AND DATE(created_at) < %s 
+                THEN 1 ELSE 0 
+            END) AS girls_found_current,
+            SUM(CASE 
+                WHEN level3_case_nature = 'Missing Person reported'
+                     AND DATE(created_at) >= %s 
+                     AND DATE(created_at) < %s 
+                THEN 1 ELSE 0 
+            END) AS girls_missing_prior,
+            SUM(CASE 
+                WHEN is_lost_case = 1 AND is_handed_over = 1
+                     AND DATE(created_at) >= %s 
+                     AND DATE(created_at) < %s 
+                THEN 1 ELSE 0 
+            END) AS girls_found_prior
+        FROM case_final_status
+        WHERE district_id IS NOT NULL
+          AND pucar_police_station IS NOT NULL
+          AND district_id NOT IN ('0', '41', '42', '43', '44', '45')
+          AND DATE(created_at) >= %s
+          AND DATE(created_at) < %s
+        GROUP BY district_id, pucar_police_station;
+    """
+
 
 def get_rt_alerts_query():
     return """
@@ -639,78 +766,144 @@ def get_critical_issues_query():
         GROUP BY district_id, police_station;
     """
 
-def get_complaint_categories_query():
+def get_complaints_category_query():
     return """
-        SELECT 
+        SELECT
             complainant_district AS district_id,
             'UNKNOWN' AS police_station,
-            SUM(CASE 
-                WHEN category = 1 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(current_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s 
-                THEN 1 ELSE 0 
-            END) AS non_fir_registration_current,
-            SUM(CASE 
-                WHEN category = 1 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(previous_end)s 
-                THEN 1 ELSE 0 
-            END) AS non_fir_registration_previous,
-            SUM(CASE 
-                WHEN category = 2 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(current_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s 
-                THEN 1 ELSE 0 
-            END) AS under_investigation_current,
-            SUM(CASE 
-                WHEN category = 2 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(previous_end)s 
-                THEN 1 ELSE 0 
-            END) AS under_investigation_previous,
-            SUM(CASE 
-                WHEN category = 3 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(current_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s
-                THEN 1 ELSE 0 
-            END) AS complaint_against_police_current,
-            SUM(CASE 
-                WHEN category = 3 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(previous_end)s  
-                THEN 1 ELSE 0 
-            END) AS complaint_against_police_previous,
-            SUM(CASE 
-                WHEN category = 4 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(current_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s
-                THEN 1 ELSE 0 
-            END) AS complaint_against_services_current,
-            SUM(CASE 
-                WHEN category = 4 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(previous_end)s 
-                THEN 1 ELSE 0 
-            END) AS complaint_against_services_previous,
-            SUM(CASE 
-                WHEN category = 5 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(current_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s
-                THEN 1 ELSE 0 
-            END) AS departmental_issue_current,
-            SUM(CASE 
-                WHEN category = 5 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s 
-                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(previous_end)s  
-                THEN 1 ELSE 0 
-            END) AS departmental_issue_previous
+            -- Category 1: Non-FIR Registration
+            SUM(CASE WHEN category = 1 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS non_fir_registration_pending_current,
+            SUM(CASE WHEN category = 1 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS non_fir_registration_total_current,
+            SUM(CASE WHEN category = 1 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS non_fir_registration_completed_current,
+            SUM(CASE WHEN category = 1 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS non_fir_registration_pending_prior,
+            SUM(CASE WHEN category = 1 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS non_fir_registration_total_prior,
+            SUM(CASE WHEN category = 1 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS non_fir_registration_completed_prior,
+            -- Category 2: Under Investigation
+            SUM(CASE WHEN category = 2 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS under_investigation_pending_current,
+            SUM(CASE WHEN category = 2 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS under_investigation_total_current,
+            SUM(CASE WHEN category = 2 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS under_investigation_completed_current,
+            SUM(CASE WHEN category = 2 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS under_investigation_pending_prior,
+            SUM(CASE WHEN category = 2 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS under_investigation_total_prior,
+            SUM(CASE WHEN category = 2 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS under_investigation_completed_prior,
+            -- Category 3: Complaint Against Police
+            SUM(CASE WHEN category = 3 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_police_pending_current,
+            SUM(CASE WHEN category = 3 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_police_total_current,
+            SUM(CASE WHEN category = 3 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_police_completed_current,
+            SUM(CASE WHEN category = 3 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_police_pending_prior,
+            SUM(CASE WHEN category = 3 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_police_total_prior,
+            SUM(CASE WHEN category = 3 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_police_completed_prior,
+            -- Category 4: Complaint Against Services
+            SUM(CASE WHEN category = 4 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_services_pending_current,
+            SUM(CASE WHEN category = 4 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_services_total_current,
+            SUM(CASE WHEN category = 4 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_services_completed_current,
+            SUM(CASE WHEN category = 4 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_services_pending_prior,
+            SUM(CASE WHEN category = 4 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_services_total_prior,
+            SUM(CASE WHEN category = 4 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS complaint_against_services_completed_prior,
+            -- Category 5: Departmental Issue
+            SUM(CASE WHEN category = 5 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS departmental_issue_pending_current,
+            SUM(CASE WHEN category = 5 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS departmental_issue_total_current,
+            SUM(CASE WHEN category = 5 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(current_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+                THEN 1 ELSE 0 END) AS departmental_issue_completed_current,
+            SUM(CASE WHEN category = 5 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS departmental_issue_pending_prior,
+            SUM(CASE WHEN category = 5 AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS departmental_issue_total_prior,
+            SUM(CASE WHEN category = 5 AND complaint_status = 'Closed (Disposed)'
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+                     AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(previous_end)s
+                THEN 1 ELSE 0 END) AS departmental_issue_completed_prior
         FROM complaints_view
         WHERE source = 2
-          AND complaint_date IS NOT NULL
           AND complainant_district IS NOT NULL
-          AND complainant_district NOT IN ('0', '41', '42', '43', '44', '45', '46')
-          AND DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s
-          AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s
+          AND complainant_district NOT IN ('0', '41', '42', '43', '44', '45')
+          AND complaint_date IS NOT NULL
+          AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= %(previous_start)s
+          AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < %(current_end)s
+          AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
         GROUP BY complainant_district;
     """
 
@@ -791,45 +984,68 @@ def process_pkm_service_data(cursor, period, current_start, current_end, previou
 
 
 def process_1787_complaint_data(cursor, period, current_start, current_end, previous_start, previous_end):
-    query = get_complaint_categories_query()
-    params = {
-        'current_start': current_start,
-        'current_end': current_end,
-        'previous_start': previous_start,
-        'previous_end': previous_end
-    }
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    data = []
-    for row in rows:
-        (district_id, police_station,
-         non_fir_registration_current, non_fir_registration_previous,
-         under_investigation_current, under_investigation_previous,
-         complaint_against_police_current, complaint_against_police_previous,
-         complaint_against_services_current, complaint_against_services_previous,
-         departmental_issue_current, departmental_issue_previous) = row
+    try:
+        query = get_complaints_category_query()
+        params = {
+            'current_start': current_start,
+            'current_end': current_end,
+            'previous_start': previous_start,
+            'previous_end': previous_end
+        }
+        logging.debug(f"Executing complaints_category_query with params: {params}")
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        data = []
+        for row in rows:
+            (district_id, police_station,
+             non_fir_registration_pending_current, non_fir_registration_total_current, non_fir_registration_completed_current,
+             non_fir_registration_pending_prior, non_fir_registration_total_prior, non_fir_registration_completed_prior,
+             under_investigation_pending_current, under_investigation_total_current, under_investigation_completed_current,
+             under_investigation_pending_prior, under_investigation_total_prior, under_investigation_completed_prior,
+             complaint_against_police_pending_current, complaint_against_police_total_current, complaint_against_police_completed_current,
+             complaint_against_police_pending_prior, complaint_against_police_total_prior, complaint_against_police_completed_prior,
+             complaint_against_services_pending_current, complaint_against_services_total_current, complaint_against_services_completed_current,
+             complaint_against_services_pending_prior, complaint_against_services_total_prior, complaint_against_services_completed_prior,
+             departmental_issue_pending_current, departmental_issue_total_current, departmental_issue_completed_current,
+             departmental_issue_pending_prior, departmental_issue_total_prior, departmental_issue_completed_prior) = row
 
-        # Define metrics and their counts
-        metrics = [
-            ('non_fir_registration', non_fir_registration_current, non_fir_registration_previous),
-            ('under_investigation', under_investigation_current, under_investigation_previous),
-            ('complaint_against_police', complaint_against_police_current, complaint_against_police_previous),
-            ('complaint_against_services', complaint_against_services_current, complaint_against_services_previous),
-            ('departmental_issue', departmental_issue_current, departmental_issue_previous)
-        ]
+            # Define metrics and their counts
+            metrics = [
+                ('non_fir_registration_pending', non_fir_registration_pending_current or 0, non_fir_registration_pending_prior or 0),
+                ('non_fir_registration_total', non_fir_registration_total_current or 0, non_fir_registration_total_prior or 0),
+                ('non_fir_registration_completed', non_fir_registration_completed_current or 0, non_fir_registration_completed_prior or 0),
+                ('under_investigation_pending', under_investigation_pending_current or 0, under_investigation_pending_prior or 0),
+                ('under_investigation_total', under_investigation_total_current or 0, under_investigation_total_prior or 0),
+                ('under_investigation_completed', under_investigation_completed_current or 0, under_investigation_completed_prior or 0),
+                ('complaint_against_police_pending', complaint_against_police_pending_current or 0, complaint_against_police_pending_prior or 0),
+                ('complaint_against_police_total', complaint_against_police_total_current or 0, complaint_against_police_total_prior or 0),
+                ('complaint_against_police_completed', complaint_against_police_completed_current or 0, complaint_against_police_completed_prior or 0),
+                ('complaint_against_services_pending', complaint_against_services_pending_current or 0, complaint_against_services_pending_prior or 0),
+                ('complaint_against_services_total', complaint_against_services_total_current or 0, complaint_against_services_total_prior or 0),
+                ('complaint_against_services_completed', complaint_against_services_completed_current or 0, complaint_against_services_completed_prior or 0),
+                ('departmental_issue_pending', departmental_issue_pending_current or 0, departmental_issue_pending_prior or 0),
+                ('departmental_issue_total', departmental_issue_total_current or 0, departmental_issue_total_prior or 0),
+                ('departmental_issue_completed', departmental_issue_completed_current or 0, departmental_issue_completed_prior or 0)
+            ]
 
-        for metric_name, current_count, previous_count in metrics:
-            percentage_change = (
-                ((current_count - previous_count) / previous_count * 100)
-                if previous_count > 0 else 0
-            )
-            data.append((
-                metric_name, period, district_id, police_station,
-                current_start, current_end, previous_start, previous_end,
-                current_count, previous_count, percentage_change, datetime.now()
-            ))
-
-    return data
+            for metric_name, current_count, previous_count in metrics:
+                percentage_change = (
+                    ((current_count - previous_count) / previous_count * 100)
+                    if previous_count > 0 else 0
+                )
+                data.append((
+                    metric_name, period, district_id, police_station,
+                    current_start, current_end, previous_start, previous_end,
+                    current_count, previous_count, percentage_change, datetime.now()
+                ))
+        logging.debug(f"Processed {len(data)} rows for complaints_category_data")
+        return data
+    except MySQLError as e:
+        logging.error(f"MySQL error in process_complaints_category_data: {str(e)}", exc_info=True)
+        raise
+    except Exception as e:
+        logging.error(f"General error in process_complaints_category_data: {str(e)}", exc_info=True)
+        raise
 
 def process_critical_issues_data(cursor, period, current_start, current_end, previous_start, previous_end):
     query = get_critical_issues_query()
@@ -951,6 +1167,53 @@ def process_vccs_missing_data(cursor, period, current_start, current_end, previo
         raise
     except Exception as e:
         logging.error(f"General error in process_vccs_missing_data: {str(e)}", exc_info=True)
+        raise
+
+def process_vwps_missing_data(cursor, period, current_start, current_end, previous_start, previous_end):
+    try:
+        query = get_vwps_missing_query()
+        params = (
+            current_start, current_end,  # girls_missing_current
+            current_start, current_end,  # girls_found_current
+            previous_start, previous_end,  # girls_missing_prior
+            previous_start, previous_end,  # girls_found_prior
+            previous_start, current_end   # WHERE clause
+        )
+        logging.debug(f"Executing vwps_missing_query with params: {params}")
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        data = []
+        for row in rows:
+            (district_id, police_station,
+             girls_missing_current, girls_found_current,
+             girls_missing_prior, girls_found_prior) = row
+
+            # Replace NULL police_station with 'unknown'
+            police_station = police_station or 'unknown'
+
+            # Define metrics and their counts
+            metrics = [
+                ('girls_missing', girls_missing_current, girls_missing_prior),
+                ('girls_found', girls_found_current, girls_found_prior)
+            ]
+
+            for metric_name, current_count, previous_count in metrics:
+                percentage_change = (
+                    ((current_count - previous_count) / previous_count * 100)
+                    if previous_count > 0 else 0
+                )
+                data.append((
+                    metric_name, period, district_id, police_station,
+                    current_start, current_end, previous_start, previous_end,
+                    current_count, previous_count, percentage_change, datetime.now()
+                ))
+        logging.debug(f"Processed {len(data)} rows for vwps_missing_data")
+        return data
+    except MySQLError as e:
+        logging.error(f"MySQL error in process_vwps_missing_data: {str(e)}", exc_info=True)
+        raise
+    except Exception as e:
+        logging.error(f"General error in process_vwps_missing_data: {str(e)}", exc_info=True)
         raise
 
 # Process conference call data
@@ -1081,6 +1344,106 @@ def process_rt_alerts_data(cursor, period, current_start, current_end, previous_
     return data
 
 
+def process_minorities_data(cursor, period, current_start, current_end, previous_start, previous_end):
+    try:
+        query = get_minorities_query()
+        params = (
+            current_start, current_end,  # minorities_current
+            previous_start, previous_end,  # minorities_previous
+            previous_start, current_end   # WHERE clause
+        )
+        logging.debug(f"Executing minorities_query with params: {params}")
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        data = []
+        for row in rows:
+            district_id, police_station, minorities_current, minorities_previous = row
+
+            # Replace NULL police_station with 'unknown'
+            police_station = police_station or 'unknown'
+
+            # Define metric
+            metric_name = 'minorities'
+            current_count = minorities_current
+            previous_count = minorities_previous
+            percentage_change = (
+                ((current_count - previous_count) / previous_count * 100)
+                if previous_count > 0 else 0
+            )
+            data.append((
+                metric_name, period, district_id, police_station,
+                current_start, current_end, previous_start, previous_end,
+                current_count, previous_count, percentage_change, datetime.now()
+            ))
+        logging.debug(f"Processed {len(data)} rows for minorities_data")
+        return data
+    except MySQLError as e:
+        logging.error(f"MySQL error in process_minorities_data: {str(e)}", exc_info=True)
+        raise
+    except Exception as e:
+        logging.error(f"General error in process_minorities_data: {str(e)}", exc_info=True)
+        raise
+
+
+def process_fir_cases_data(cursor, period, current_start, current_end, previous_start, previous_end):
+    try:
+        query = get_category_fir_cases_query()
+        params = {
+            'current_start': current_start,
+            'current_end': current_end,
+            'previous_start': previous_start,
+            'previous_end': previous_end
+        }
+        logging.debug(f"Executing fir_cases_query with params: {params}")
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        data = []
+        for row in rows:
+            (district_id, police_station,
+             dacoity_fir_current, dacoity_fir_prior,
+             minorities_fir_current, minorities_fir_prior,
+             burglary_fir_current, burglary_fir_prior,
+             robbery_snatching_fir_current, robbery_snatching_fir_prior,
+             murder_fir_current, murder_fir_prior,
+             dacoity_with_murder_fir_current, dacoity_with_murder_fir_prior,
+             rape_sodomy_fir_current, rape_sodomy_fir_prior,
+             terrorism_fir_current, terrorism_fir_prior) = row
+
+            # Replace NULL police_station with 'unknown' (for safety)
+            police_station = police_station or 'unknown'
+
+            # Define metrics and their counts
+            metrics = [
+                ('dacoity_fir', dacoity_fir_current or 0, dacoity_fir_prior or 0),
+                ('minorities_fir', minorities_fir_current or 0, minorities_fir_prior or 0),
+                ('burglary_fir', burglary_fir_current or 0, burglary_fir_prior or 0),
+                ('robbery_snatching_fir', robbery_snatching_fir_current or 0, robbery_snatching_fir_prior or 0),
+                ('murder_fir', murder_fir_current or 0, murder_fir_prior or 0),
+                ('dacoity_with_murder_fir', dacoity_with_murder_fir_current or 0, dacoity_with_murder_fir_prior or 0),
+                ('rape_sodomy_fir', rape_sodomy_fir_current or 0, rape_sodomy_fir_prior or 0),
+                ('terrorism_fir', terrorism_fir_current or 0, terrorism_fir_prior or 0)
+            ]
+
+            for metric_name, current_count, previous_count in metrics:
+                percentage_change = (
+                    ((current_count - previous_count) / previous_count * 100)
+                    if previous_count > 0 else 0
+                )
+                data.append((
+                    metric_name, period, district_id, police_station,
+                    current_start, current_end, previous_start, previous_end,
+                    current_count, previous_count, percentage_change, datetime.now()
+                ))
+        logging.debug(f"Processed {len(data)} rows for fir_cases_data")
+        return data
+    except MySQLError as e:
+        logging.error(f"MySQL error in process_fir_cases_data: {str(e)}", exc_info=True)
+        raise
+    except Exception as e:
+        logging.error(f"General error in process_fir_cases_data: {str(e)}", exc_info=True)
+        raise
+
+
 def process_reoccurrence_data(cursor, period, current_start, current_end, previous_start, previous_end):
     query = get_reoccurrence_query()
     params = {
@@ -1140,11 +1503,11 @@ def process_rape_molestation_data(cursor, period, current_start, current_end, pr
     return data
 
 
-# Insert data into daily_metrics
+# Insert data into igp_insights
 def insert_data(conn, data):
     with conn.cursor() as cur:
         cur.executemany("""
-            INSERT INTO daily_metrics (
+            INSERT INTO igp_insights (
                 metric_name, period_type, district_id, police_station,
                 current_start_date, current_end_date, previous_start_date, previous_end_date,
                 current_count, previous_count, percentage_change, computed_at
@@ -1160,11 +1523,11 @@ def insert_data(conn, data):
                 computed_at = EXCLUDED.computed_at;
         """, data)
     conn.commit()
-    logging.info(f"Inserted {len(data)} rows into daily_metrics.")
+    logging.info(f"Inserted {len(data)} rows into igp_insights.")
 
 
 def main():
-    today = datetime.today().date()
+    today = datetime.today().date() - timedelta(days=1)
 
     # Connect to databases
     try:
@@ -1173,7 +1536,7 @@ def main():
         logging.debug("PostgreSQL source_conn established")
         mysql_conn = get_1787_db_connection()
         logging.debug("MySQL mysql_conn established")
-        vccs_conn = connect_to_mysql()
+        vccs_conn, vwps_conn, vcm_conn = connect_to_mysql()
         logging.debug("MySQL vccs_conn established")
         predictive_conn = get_processed_db_connection(database={
             'dbname': 'db_predictive_policing',
@@ -1186,19 +1549,22 @@ def main():
         logging.error(f"Failed to establish database connections: {str(e)}", exc_info=True)
         return
 
-    # Ensure daily_metrics table exists
+    # Ensure igp_insights table exists
     try:
         create_tables(source_conn)
-        logging.debug("daily_metrics table ensured")
+        logging.debug("igp_insights table ensured")
     except Exception as e:
         logging.error(f"Error creating tables: {str(e)}", exc_info=True)
         return
 
     # List of event processors with their respective connections
     event_processors = [
+        (process_fir_cases_data, source_conn),  # PostgreSQL
         (process_critical_issues_data, source_conn),
         (process_1787_complaint_data, mysql_conn),  # Mysql
-        (process_vccs_missing_data, vccs_conn),  # MySQL
+        (process_vccs_missing_data, vccs_conn),  # VCCS MySQL
+        (process_vwps_missing_data, vwps_conn),   # VWPS MYSQL
+        (process_minorities_data, vcm_conn), # VCM MYSQL
         (process_pkm_service_data, source_conn), # PostgreSQL
         (process_conference_call_data, source_conn),  # PostgreSQL
         (process_negative_feedback_data, source_conn),  # PostgreSQL
@@ -1272,7 +1638,7 @@ def main():
     try:
         if all_data:
             insert_data(source_conn, all_data)
-            logging.info(f"Inserted {len(all_data)} rows into daily_metrics")
+            logging.info(f"Inserted {len(all_data)} rows into igp_insights Table")
     except Exception as e:
         logging.error(f"Error inserting data: {str(e)}", exc_info=True)
 
