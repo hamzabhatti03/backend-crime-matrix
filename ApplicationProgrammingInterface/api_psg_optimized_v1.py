@@ -16,10 +16,46 @@ from dotenv import load_dotenv
 from predictive_api import yesterday_forecast_db as yesterday_forecast
 from predictive_api import forecast_date
 from predictive_api import get_category_data
-from itertools import chain
 from decimal import Decimal
 from psycopg2.extras import RealDictCursor
+from psycopg2 import pool as pg_pool
+from mysql.connector import pooling as sql_pool
 import time
+
+load_dotenv()
+
+# Initialize connection pools
+postgresql_pool = None
+mysql_pool = None
+
+
+def initialize_pools():
+    global postgresql_pool, mysql_pool
+    try:
+        # PostgreSQL connection pool
+        postgresql_pool = pg_pool.SimpleConnectionPool(
+            minconn=1,  # Minimum number of connections
+            maxconn=50,  # Maximum number of connections
+            dbname=configs.POSTGRES_PROCESSED_STATS_MAIN['dbname'],
+            user=configs.POSTGRES_PROCESSED_STATS_MAIN['user'],
+            password=configs.POSTGRES_PROCESSED_STATS_MAIN['password'],
+            host=configs.POSTGRES_PROCESSED_STATS_MAIN['host'],
+            port=configs.POSTGRES_PROCESSED_STATS_MAIN['port']
+        )
+
+        # MySQL connection pool
+        mysql_pool = sql_pool.MySQLConnectionPool(
+            pool_name="mysql_pool",
+            pool_size=15,  # Number of connections in the pool
+            host=os.getenv('DB_HOST'),
+            database=os.getenv('DB_NAME'),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASSWORD')
+        )
+        print("Connection pools initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing connection pools: {e}")
+        raise
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -56,9 +92,9 @@ def filter_lat_longs(lat_longs, max_distance_km=3):
     return filtered
 
 
-load_dotenv()
-
 app = Flask(__name__)
+
+initialize_pools()
 
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET")
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(seconds=129600)  # 36 Hours
@@ -77,30 +113,15 @@ limiter = Limiter(
 
 
 def get_log_db_connection():
-    if 'log_db_conn' not in g:
-        g.log_db_conn = db_config.get_db_connection()
-        g.log_db_cursor = g.log_db_conn.cursor()
-    return g.log_db_conn, g.log_db_cursor
+    log_db_conn = mysql_pool.get_connection()
+    log_db_cursor = log_db_conn.cursor()
+    return log_db_conn, log_db_cursor
 
 
-# Function to establish database connection for processed data database
 def get_processed_db_connection():
-    if 'processed_db_conn' not in g:
-        g.processed_db_conn = utils.get_processed_db_connection()
-        g.processed_db_cursor = g.processed_db_conn.cursor()
-    return g.processed_db_conn, g.processed_db_cursor
-
-
-@app.teardown_appcontext
-def close_db_connections(exception):
-    log_db_conn = g.pop('log_db_conn', None)
-    processed_db_conn = g.pop('processed_db_conn', None)
-
-    if log_db_conn is not None:
-        log_db_conn.close()
-
-    if processed_db_conn is not None:
-        processed_db_conn.close()
+    processed_db_conn = postgresql_pool.getconn()
+    processed_db_cursor = processed_db_conn.cursor()
+    return processed_db_conn, processed_db_cursor
 
 
 @app.after_request
@@ -208,6 +229,9 @@ def login():
             'status': False,
             'message': f'Internal server error {e}'
         }), 400
+    finally:
+        db_cursor.close()
+        db_conn.close()
 
 
 @app.route(configs.DASHBOARD_PUNJAB['ENDPOINT'], methods=[configs.DASHBOARD_PUNJAB['METHOD']])
@@ -375,7 +399,7 @@ def punjab_stats_dashboard():
             FROM fir_cases
             WHERE date BETWEEN %s AND %s
             {district_condition}
-    """
+        """
         fir_stats_query = fir_stats_query.format(district_condition=district_condition)
         processed_db_cursor.execute(fir_stats_query, [from_date_str, to_date_str])
         fir_stats = processed_db_cursor.fetchone()
@@ -644,9 +668,14 @@ def punjab_stats_dashboard():
         processed_db_cursor.execute(alerts_count_query, (from_date_str, to_date_str))
         alerts = processed_db_cursor.fetchall()
 
-        alerts_count = []
+        total_alerts = 0
         for i in alerts:
-            alerts_count.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1]})
+            try:
+                total_alerts += int(i[1])
+            except (ValueError, IndexError) as e:
+                print(f"Error processing alert {i}: {e}")
+
+        response_time_alerts = {"response_time_alerts": total_alerts}
 
         if view_role == 5 and district_ids:
             additional_condition = (
@@ -671,6 +700,10 @@ def punjab_stats_dashboard():
                     {additional_condition}
         """, (current_date.strftime('%d-%m-%Y'),))
         re_occurrences_count = db_cursor.fetchone()
+        if re_occurrences_count is not None:
+            re_occurrences_response = {"reoccured_cases": re_occurrences_count[0]}
+        else:
+            re_occurrences_response = {"reoccured_cases": 0}
 
         dashboard_data = {
             'terrorist_act': {'count': terrorism, 'fir': terrorism_fir,
@@ -783,8 +816,8 @@ def punjab_stats_dashboard():
             'vwps_escalated': vwps_escalated,
             'vcm_escalated': vcm_escalated,
             'vccs_escalated': vccs_escalated,
-            'responsetime_alerts' : alerts_count,
-            'crime_reoccurrence_count' : re_occurrences_count
+            'responsetime_alerts': response_time_alerts,
+            'crime_reoccurrence_count': re_occurrences_response
         }
 
         response = {
@@ -811,6 +844,11 @@ def punjab_stats_dashboard():
         }
         utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
         return jsonify(error_response), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.PUNJAB_MORE_INFO['ENDPOINT'], methods=[configs.PUNJAB_MORE_INFO['METHOD']])
@@ -1057,6 +1095,11 @@ def punjab_more_info():
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.DISTRICTWISE_STATS['ENDPOINT'], methods=[configs.DISTRICTWISE_STATS['METHOD']])
@@ -1175,6 +1218,11 @@ def districtwise_counts():
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.DISTRICTWISE_MORE_INFO['ENDPOINT'], methods=['POST'])  # Changed to POST
@@ -1404,6 +1452,11 @@ def districtwise_more_info():
             'status': False,
             'message': f'Internal server error {traceback.format_exc()}'
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.PSWISE_CATEGORIES['ENDPOINT'], methods=[configs.PSWISE_CATEGORIES['METHOD']])
@@ -1426,8 +1479,6 @@ def pswise_categories():
     """
     log_db_conn, log_db_cursor = get_log_db_connection()
     processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    master_db_connection = db_config.get_db_connection()
-    db_cursor = master_db_connection.cursor()
 
     try:
         from_date = request.form.get('fromDate')
@@ -1699,6 +1750,11 @@ def pswise_categories():
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.PUNJABTODAY_CASE_DETAILS['ENDPOINT'],
@@ -1796,6 +1852,11 @@ def punjab_case_details():
             'message': f'Internal server error : {e}',
             'data': None
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.DIST_CATEGORY_DETAILS['ENDPOINT'], methods=[configs.DIST_CATEGORY_DETAILS['METHOD']])
@@ -1943,7 +2004,7 @@ def district_category_details():
                         AND rt.police_station is NOT NULL
                     GROUP BY
                         ps.police_station_id, ps.police_station;
-"""
+        """
 
         ps_query = counts_query.format(condition=where_condition, district_condition=district_condition,
                                        additional_condition=additional_condition)
@@ -1973,6 +2034,11 @@ def district_category_details():
             'message': f'Internal server error {e}',
             'data': None
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.PREDICTIVE_FORECAST['ENDPOINT'], methods=[configs.PREDICTIVE_FORECAST['METHOD']])
@@ -2005,6 +2071,9 @@ def forcast_predictive_policing():
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
 
 
 @app.route(configs.DATEWISE_FORECAST['ENDPOINT'], methods=[configs.DATEWISE_FORECAST['METHOD']])
@@ -2042,6 +2111,9 @@ def forecast_datewise():
             'message': f'Internal server error : {e}',
             'data': None
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
 
 
 @app.route(configs.EMERGENCY_15_INTEGRATION['ENDPOINT'], methods=[configs.EMERGENCY_15_INTEGRATION['METHOD']])
@@ -2049,15 +2121,14 @@ def forecast_datewise():
 @require_api_key
 @jwt_required()
 def emergency_15_integration():
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn, log_db_cursor = get_log_db_connection()
     try:
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
         police_station_str = request.form.get('police_station')
-
-        processed_db_conn, processed_db_cursor = get_processed_db_connection()
-        log_db_conn, log_db_cursor = get_log_db_connection()
 
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
@@ -2240,6 +2311,11 @@ def emergency_15_integration():
             'status': False,
             'message': f'Internal server error {e}',
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.ADD_REMARKS['ENDPOINT'], methods=[configs.ADD_REMARKS['METHOD']])
@@ -2247,6 +2323,9 @@ def emergency_15_integration():
 @require_api_key
 @jwt_required()
 def add_remarks():
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn, log_db_cursor = get_log_db_connection()
+
     try:
         case_number = request.form.get('case_number')
         view_role = request.form.get('view_role')
@@ -2270,9 +2349,6 @@ def add_remarks():
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         new_remarks_json = json.dumps(new_remarks)
-
-        processed_db_conn, processed_db_cursor = get_processed_db_connection()
-        log_db_conn, log_db_cursor = get_log_db_connection()
 
         processed_db_cursor.execute(
             "SELECT remarks, remarks_status, assignedto_remarks , assignedby_remarks FROM response_time WHERE case_number = %s",
@@ -2309,6 +2385,11 @@ def add_remarks():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.GET_REMARKS['ENDPOINT'], methods=[configs.GET_REMARKS['METHOD']])  # Changed to POST
@@ -2481,6 +2562,11 @@ def get_remarks():
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.UPDATE_REMARKS['ENDPOINT'], methods=[configs.UPDATE_REMARKS['METHOD']])
@@ -2488,6 +2574,10 @@ def get_remarks():
 @require_api_key
 @jwt_required()
 def update_remarks():
+    # Connect to the databases
+    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn, log_db_cursor = get_log_db_connection()
+
     try:
         # Retrieve parameters from the request
         case_number = request.form.get('case_number')
@@ -2512,10 +2602,6 @@ def update_remarks():
             'cc': cc,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-
-        # Connect to the databases
-        processed_db_conn, processed_db_cursor = get_processed_db_connection()
-        log_db_conn, log_db_cursor = get_log_db_connection()
 
         # Check if the case exists
         processed_db_cursor.execute(
@@ -2567,6 +2653,11 @@ def update_remarks():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.CM_DIST_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_DIST_RESPONSE_TIME['METHOD']])
@@ -2649,6 +2740,11 @@ def dist_response_time():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.CM_PS_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_PS_RESPONSE_TIME['METHOD']])
@@ -2723,6 +2819,11 @@ def cm_ps_responsetime():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.DISTRICT_FIR_DATA['ENDPOINT'], methods=[configs.DISTRICT_FIR_DATA['METHOD']])
@@ -2846,6 +2947,11 @@ def district_fir_stats():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.PS_FIR_DATA['ENDPOINT'], methods=[configs.PS_FIR_DATA['METHOD']])
@@ -2954,6 +3060,11 @@ def ps_fir_stats():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.CONFERENCE_CALL_STATS['ENDPOINT'], methods=[configs.CONFERENCE_CALL_STATS['METHOD']])
@@ -3014,7 +3125,6 @@ def conference_call_stats():
                     date BETWEEN %s AND %s
                     AND field3 IS NOT NULL
                     AND district_id is not NULL
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
                     AND parent_id = 0
                     {district_condition}
                 GROUP BY 
@@ -3032,6 +3142,7 @@ def conference_call_stats():
                 'unsuccessful': district[2]
             }
             for district in dist_conf_results
+            if int(district[0]) in configs.DISTRICTS_DICTIONARY
         }
 
         return jsonify(district_response), 200
@@ -3042,6 +3153,11 @@ def conference_call_stats():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.ALERT_RESPONSETIME['ENDPOINT'], methods=[configs.ALERT_RESPONSETIME['METHOD']])
@@ -3184,6 +3300,11 @@ def response_time_alerts():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.VEHICLE_LOCATIONS['ENDPOINT'], methods=[configs.VEHICLE_LOCATIONS['METHOD']])
@@ -3266,6 +3387,11 @@ def police_vehicle_locations():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.VWPS_STATS['ENDPOINT'], methods=[configs.VWPS_STATS['METHOD']])
@@ -3395,6 +3521,9 @@ def vwps_stats():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
 
 
 @app.route(configs.VCCS_STATS['ENDPOINT'], methods=[configs.VCCS_STATS['METHOD']])
@@ -3526,6 +3655,9 @@ def vccs_stats():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
 
 
 @app.route(configs.VCM_STATS['ENDPOINT'], methods=[configs.VCM_STATS['METHOD']])
@@ -3655,6 +3787,10 @@ def vcm_stats():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+
 
 @app.route(configs.CRIME_TRENDS['ENDPOINT'], methods=[configs.CRIME_TRENDS['METHOD']])
 @limiter.limit(configs.LIMITER)
@@ -3855,6 +3991,13 @@ def crime_trends():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
+        master_cursor.close()
+        master_db_connection.close()
 
 
 @app.route(configs.CALLER_FEEDBACK['ENDPOINT'], methods=[configs.CALLER_FEEDBACK['METHOD']])
@@ -3944,6 +4087,11 @@ def caller_feedback():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.BLOOD_DONATION['ENDPOINT'], methods=[configs.BLOOD_DONATION['METHOD']])
@@ -4025,7 +4173,7 @@ def blood_donation():
         SUM(CASE WHEN DATE(last_donated_at) = %s THEN 1 ELSE 0 END) AS today_blood_donated
         FROM donars
         WHERE is_active = 1 OR DATE(last_donated_at) = %s
-""", (current_date, current_date))
+        """, (current_date, current_date))
 
         result = db_cursor.fetchone()
         result = [int(value) if isinstance(value, Decimal) else value for value in result]
@@ -4085,6 +4233,9 @@ def blood_donation():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
 
 
 @app.route(configs.ESCALATED_CASES['ENDPOINT'], methods=[configs.ESCALATED_CASES['METHOD']])
@@ -4196,6 +4347,15 @@ def escalated_cases():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        vwps_cursor.close()
+        vwps_conn.close()
+        vccs_cursor.close()
+        vccs_conn.close()
+        vcm_cursor.close()
+        vcm_conn.close()
 
 
 @app.route(configs.CRIME_TREND_CASES['ENDPOINT'], methods=[configs.CRIME_TREND_CASES['METHOD']])
@@ -4277,6 +4437,11 @@ def crime_trend_cases():
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        processed_db_cursor.close()
+        postgresql_pool.putconn(processed_db_conn)
 
 
 @app.route(configs.NEGATIVE_FEEDBACK_CASES['ENDPOINT'], methods=[configs.NEGATIVE_FEEDBACK_CASES['METHOD']])
@@ -4381,6 +4546,11 @@ def negative_feedback_cases():
             'status': False,
             'message': f'Internal server error {e}'
         }), 400
+    finally:
+        log_db_cursor.close()
+        log_db_conn.close()
+        mysql_cursor.close()
+        mysql_connection.close()
 
 
 def get_filtered_users(view_role, district, police_station):

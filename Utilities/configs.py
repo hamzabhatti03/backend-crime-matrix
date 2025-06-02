@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 """"MAIN SERVER CONFIGURATIONS"""
-PORT = 5005
+PORT = 5010
 DEBUG_ = True
 HOST = '0.0.0.0'
 ONE_TIME_RUN = True
@@ -16,8 +16,9 @@ WHITE_LISTED_IPS = ['10.22.15.235', '10.20.170.151', '10.20.170.219', '10.20.170
                     '10.20.12.157', '10.21.63.149', '10.22.16.245']  # '10.22.15.91'
 
 """API REQUEST LIMITER"""
-DEFAULT_LIMITER = ["50000 per day", "5000 per hour"]
-LIMITER = "750 per minute"
+DEFAULT_LIMITER = ["5000000 per day", "500000 per hour"]
+LIMITER = "1500 per minute"
+NOTIFICATIONS_LIMITER = "15000 per minute"
 
 """CACHE CONFIGS"""
 CACHE_CONFIGS = {'CACHE_TYPE': 'simple'}
@@ -47,7 +48,7 @@ PROCESSED_STATS_TEST_DB = '../DatabaseManager/processed1.db'
 # }
 
 POSTGRES_PROCESSED_STATS_MAIN = {
-    'dbname': 'stage_processed_15',
+    'dbname': 'test_1124',
     'user': 'postgres',
     'password': 'psca@officialmai1',
     'host': '10.20.170.151',
@@ -99,9 +100,9 @@ DISTRICTS_MAPPING = [(1, "Sheikhupura"), (2, "Nankana Sb"), (3, "Kasur"), (4, "G
                      (24, "T.T. Singh"), (25, "Multan"), (27, "Lodhran"), (28, "Khanewal"), (29, "Vehari"),
                      (30, "Sahiwal"), (31, "Okara"), (32, "Pakpattan"), (33, "D.G. Khan"), (34, "Rajanpur"),
                      (35, "Muzaffargarh"), (36, "Layyah"), (37, "Bahawalpur"), (38, "Bahawalnagar"),
-                     (39, "Rahimyar Khan"), (40, "Lahore")]
+                     (39, "Rahimyar Khan"), (40, "Lahore"), (46, "Murree"), (43, "Kot Addu"), (44, "Wazirabad")]
 
-# , (41, "Lahore-Test"), (42, "Female-15"), (43, "Kot Addu"),(44, "Wazirabad"), (45, "Potohari-15"), (46, "Murree")
+# , (41, "Lahore-Test"), (42, "Female-15"), (43, "Kot Addu"),(44, "Wazirabad"), (45, "Potohari-15")
 
 DISTRICTS_DICTIONARY = {id: name for id, name in DISTRICTS_MAPPING}
 REVERSED_DISTRICTS_DICTIONARY = {name: id for id, name in DISTRICTS_MAPPING}
@@ -154,10 +155,11 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
 
-"""DATE_FORMATS"""
+"""DATE AND TIME FORMATS"""
 YM_DATE = '%Y-%m-%d'
 YMD_TIME = '%Y-%m-%d 00:00:00'
 YMD_HMS = '%Y-%m-%d %H:%M:%S'
+TIME_HMS = '%H:%M:%S'
 
 """INTERNAL SERVER ERROR"""
 INTERNAL_ERROR_MESSAGE = {"error": "Internal Server Error"}
@@ -189,19 +191,18 @@ CAP = ['Kidnapping for Ransom', 'Attempt to Kidnap / Abduct', 'Assault on Govt. 
        'Murder', 'Street Fight', 'Hurt / Injuries', 'Criminal Intimidation (Threat with Weapon)',
        'Male Kidnapping/ Abduction', 'Attempt to Murder', 'Other Assault']
 
-
 """MODULARITY OF API QUERIES"""
 # common columns that are frequently used
 PROCESSED_COLUMNS = [
     "total_calls", "siraiki", "punjabi", "potohari", "english", "traffic", "vwps",
     "app_alerts", "transfered", "call_backs", "video_calls", "estimated_response_time",
-    "succ_conf_calls","unsucc_conf_calls", "vccs", "vcm", "generated_cases"
+    "succ_conf_calls", "unsucc_conf_calls", "vccs", "vcm", "generated_cases"
 ]
 
 # Base query for processed_data table
 BASE_PROCESSED_DATA_QUERY = """
 SELECT {columns}
-FROM processed_data
+FROM leads_in_counts
 WHERE district_id NOT IN ('0','41','42','43','44','45','46')
 AND district_id IS NOT NULL
 {additional_conditions}
@@ -210,8 +211,7 @@ AND district_id IS NOT NULL
 PROCESSED_COLUMNS_WITH_DISTRICT_ID = ["district_id"] + PROCESSED_COLUMNS
 PROCESSED_COLUMNS_WITH_DATE = ["date"] + PROCESSED_COLUMNS
 
-
-#common additional conditions
+# common additional conditions
 DATE_CONDITION = " date = ? "
 DATE_RANGE_CONDITION = " AND date BETWEEN ? AND ? "
 DATE_RANGE_EXTENDED_CONDITION = " AND (((date = ?) AND (hour BETWEEN '20' AND '23')) OR ((date = ?) AND (hour BETWEEN '00' AND '07'))) "
@@ -220,7 +220,6 @@ AGENT_CONDITION = " AND agent = ? "
 HOUR_RANGE_CONDITION = " AND hour BETWEEN '08' AND '19' "
 UNIX_DATETIME_CONDITION = " AND datetime(time_id, 'unixepoch','localtime') BETWEEN ? AND ?"
 UNIX_DATE_CONDITION = " AND DATE(datetime(time_id, 'unixepoch','localtime')) BETWEEN ? AND ?"
-
 
 """REGIONAL_RESPONSE_TIME_AVG QUERY COMPONENTS FOR DASHBOARD AND REPORTS"""
 # Base query components
@@ -265,7 +264,6 @@ AGENT_STATS_BASE_QUERY = """
         {group_by_str}
         {order_by_str}
 """
-
 
 AGENT_STATS_COMMON_COLUMNS = {
     "hoax_calls": "sum(hoax_calls) as hoax_calls",
@@ -330,6 +328,7 @@ RESPONSE_TIME_STATS_RANGES = [
 ]
 
 """ PUNJAB EMERGENCY-i APIs ENDPOINTS AND METHODS"""
+REGISTER = {'ENDPOINT': '/register', 'METHOD': 'POST'}
 LOGIN = {'ENDPOINT': '/login', 'METHOD': 'POST'}
 DASHBOARD_PUNJAB = {'ENDPOINT': '/dashboard_punjab', 'METHOD': 'POST'}
 PUNJAB_MORE_INFO = {'ENDPOINT': '/punjab_more_info', 'METHOD': 'POST'}
@@ -360,8 +359,26 @@ CALLER_FEEDBACK = {'ENDPOINT': '/caller_feedback', 'METHOD': 'POST'}
 BLOOD_DONATION = {'ENDPOINT': '/blood_donation', 'METHOD': 'POST'}
 ESCALATED_CASES = {'ENDPOINT': '/escalated_cases', 'METHOD': 'POST'}
 CRIME_TREND_CASES = {'ENDPOINT': '/crime_trend_cases', 'METHOD': 'POST'}
+NEGATIVE_FEEDBACK_CASES = {'ENDPOINT': '/negative_feedback_cases', 'METHOD': 'POST'}
+ADD_MESSAGE = {'ENDPOINT': '/add_message', 'METHOD': 'POST'}
+CHAT_HISTORY = {'ENDPOINT': '/chat_history', 'METHOD': 'POST'}
+SUBSCRIBE_TOPIC = {'ENDPOINT': '/subscribe_user_topic', 'METHOD': 'POST'}
+UNSUBSCRIBE_TOPIC = {'ENDPOINT': '/unsubscribe_user_topic', 'METHOD': 'POST'}
+GET_NOTIFICATIONS = {'ENDPOINT': '/get_notifications', 'METHOD': 'POST'}
+UPDATE_PASSWORD = {'ENDPOINT': '/update_password', 'METHOD': 'PUT'}
+CRIME_REOCCURENCE_CASE = {'ENDPOINT': '/crime_reoccurence_case', 'METHOD': 'POST'}
+PS_CONFERENCE_CALL_STATS = {'ENDPOINT': '/ps_conferencecall_stats', 'METHOD': 'POST'}
+CALLER_FEEBACK_PSWISE = {'ENDPOINT': '/caller_feedback_pswise', 'METHOD': 'POST'}
+USER_ANALYTICS = {'ENDPOINT': '/user_analytics', 'METHOD': 'POST'}
+MDT_LOCATIONS = {'ENDPOINT': '/live_mdt_locations', 'METHOD': 'POST'}
+INSIGHTS_TAB = {'ENDPOINT': '/igp_insights', 'METHOD': 'POST'}
+VERIFIED_UNVERIFIED_RT = {'ENDPOINT': '/verified_unverified_rt', 'METHOD': 'POST'}
+UNSUCCESSFUL_CONFERENCE_CALLS = {'ENDPOINT': '/unsuccessful_conference_calls/critical', 'METHOD': 'POST'}
+EXECUTIVE_SUMMARY = {'ENDPOINT': '/executive_summary', 'METHOD': 'POST'}
+PRISM = {'ENDPOINT': '/prism', 'METHOD': 'POST'}
+PSCA_COVERED_AREAS = {'ENDPOINT': '/psca_covered_areas', 'METHOD': 'POST'}
 
-PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'} # currently unused API
+PS_CASE_DETAILS = {'ENDPOINT': '/ps_case_details', 'METHOD': 'POST'}  # currently unused API
 
 """CATEGORIES MAPPING"""
 CATEGORIES = {
@@ -399,7 +416,9 @@ CATEGORIES = {
                      'Physical Threats / Harrasment', 'Domestic Violence',
                      'Criminal Intimidation (Threat with Weapon)'],
     'other_property': ['Attempt to Illegal Possession of Land/ Premises'],  # level3
-    'child_abuse': ['Rape', 'Child Abuse / Molestation']  # level3
+    'child_abuse': ['Rape', 'Child Abuse / Molestation'],  # level3
+    'children_still_missing': ['Child Lost/ Missing', 'Child Kidnapping', 'Missing Person reported',
+                               'Kidnapping for Ransom']
 }
 
 REGIONAL_CATEGORY_RT_QUERY = """        
@@ -567,6 +586,221 @@ COMB_DASHBOARD_COND = {
     'Resolved_vcm': " final_status_id = 6"
 }
 
+CATEGORY_QUERIES = {
+    'response_time_change': """
+        SELECT 
+            district_id,
+            (
+                (
+                    SUM(CASE 
+                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{current_interval}'
+                             AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                        THEN 1 ELSE 0 
+                    END) 
+                    - 
+                    SUM(CASE 
+                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                             AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                        THEN 1 ELSE 0 
+                    END)
+                )::numeric
+                /
+                NULLIF(SUM(CASE 
+                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                    THEN 1 ELSE 0 
+                END), 0)
+            ) * 100 AS rt_percentage_change
+        FROM response_time
+        WHERE 
+            response_time > 2100
+            AND parent_id = 0
+            AND district_id IS NOT NULL
+            AND district_id NOT IN ('0','41','42','43','44','45','46')
+            AND level3_case_nature NOT IN ('Other Help')
+            AND level2_case_nature IN (
+                'Robbery/Snatching', 'Burglary', 'Dacoity', 
+                'Sexual Assault', 'Kiddnapping / Abduction', 
+                'Murder', 'Terrorist Act'
+            )
+            {district_condition}
+        GROUP BY district_id
+        HAVING SUM(CASE 
+                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                   THEN 1 ELSE 0 
+               END) > 0
+        ORDER BY rt_percentage_change DESC;
+    """,
+
+    'successful_conference_calls': """
+        SELECT 
+            district_id,
+            (
+                (
+                    SUM(CASE 
+                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{current_interval}'
+                             AND DATE(date) < CURRENT_DATE + INTERVAL '1 day'
+                        THEN 1 ELSE 0 
+                    END) 
+                    - 
+                    SUM(CASE 
+                        WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                             AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                        THEN 1 ELSE 0 
+                    END)
+                )::numeric
+                /
+                NULLIF(SUM(CASE 
+                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                    THEN 1 ELSE 0 
+                END), 0)
+            ) * 100 AS conf_calls_pct_change
+        FROM response_time
+        WHERE parent_id = 0
+            AND district_id IS NOT NULL
+            AND district_id NOT IN ('0','41','42','43','44','45','46')
+            AND field3 = 'Successful Conference call'
+            AND police_station IS NOT NULL
+            {district_condition}
+        GROUP BY district_id
+        HAVING SUM(CASE 
+                    WHEN DATE(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND DATE(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                   THEN 1 ELSE 0 
+               END) > 0
+        ORDER BY conf_calls_pct_change ASC;
+    """,
+
+    'negative_feedback_calls': """
+        SELECT 
+            district_id,
+            (
+                (
+                    SUM(CASE 
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '{current_interval}'
+                                 AND date(date) < CURRENT_DATE + INTERVAL '1 day'
+                                 AND caller_feedback = 'Negative'
+                        THEN 1 ELSE 0 
+                    END)
+                    -
+                    SUM(CASE 
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                                 AND caller_feedback = 'Negative'
+                        THEN 1 ELSE 0 
+                    END)
+                )::numeric
+                /
+                NULLIF(
+                    SUM(CASE 
+                            WHEN date(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                                 AND date(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                                 AND caller_feedback = 'Negative'
+                        THEN 1 ELSE 0 
+                    END),
+                    0
+                )
+            ) * 100 AS negative_feedback_pct_change
+        FROM response_time
+        WHERE 
+            date(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+            AND caller_feedback IS NOT NULL
+            AND district_id IS NOT NULL
+            {district_condition}
+        GROUP BY district_id
+        HAVING SUM(CASE 
+                    WHEN date(date) >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                         AND date(date) < CURRENT_DATE - INTERVAL '{current_interval}'
+                         AND caller_feedback = 'Negative'
+                   THEN 1 ELSE 0 
+               END) > 0.0
+        ORDER BY negative_feedback_pct_change DESC;
+    """,
+
+    'crime_reoccurrences': """
+    SELECT 
+        district,
+        (
+            (
+                SUM(CASE 
+                    WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{current_interval}'
+                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
+                    THEN 1 ELSE 0 END
+                ) -
+                SUM(CASE 
+                    WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL '{current_interval}'
+                    THEN 1 ELSE 0 END
+                )
+            )::NUMERIC
+            /
+            NULLIF(
+                SUM(CASE 
+                    WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                     AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL '{current_interval}'
+                    THEN 1 ELSE 0 END
+                ), 0
+            )
+        ) * 100 AS reoccurrence_percentage_change
+    FROM crime_hotspot
+    WHERE 
+        TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+        AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE + INTERVAL '1 day'
+        AND case_number IS NOT NULL
+        AND district IS NOT NULL
+        AND case_nature IN (
+            'Any Other Dacoity', 'Any Other Robbery', 'Any Other Theft', 'Bank Burglary', 
+            'Bank/Money Exchange/ ATM Dacoity', 'Bank/Money Exchange/ ATM Robbery', 
+            'Car Snatching', 'Car Theft', 'Cattle Dacoity', 'Cattle Robbery', 'Cattle theft', 
+            'Cycle Theft', 'Dacoity with Murder', 'Highway/Road/Street Dacoity', 
+            'Highway/Road/Street Robbery', 'House Burglary', 'House Dacoity', 'House Robbery', 
+            'Jewellery Shop Dacoity', 'Jewellery Shop Robbery', 'Mobile Theft', 'Motorcycle Snatching', 
+            'Motorcycle Theft', 'Other Burglary', 'Other Vehicles Snatching', 'Other Vehicles Theft', 
+            'Patrol Pump Dacoity', 'Patrol Pump Robbery', 'Pick Pocketing', 'Purse / Wallet / Luggage Theft', 
+            'Robbery with Murder', 'Shop Burglary', 'Shop Dacoity', 'Shop Robbery', 'Snatching/Jhapatta', 
+            'Transformer/ Motor Theft', 'Weapon Theft'
+        )
+        {district_condition}
+    GROUP BY district
+    HAVING 
+        SUM(CASE 
+            WHEN TO_DATE(date, 'DD-MM-YYYY') >= CURRENT_DATE - INTERVAL '{previous_interval_end}'
+                 AND TO_DATE(date, 'DD-MM-YYYY') < CURRENT_DATE - INTERVAL '{current_interval}'
+            THEN 1 ELSE 0 END
+        ) != 0
+    ORDER BY reoccurrence_percentage_change DESC;
+""",
+
+    'minority_issues': """
+    SELECT
+        district_id,
+        ROUND(100 * (current_count - previous_count) / previous_count, 2) AS pct_change
+    FROM (
+        SELECT
+            district_id,
+            SUM(CASE 
+                    WHEN created_at >= CURDATE() - INTERVAL {current_interval} DAY
+                         AND created_at < CURDATE() + INTERVAL 1 DAY
+                    THEN 1 ELSE 0 
+                END) AS current_count,
+            SUM(CASE 
+                    WHEN created_at >= CURDATE() - INTERVAL {previous_interval_end} DAY
+                         AND created_at < CURDATE() - INTERVAL {current_interval} DAY
+                    THEN 1 ELSE 0 
+                END) AS previous_count
+        FROM case_final_status
+        WHERE 
+            district_id IS NOT NULL
+            {district_condition}
+        GROUP BY district_id
+    ) AS period_counts
+    WHERE previous_count > 0 AND current_count - previous_count > 0
+    ORDER BY pct_change DESC;
+"""
+}
+
 FIR_API_URL = "https://police15.psca.gop.pk/public/fir/police-stations"
 
 RANKS_USERNAME = {
@@ -689,7 +923,7 @@ LAHORE_DIVISION_MAPPING = {
     'Rang Mehal': 'City Division',
     'Tibbi City': 'City Division',
     'Race Course': 'Civiline Division',
-    'Women Race Course' : 'Civiline Division'
+    'Women Race Course': 'Civiline Division'
 
 }
 
@@ -710,28 +944,28 @@ GUJRANWALA_DIVISION_MAPPING = {
     'Kamoke': 'Sadar Division',
     'Noushera Virka': 'Sadar Division',
     'Wazirabad': 'Wazirabad Division',
-    'Model Town' : 'City Division',
-    'Kotwali' : 'City Division',
-    'Khiali' : 'City Division',
-    'Qila Dedar Singh' : 'City Division',
-    'Satellite Town' : 'Civil Line Division',
-    'Peoples Colony' : 'Civil Line Division'
+    'Model Town': 'City Division',
+    'Kotwali': 'City Division',
+    'Khiali': 'City Division',
+    'Qila Dedar Singh': 'City Division',
+    'Satellite Town': 'Civil Line Division',
+    'Peoples Colony': 'Civil Line Division'
 }
 
 FAISALABAD_DIVISION_MAPPING = {
-    'Jarranwala' : 'Jarranwala Division',
-    'Gulberg' : 'Lyallpur Division',
-    'Sargodha Road' : 'Madina Town Division',
-    'Tandlianwala' : 'Sadar Division',
-    'Batala Colony' : 'Iqbal Town Division' ,
-    'Sadar F/abad' : 'Iqbal Town Division',
-    'Kotwali' : 'Lyallpur Division',
-    'Nishatabad' : 'Madina Town Division',
-    'Factory Area' : 'Iqbal Town Division',
-    'Civil Lines' : 'Lyallpur Division',
-    'People Colony' : 'Madina Town Division',
-    'Khurrianwala' : 'Jarranwala Division',
-    'Sammundri' : 'Sadar Division' ,
+    'Jarranwala': 'Jarranwala Division',
+    'Gulberg': 'Lyallpur Division',
+    'Sargodha Road': 'Madina Town Division',
+    'Tandlianwala': 'Sadar Division',
+    'Batala Colony': 'Iqbal Town Division',
+    'Sadar F/abad': 'Iqbal Town Division',
+    'Kotwali': 'Lyallpur Division',
+    'Nishatabad': 'Madina Town Division',
+    'Factory Area': 'Iqbal Town Division',
+    'Civil Lines': 'Lyallpur Division',
+    'People Colony': 'Madina Town Division',
+    'Khurrianwala': 'Jarranwala Division',
+    'Sammundri': 'Sadar Division',
 }
 
 # Define API endpoints
@@ -764,4 +998,129 @@ CRIME_TRENDS_CATEGORIES = {
         AND (level2_case_nature IN ('Vehicle Snatching', 'Burglary', 'Robbery/Snatching', 'Dacoity', 'Murder', 'Sexual Assault', 'Kiddnapping / Abduction')
          OR level3_case_nature IN ('Aerial Firing', 'Motorcycle Theft', 'Car Theft', 'Cycle Theft', 'Other Vehicles Theft'))
     """
+}
+
+district_eng_urdu = {
+    "Attock": "اٹک",
+    "Bahawalnagar": "بہاولنگر",
+    "Bahawalpur": "بہاولپور",
+    "Bhakkar": "بھکر",
+    "Chakwal": "چکوال",
+    "Chiniot": " چنیوٹ",
+    "D.G. Khan": "ڈیرہ غازی خان",
+    "Faisalabad": "فیصل آباد",
+    "Gujranwala": "گوجرانوالہ",
+    "Gujrat": "گجرات",
+    "Hafizabad": "حافظ آباد",
+    "Jhang": "جھنگ",
+    "Jhelum": "جہلم",
+    "Kasur": "قصور",
+    "Khanewal": "خانیوال",
+    "Khushab": "خوشاب",
+    "Lahore": "لاہور",
+    "Layyah": "لیہ",
+    "Lodhran": "لودھراں",
+    "M.B. Din": "منڈی بہاوالدین",
+    "Mianwali": "میانوالی",
+    "Multan": "ملتان",
+    "Muzaffargarh": "مظفر گڑھ",
+    "Nankana Sb": "ننکانہ صاحب",
+    "Narowal": "نارووال",
+    "Okara": "اوکاڑہ",
+    "Pakpattan": "پاکپتن",
+    "Rahimyar Khan": "رحیم یار خان",
+    "Rajanpur": "راجن پور",
+    "Rawalpindi": "راولپنڈی",
+    "Sahiwal": "ساہیوال",
+    "Sargodha": "سرگودھا",
+    "Sheikhupura": "شیخوپورہ",
+    "Sialkot": "سیالکوٹ",
+    "T.T. Singh": "ٹوبہ ٹیک سنگھ",
+    "Vehari": "وہاڑی"
+}
+
+district_code_mapping = {
+    "swl": "sahiwal",
+    "lhr": "lahore",
+    "rwp": "rawalpindi",
+    "fsd": "faisalabad",
+    "mux": "multan",
+    "grw": "gujranwala",
+    "bwp": "bahawalpur",
+    "sgd": "sargodha",
+    "ryk": "rahimyar khan",
+    "skp": "sheikhupura",
+    "grt": "gujrat",
+    "skt": "sialkot",
+    "mzg": "muzaffargarh",
+    "ckl": "chakwal",
+    "bwn": "bahawalnagar",
+    "att": "attock",
+    "cot": "chiniot",
+    "dgk": "dgkhan",
+    "hfz": "hafizabad",
+    "jhg": "jhang",
+    "jm": "jhelum",
+    "jhm": "jhelum",
+    "ksr": "kasur",
+    "knw": "khanewal",
+    "khl": "khanewal",
+    "ksb": "khushab",
+    "lya": "layyah",
+    "ldh": "lodharan",
+    "mbd": "mbdin",
+    "mwl": "mianwali",
+    "nrl": "narowal",
+    "nks": "nankana sb",
+    "oka": "okara",
+    "pp": "pakpattan",
+    "rjr": "rajanpur",
+    "tts": "ttsingh",
+    "vri": "vehari",
+    "shk": "sheikhupura",
+    "mtn": "multan",
+    "vhr": "vehari",
+    "mzf": "muzaffargarh",
+    "hsn": "attock",
+    "rjp": "rajanpur",
+    "bkr": "bhakkar",
+    "cht": "chiniot",
+    "hfd": "hafizabad",
+    "khb": "khushab",
+    "nrw": "narowal",
+    "nsb": "nankana sb",
+    "pkt": "pakpatan",
+    "wab": "wazirabad",
+    "kta": "kotaddu",
+    "mur": "murree",
+    "atk": "attock"
+}
+
+IMAGE_FOLDER = "static/images"
+ALLOWED_IMG_EXTENSIONS = {"png", "jpg", "jpeg"}
+
+HRMIS_API_1 = "https://hrapi2.punjabpolice.gov.pk/hrmis-apis/v3/sc/ofc-detail-sho"
+HRMIS_API_2 = "https://hrapi2.punjabpolice.gov.pk/hrmis-apis/v3/sc/ofc-detail"
+
+# API Header
+LOGIN_HEADERS = {
+    "Authorization": "Bearer syOTeA0OrszbsIau57SFppq0KrPCSfFmgWE3ekfpb83abaf1"
+}
+
+PKM_DISTRICT_MAPPING = {
+    "Attock": 1, "Okara": 2, "Bahawalpur": 3, "Bahawalnagar": 4, "Bhakkar": 5, "Pakpattan": 6,
+    "T.T. Singh": 7, "Jhelum": 8, "Jhang": 9, "Chakwal": 10, "Chiniot": 11, "Hafizabad": 12,
+    "Khanewal": 13, "Khushab": 14, "D.G. Khan": 15, "Rajanpur": 16, "Rahimyar Khan": 17, "Rawalpindi": 18,
+    "Sahiwal": 19, "Sargodha": 20, "Sialkot": 21, "Sheikhupura": 22, "Faisalabad": 23, "Kasur": 24,
+    "Gujrat": 25, "Gujranwala": 26, "Lahore": 27, "Lodhran": 28, "Layyah": 29, "Muzaffargarh": 30,
+    "Multan": 31, "M.B. Din": 32, "Mianwali": 33, "Narowal": 34, "Nankana Sb": 35, "Vehari": 36
+}
+
+RISK_LEVEL_MAPPING = {
+    "murder": "high",
+    "assault": "high",
+    "theft": "medium",
+    "burglary": "medium",
+    "rape": "high"
+    # Add more mappings as needed
 }

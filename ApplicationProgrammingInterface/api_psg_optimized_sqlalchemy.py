@@ -1,4 +1,3 @@
-from certifi.core import where
 from flask import Flask, jsonify, request, abort, g
 from flask_caching import Cache
 from datetime import datetime, timedelta
@@ -16,10 +15,46 @@ from dotenv import load_dotenv
 from predictive_api import yesterday_forecast_db as yesterday_forecast
 from predictive_api import forecast_date
 from predictive_api import get_category_data
-from itertools import chain
 from decimal import Decimal
 from psycopg2.extras import RealDictCursor
+from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
 import time
+
+load_dotenv()
+
+# Initialize connection pools
+postgresql_engine = None
+mysql_engine = None
+
+
+def initialize_pools():
+    global postgresql_engine, mysql_engine
+    try:
+        # PostgreSQL connection pool
+        postgresql_engine = create_engine(
+            f"postgresql+psycopg2://{configs.POSTGRES_PROCESSED_STATS_MAIN['user']}:{(configs.POSTGRES_PROCESSED_STATS_MAIN['password']).replace("@", "%40")}@{configs.POSTGRES_PROCESSED_STATS_MAIN['host']}:{configs.POSTGRES_PROCESSED_STATS_MAIN['port']}/{configs.POSTGRES_PROCESSED_STATS_MAIN['dbname']}",
+            poolclass=QueuePool,
+            pool_size=50,  # Maximum number of connections in the pool
+            max_overflow=5,  # Allow 5 additional connections beyond pool_size if needed
+            pool_timeout=30,  # Timeout for acquiring a connection (in seconds)
+            pool_recycle=30,  # Close idle connections after 30 seconds
+        )
+
+        # MySQL connection pool
+        mysql_engine = create_engine(
+            f"mysql+mysqlconnector://{os.getenv('DB_USER')}:{(os.getenv('DB_PASSWORD')).replace("@", "%40")}@{os.getenv('DB_HOST')}/{os.getenv('DB_NAME')}",
+            poolclass=QueuePool,
+            pool_size=15,  # Maximum number of connections in the pool
+            max_overflow=5,  # Allow 5 additional connections beyond pool_size if needed
+            pool_timeout=2,  # Timeout for acquiring a connection (in seconds)
+            pool_recycle=30,  # Close idle connections after 30 seconds
+        )
+
+        print("Connection pools initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing connection pools: {e}")
+        raise
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -56,9 +91,9 @@ def filter_lat_longs(lat_longs, max_distance_km=3):
     return filtered
 
 
-load_dotenv()
-
 app = Flask(__name__)
+
+initialize_pools()
 
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET")
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(seconds=129600)  # 36 Hours
@@ -77,30 +112,13 @@ limiter = Limiter(
 
 
 def get_log_db_connection():
-    if 'log_db_conn' not in g:
-        g.log_db_conn = db_config.get_db_connection()
-        g.log_db_cursor = g.log_db_conn.cursor()
-    return g.log_db_conn, g.log_db_cursor
+    log_db_conn = mysql_engine.connect()
+    return log_db_conn
 
 
-# Function to establish database connection for processed data database
 def get_processed_db_connection():
-    if 'processed_db_conn' not in g:
-        g.processed_db_conn = utils.get_processed_db_connection()
-        g.processed_db_cursor = g.processed_db_conn.cursor()
-    return g.processed_db_conn, g.processed_db_cursor
-
-
-@app.teardown_appcontext
-def close_db_connections(exception):
-    log_db_conn = g.pop('log_db_conn', None)
-    processed_db_conn = g.pop('processed_db_conn', None)
-
-    if log_db_conn is not None:
-        log_db_conn.close()
-
-    if processed_db_conn is not None:
-        processed_db_conn.close()
+    processed_db_conn = postgresql_engine.connect()
+    return processed_db_conn
 
 
 @app.after_request
@@ -154,7 +172,7 @@ def expired_token_callback(jwt_header, jwt_payload):
 @require_login_key
 @limiter.limit(configs.LIMITER)
 def login():
-    db_conn, db_cursor = get_log_db_connection()
+    db_conn = get_log_db_connection()
     try:
         username = request.form.get('username')
         password = request.form.get('password')
@@ -168,20 +186,24 @@ def login():
 
         hashed_pass = hashlib.md5(password.encode()).hexdigest()
 
-        db_cursor.execute("SELECT * FROM `15_stats_users` WHERE `user_name_emergency` = %s", (username,))
-        user = db_cursor.fetchone()
+        result = db_conn.execute("SELECT * FROM `15_stats_users` WHERE `user_name_emergency` = %s", (username,))
+        user = result.fetchone()
 
         access_token = None
 
         if user and user[4] == hashed_pass:
             access_token = create_access_token(identity=username)
 
-            db_cursor.execute("""
-                                UPDATE 15_stats_users
-                                SET access_token = %s
-                                WHERE user_name_emergency = %s
-                            """, (access_token, username))
-            db_conn.commit()
+            # Execute the UPDATE query in a single command
+            db_conn.execute(
+                """
+                UPDATE 15_stats_users
+                SET access_token = %s
+                WHERE user_name_emergency = %s
+                """,
+                (access_token, username)
+            )
+            db_conn.commit()  # Commit the transaction
         else:
             return jsonify({
                 'status': False,
@@ -203,11 +225,13 @@ def login():
         }), 200
 
     except Exception as e:
-        utils.log_to_database(db_conn, db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}'
         }), 400
+    finally:
+        db_conn.close()
 
 
 @app.route(configs.DASHBOARD_PUNJAB['ENDPOINT'], methods=[configs.DASHBOARD_PUNJAB['METHOD']])
@@ -231,8 +255,8 @@ def punjab_stats_dashboard():
     """
 
     start_time = time.time()
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
     print(f"Execution time after db connection: {time.time() - start_time} seconds")
     start_time = time.time()
     try:
@@ -294,8 +318,8 @@ def punjab_stats_dashboard():
             {district_condition}
         """
         category_query = category_query.format(district_condition=district_condition)
-        processed_db_cursor.execute(category_query, [from_date_str, to_date_str])
-        category_stats = processed_db_cursor.fetchone()
+        result = processed_db_conn.execute(category_query, (from_date_str, to_date_str))
+        category_stats = result.fetchone()
         print(f"Execution time after punjab_today query execution: {time.time() - start_time} seconds")
         start_time = time.time()
 
@@ -313,8 +337,8 @@ def punjab_stats_dashboard():
         """
         calls_cases_query = calls_cases_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(calls_cases_query, [from_date_str, to_date_str])
-        total_calls, total_cases = processed_db_cursor.fetchone()
+        result = processed_db_conn.execute(calls_cases_query, (from_date_str, to_date_str))
+        total_calls, total_cases = result.fetchone()
         print(f"Execution time after processed_data query: {time.time() - start_time} seconds")
         start_time = time.time()
         regional_response_query = """
@@ -343,28 +367,28 @@ def punjab_stats_dashboard():
             ON rc.region_category = fd.region_category;
         """
         regional_response_query = regional_response_query.format(district_condition=district_condition)
-        processed_db_cursor.execute(regional_response_query, [from_date_str, to_date_str])
-        regional_avg_responses = processed_db_cursor.fetchall()
+        result = processed_db_conn.execute(regional_response_query, (from_date_str, to_date_str))
+        regional_avg_responses = result.fetchall()
         print(f"Execution time after regional response time query: {time.time() - start_time} seconds")
         start_time = time.time()
         if view_role == 2 or view_role == 1:
-            processed_db_cursor.execute(
+            result = processed_db_conn.execute(
                 utils.build_response_time_query(
                     columns_key="avg_only",
                     additional_conditions=[" date BETWEEN %s AND %s "]
                 ),
-                [from_date_str, to_date_str]
+                (from_date_str, to_date_str)
             )
         else:
-            processed_db_cursor.execute(
+            result = processed_db_conn.execute(
                 utils.build_response_time_query(
                     columns_key="avg_only",
                     additional_conditions=[" date BETWEEN %s AND %s ", f" {district_condition[4:]} "]
                 ),
-                [from_date_str, to_date_str]
+                (from_date_str, to_date_str)
             )
 
-        response_time = processed_db_cursor.fetchall()
+        response_time = result.fetchall()
         print(f"Execution time after response time query: {time.time() - start_time} seconds")
         start_time = time.time()
         fir_stats_query = """
@@ -375,10 +399,10 @@ def punjab_stats_dashboard():
             FROM fir_cases
             WHERE date BETWEEN %s AND %s
             {district_condition}
-    """
+        """
         fir_stats_query = fir_stats_query.format(district_condition=district_condition)
-        processed_db_cursor.execute(fir_stats_query, [from_date_str, to_date_str])
-        fir_stats = processed_db_cursor.fetchone()
+        result = processed_db_conn.execute(fir_stats_query, (from_date_str, to_date_str))
+        fir_stats = result.fetchone()
 
         fir_count_query = """
             SELECT sum(fir_count) from fir_data where date BETWEEN %s AND %s
@@ -386,8 +410,8 @@ def punjab_stats_dashboard():
         """
         fir_count_query = fir_count_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(fir_count_query, [from_date_str, to_date_str])
-        fir_count = processed_db_cursor.fetchone()[0]
+        result = processed_db_conn.execute(fir_count_query, (from_date_str, to_date_str))
+        fir_count = result.fetchone()[0]
         print(f"Execution time after fir extraction query: {time.time() - start_time} seconds")
         start_time = time.time()
 
@@ -462,8 +486,8 @@ def punjab_stats_dashboard():
         category_regional_response_query = category_regional_response_query.format(
             district_condition=district_condition)
 
-        processed_db_cursor.execute(category_regional_response_query, (from_date_str, to_date_str))
-        category_regional_response_times = processed_db_cursor.fetchall()
+        result = processed_db_conn.execute(category_regional_response_query, (from_date_str, to_date_str))
+        category_regional_response_times = result.fetchall()
         print(f"Execution time after category wise regional response query: {time.time() - start_time} seconds")
         start_time = time.time()
         category_regional_response_dict = {}
@@ -537,8 +561,8 @@ def punjab_stats_dashboard():
         categorical_avg_responsetime_query = categorical_avg_responsetime_query.format(
             district_condition=district_condition)
 
-        processed_db_cursor.execute(categorical_avg_responsetime_query, (from_date_str, to_date_str))
-        category_avg_response_times = processed_db_cursor.fetchall()
+        result = processed_db_conn.execute(categorical_avg_responsetime_query, (from_date_str, to_date_str))
+        category_avg_response_times = result.fetchall()
         print(f"Execution time after category wise avg response time query: {time.time() - start_time} seconds")
         start_time = time.time()
         category_avg_response_dict = {}
@@ -559,8 +583,8 @@ def punjab_stats_dashboard():
                                     {where_cond}
                                 """
         negative_caller_feedback_query = negative_caller_feedback_query.format(where_cond=where_cond)
-        processed_db_cursor.execute(negative_caller_feedback_query)
-        row = processed_db_cursor.fetchone()
+        result = processed_db_conn.execute(negative_caller_feedback_query)
+        row = result.fetchone()
         negative_feedback_count = row[0] if row is not None else 0
 
         ############################## Escalated Cases Count (VWPS , VCCS , VCM)
@@ -641,12 +665,17 @@ def punjab_stats_dashboard():
                 """
         alerts_count_query = alerts_count_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(alerts_count_query, (from_date_str, to_date_str))
-        alerts = processed_db_cursor.fetchall()
+        result = processed_db_conn.execute(alerts_count_query, (from_date_str, to_date_str))
+        alerts = result.fetchall()
 
-        alerts_count = []
+        total_alerts = 0
         for i in alerts:
-            alerts_count.append({configs.DISTRICTS_DICTIONARY[int(i[0])]: i[1]})
+            try:
+                total_alerts += int(i[1])
+            except (ValueError, IndexError) as e:
+                print(f"Error processing alert {i}: {e}")
+
+        response_time_alerts = {"response_time_alerts": total_alerts}
 
         if view_role == 5 and district_ids:
             additional_condition = (
@@ -671,6 +700,10 @@ def punjab_stats_dashboard():
                     {additional_condition}
         """, (current_date.strftime('%d-%m-%Y'),))
         re_occurrences_count = db_cursor.fetchone()
+        if re_occurrences_count is not None:
+            re_occurrences_response = {"reoccured_cases": re_occurrences_count[0]}
+        else:
+            re_occurrences_response = {"reoccured_cases": 0}
 
         dashboard_data = {
             'terrorist_act': {'count': terrorism, 'fir': terrorism_fir,
@@ -783,8 +816,8 @@ def punjab_stats_dashboard():
             'vwps_escalated': vwps_escalated,
             'vcm_escalated': vcm_escalated,
             'vccs_escalated': vccs_escalated,
-            'responsetime_alerts' : alerts_count,
-            'crime_reoccurrence_count' : re_occurrences_count
+            'responsetime_alerts': response_time_alerts,
+            'crime_reoccurrence_count': re_occurrences_response
         }
 
         response = {
@@ -809,8 +842,11 @@ def punjab_stats_dashboard():
             'message': f'Internal server error : {e}',
             'data': None
         }
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify(error_response), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.PUNJAB_MORE_INFO['ENDPOINT'], methods=[configs.PUNJAB_MORE_INFO['METHOD']])
@@ -833,8 +869,8 @@ def punjab_more_info():
     Returns:
         JSON: Detailed statistics with standardized response format
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
 
     try:
         # Get and validate request body
@@ -917,8 +953,8 @@ def punjab_more_info():
                 SUM({category}) > 0
         """
         district_query = district_query.format(category=category, district_condition=district_condition)
-        processed_db_cursor.execute(district_query, (from_date, to_date))
-        district_response = processed_db_cursor.fetchall()
+        result = processed_db_conn.execute(district_query, (from_date, to_date))
+        district_response = result.fetchall()
 
         district_response_obj = {
             configs.DISTRICTS_DICTIONARY[int(district_id)]: count
@@ -962,8 +998,8 @@ def punjab_more_info():
         """
         ps_query = ps_query.format(where_condition=where_condition, district_condition=district_condition)
 
-        processed_db_cursor.execute(ps_query, query_params)
-        ps_response = processed_db_cursor.fetchall()
+        result = processed_db_conn.execute(ps_query, query_params)
+        ps_response = result.fetchall()
 
         ps_response_obj = {
             ps: {
@@ -1015,8 +1051,8 @@ def punjab_more_info():
             query_params = categories + [from_date, to_date]
 
         cases_query = base_query.format(condition=where_condition, district_condition=district_condition)
-        processed_db_cursor.execute(cases_query, query_params)
-        cases = processed_db_cursor.fetchall()
+        result = processed_db_conn(cases_query, query_params)
+        cases = result.fetchall()
 
         cases_list = [
             {
@@ -1051,12 +1087,15 @@ def punjab_more_info():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.DISTRICTWISE_STATS['ENDPOINT'], methods=[configs.DISTRICTWISE_STATS['METHOD']])
@@ -1078,8 +1117,8 @@ def districtwise_counts():
     Returns:
         JSON: District-wise case counts with standardized response format
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
 
     try:
         from_date = request.form.get('fromDate', datetime.now().strftime(configs.YM_DATE))
@@ -1151,8 +1190,8 @@ def districtwise_counts():
                 district_id;
         """
         cases_query = cases_query.format(district_condition=district_condition)
-        processed_db_cursor.execute(cases_query, (from_date, to_date))
-        cases_summary = processed_db_cursor.fetchall()
+        result = processed_db_conn(cases_query, (from_date, to_date))
+        cases_summary = result.fetchall()
 
         # Process and format the response data
         district_stats = {
@@ -1169,12 +1208,15 @@ def districtwise_counts():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.DISTRICTWISE_MORE_INFO['ENDPOINT'], methods=['POST'])  # Changed to POST
@@ -1196,8 +1238,8 @@ def districtwise_more_info():
     Returns:
         JSON: Detailed district statistics
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
 
     try:
         # Get and validate request body
@@ -1274,11 +1316,11 @@ def districtwise_more_info():
         """
         # Dynamically format the query to include `district_condition`
         category_query = category_query.format(district_condition=district_condition)
-        processed_db_cursor.execute(category_query, (from_date, to_date))
+        result = processed_db_conn(category_query, (from_date, to_date))
 
         (murder, dacoity, firing, rape_sexual_assault, kidnapping,
          minorities, robbery_snatching, motorcycle_theft, car_theft, theft,
-         child_abuse, terrorism, other_person, other_property, dacoity_with_murder) = processed_db_cursor.fetchone()
+         child_abuse, terrorism, other_person, other_property, dacoity_with_murder) = result.fetchone()
 
         categorywise_response = {
             'terrorism': terrorism,
@@ -1340,8 +1382,8 @@ def districtwise_more_info():
         # Dynamically format the query to include conditions
         ps_query = ps_query.format(district_condition=district_condition, additional_condition=additional_condition)
 
-        processed_db_cursor.execute(ps_query, (from_date, to_date))
-        ps_wise_count = processed_db_cursor.fetchall()
+        result = processed_db_conn(ps_query, (from_date, to_date))
+        ps_wise_count = result.fetchall()
 
         GENERIC_DIVISION_NAME = "No Division"
 
@@ -1399,11 +1441,14 @@ def districtwise_more_info():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': f'Internal server error {traceback.format_exc()}'
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.PSWISE_CATEGORIES['ENDPOINT'], methods=[configs.PSWISE_CATEGORIES['METHOD']])
@@ -1424,10 +1469,8 @@ def pswise_categories():
     Returns:
         JSON: Police station statistics and cases
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
-    master_db_connection = db_config.get_db_connection()
-    db_cursor = master_db_connection.cursor()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
 
     try:
         from_date = request.form.get('fromDate')
@@ -1474,11 +1517,11 @@ def pswise_categories():
                 AND police_station = %s
         """
         # Execute the query
-        processed_db_cursor.execute(ps_query, (from_date, to_date, district_id, police_station))
+        result = processed_db_conn(ps_query, (from_date, to_date, district_id, police_station))
         (murder, dacoity, firing, rape_sexual_assault, kidnapping, minorities,
          robbery_snatching, motorcycle_theft, car_theft, theft, child_abuse,
          terrorism, other_person, other_property, burglary,
-         dacoity_with_murder) = processed_db_cursor.fetchone()
+         dacoity_with_murder) = result.fetchone()
 
         pswise_response = {
             'terrorism': terrorism,
@@ -1517,8 +1560,8 @@ def pswise_categories():
                 AND police_station is not Null
                 AND parent_id = 0
         """
-        processed_db_cursor.execute(cases_query, (police_station, district_id, from_date, to_date))
-        cases = processed_db_cursor.fetchall()
+        result = processed_db_conn(cases_query, (police_station, district_id, from_date, to_date))
+        cases = result.fetchall()
 
         cases_list = [
             {
@@ -1553,8 +1596,8 @@ def pswise_categories():
                     AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
         """
-        processed_db_cursor.execute(generated_cases_query, (from_date, to_date, district_id, police_station))
-        generated_case_count = processed_db_cursor.fetchone()[0]
+        result = processed_db_conn(generated_cases_query, (from_date, to_date, district_id, police_station))
+        generated_case_count = result.fetchone()[0]
 
         fir_count_query = """
                     select sum(fir_count)
@@ -1563,8 +1606,8 @@ def pswise_categories():
                     AND district_id = %s
                     AND police_station = %s
         """
-        processed_db_cursor.execute(fir_count_query, (from_date, to_date, district_id, police_station))
-        fir_count = processed_db_cursor.fetchone()[0]
+        result = processed_db_conn(fir_count_query, (from_date, to_date, district_id, police_station))
+        fir_count = result.fetchone()[0]
 
         ps_responsetime_query = """
                     select AVG(response_time)
@@ -1576,8 +1619,8 @@ def pswise_categories():
                     AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
         """
-        processed_db_cursor.execute(ps_responsetime_query, (from_date, to_date, district_id, police_station))
-        ps_response_time = processed_db_cursor.fetchone()[0]
+        result = processed_db_conn(ps_responsetime_query, (from_date, to_date, district_id, police_station))
+        ps_response_time = result.fetchone()[0]
         response_time = f"{int(ps_response_time // 60)}:{int(ps_response_time % 60):02d}" if ps_response_time is not None and round(
             ps_response_time, 2) else 0
 
@@ -1592,8 +1635,8 @@ def pswise_categories():
                     AND (level1_case_nature in ('Crime Against Person','Crime Against Property') OR level3_case_nature = 'Aerial Firing'
                     OR level3_case_nature = 'Attempt to Illegal Possession of Land/ Premises')
         """
-        processed_db_cursor.execute(conf_calls_query, (from_date, to_date, district_id, police_station))
-        conf_calls = processed_db_cursor.fetchone()[0]
+        result = processed_db_conn(conf_calls_query, (from_date, to_date, district_id, police_station))
+        conf_calls = result.fetchone()[0]
 
         conference_call_query = f"""
                                 SELECT 
@@ -1611,8 +1654,8 @@ def pswise_categories():
                                     AND district_id = %s
                                     AND police_station = %s
                                 """
-        processed_db_cursor.execute(conference_call_query, (from_date, to_date, district_id, police_station))
-        (successful_calls, unsuccessful_calls) = processed_db_cursor.fetchone()
+        result = processed_db_conn(conference_call_query, (from_date, to_date, district_id, police_station))
+        (successful_calls, unsuccessful_calls) = result.fetchone()
 
         vehicles_query = """
                     SELECT latitude, longitude, name, phone_number,
@@ -1621,8 +1664,8 @@ def pswise_categories():
                     WHERE district = %s
                     AND police_station = %s
         """
-        processed_db_cursor.execute(vehicles_query, (district, police_station))
-        vehicles_location = processed_db_cursor.fetchall()
+        result = processed_db_conn(vehicles_query, (district, police_station))
+        vehicles_location = result.fetchall()
 
         column_names = [
             "latitude", "longitude", "name", "phone",
@@ -1658,8 +1701,8 @@ def pswise_categories():
                             AND reached_long is NOT NULL
                                 """
 
-        processed_db_cursor.execute(crime_hotspots_query, (district_id, police_station))
-        hotspot_results = processed_db_cursor.fetchall()
+        result = processed_db_conn(crime_hotspots_query, (district_id, police_station))
+        hotspot_results = result.fetchall()
 
         # Initialize an empty list to store the coordinates
         coordinates = []
@@ -1693,12 +1736,15 @@ def pswise_categories():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.PUNJABTODAY_CASE_DETAILS['ENDPOINT'],
@@ -1717,8 +1763,8 @@ def punjab_case_details():
     Returns:
         JSON: Case details with standardized response format
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
 
     try:
         case_number_str = str(request.form.get('case_number'))
@@ -1736,8 +1782,8 @@ def punjab_case_details():
             WHERE case_number = %s
         """
 
-        processed_db_cursor.execute(case_query, (case_number_str,))
-        case_details = processed_db_cursor.fetchone()
+        result = processed_db_conn(case_query, (case_number_str,))
+        case_details = result.fetchone()
 
         if not case_details:
             return jsonify({
@@ -1790,12 +1836,15 @@ def punjab_case_details():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': f'Internal server error : {e}',
             'data': None
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.DIST_CATEGORY_DETAILS['ENDPOINT'], methods=[configs.DIST_CATEGORY_DETAILS['METHOD']])
@@ -1818,8 +1867,8 @@ def district_category_details():
     Returns:
         JSON: Police station-wise counts and case details for the specified category
     """
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
 
     try:
         # Get and validate request body
@@ -1898,8 +1947,8 @@ def district_category_details():
 
         # Get case details
         cases_query = base_query.format(condition=where_condition, district_condition=district_condition)
-        processed_db_cursor.execute(cases_query, query_params)
-        cases = processed_db_cursor.fetchall()
+        result = processed_db_conn(cases_query, query_params)
+        cases = result.fetchall()
 
         # cases details
         cases_list = [
@@ -1943,12 +1992,12 @@ def district_category_details():
                         AND rt.police_station is NOT NULL
                     GROUP BY
                         ps.police_station_id, ps.police_station;
-"""
+        """
 
         ps_query = counts_query.format(condition=where_condition, district_condition=district_condition,
                                        additional_condition=additional_condition)
-        processed_db_cursor.execute(ps_query, query_params)
-        counts = processed_db_cursor.fetchall()
+        result = processed_db_conn(ps_query, query_params)
+        counts = result.fetchall()
 
         ps_counts = {ps: count for ps, count in counts}
 
@@ -1967,12 +2016,15 @@ def district_category_details():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}',
             'data': None
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.PREDICTIVE_FORECAST['ENDPOINT'], methods=[configs.PREDICTIVE_FORECAST['METHOD']])
@@ -1981,7 +2033,7 @@ def district_category_details():
 @jwt_required()
 def forcast_predictive_policing():
     try:
-        log_db_conn, log_db_cursor = get_log_db_connection()
+        log_db_conn = get_log_db_connection()
 
         ps = request.form.get('police_station')
         district = request.form.get('district')
@@ -1999,12 +2051,14 @@ def forcast_predictive_policing():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_conn.close()
 
 
 @app.route(configs.DATEWISE_FORECAST['ENDPOINT'], methods=[configs.DATEWISE_FORECAST['METHOD']])
@@ -2013,7 +2067,7 @@ def forcast_predictive_policing():
 @jwt_required()
 def forecast_datewise():
     try:
-        log_db_conn, log_db_cursor = get_log_db_connection()
+        log_db_conn = get_log_db_connection()
 
         ps = request.form.get('police_station')
         district = request.form.get('district')
@@ -2036,12 +2090,14 @@ def forecast_datewise():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': f'Internal server error : {e}',
             'data': None
         }), 500
+    finally:
+        log_db_conn.close()
 
 
 @app.route(configs.EMERGENCY_15_INTEGRATION['ENDPOINT'], methods=[configs.EMERGENCY_15_INTEGRATION['METHOD']])
@@ -2049,15 +2105,14 @@ def forecast_datewise():
 @require_api_key
 @jwt_required()
 def emergency_15_integration():
+    processed_db_conn = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
     try:
         from_date = request.form.get('fromDate')
         to_date = request.form.get('toDate')
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
         police_station_str = request.form.get('police_station')
-
-        processed_db_conn, processed_db_cursor = get_processed_db_connection()
-        log_db_conn, log_db_cursor = get_log_db_connection()
 
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
@@ -2091,8 +2146,8 @@ def emergency_15_integration():
         processed_query += " AND date BETWEEN %s AND %s"
         params.extend([from_date, to_date])
 
-        processed_db_cursor.execute(processed_query, params)
-        row = processed_db_cursor.fetchone()
+        result = processed_db_conn(processed_query, params)
+        row = result.fetchone()
 
         (total_calls, siraiki, punjabi, potohari, english, traffic,
          vwps, app_alerts, transfered, call_backs, video_calls,
@@ -2118,8 +2173,8 @@ def emergency_15_integration():
                         """
         conference_call_query = conference_call_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(conference_call_query, (from_date, to_date))
-        (successful_calls, unsuccessful_calls) = processed_db_cursor.fetchone()
+        result = processed_db_conn(conference_call_query, (from_date, to_date))
+        (successful_calls, unsuccessful_calls) = result.fetchone()
 
         fir_query = """
                         SELECT 
@@ -2132,8 +2187,8 @@ def emergency_15_integration():
                         """
         fir_query = fir_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(fir_query, (from_date, to_date))
-        fir_count = processed_db_cursor.fetchone()[0]
+        result = processed_db_conn(fir_query, (from_date, to_date))
+        fir_count = result.fetchone()[0]
 
         emergency_15_stats = {
             'total_calls': total_calls,
@@ -2194,8 +2249,8 @@ def emergency_15_integration():
         """
         police_mv_stats_query = police_mv_stats_query.format(other_condition=other_condition)
 
-        processed_db_cursor.execute(police_mv_stats_query, )
-        vehicle_counts = processed_db_cursor.fetchall()
+        result = processed_db_conn(police_mv_stats_query, )
+        vehicle_counts = result.fetchall()
 
         if not vehicle_counts:
             status_counts = {}
@@ -2215,8 +2270,8 @@ def emergency_15_integration():
                 """
         police_mv_locations_query = police_mv_locations_query.format(other_condition=other_condition)
 
-        processed_db_cursor.execute(police_mv_locations_query, )
-        records = processed_db_cursor.fetchall()
+        result = processed_db_conn(police_mv_locations_query, )
+        records = result.fetchall()
 
         columns = ["name", "police_station", "latitude", "longitude",
                    "registration_no", "district", "unit_type"]
@@ -2235,11 +2290,14 @@ def emergency_15_integration():
 
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}',
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.ADD_REMARKS['ENDPOINT'], methods=[configs.ADD_REMARKS['METHOD']])
@@ -2247,6 +2305,9 @@ def emergency_15_integration():
 @require_api_key
 @jwt_required()
 def add_remarks():
+    processed_db_conn = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+
     try:
         case_number = request.form.get('case_number')
         view_role = request.form.get('view_role')
@@ -2271,20 +2332,17 @@ def add_remarks():
         }
         new_remarks_json = json.dumps(new_remarks)
 
-        processed_db_conn, processed_db_cursor = get_processed_db_connection()
-        log_db_conn, log_db_cursor = get_log_db_connection()
-
-        processed_db_cursor.execute(
+        result = processed_db_conn(
             "SELECT remarks, remarks_status, assignedto_remarks , assignedby_remarks FROM response_time WHERE case_number = %s",
             (case_number,))
-        row = processed_db_cursor.fetchone()
+        row = result.fetchone()
 
         if row:
             remarks_field, status_field, assignedto_remarks, assignedby_remarks = row
 
             if all(not field for field in [remarks_field, status_field, assignedto_remarks, assignedby_remarks]):
 
-                processed_db_cursor.execute(
+                result = processed_db_conn(
                     "UPDATE response_time SET remarks = %s,assignedby_remarks = %s, remarks_status = %s, assignedto_remarks = %s WHERE case_number = %s",
                     (new_remarks_json, name, 'UnAnswered', assigned_to, case_number)
                 )
@@ -2304,11 +2362,14 @@ def add_remarks():
         }), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.GET_REMARKS['ENDPOINT'], methods=[configs.GET_REMARKS['METHOD']])  # Changed to POST
@@ -2316,8 +2377,8 @@ def add_remarks():
 @require_api_key
 @jwt_required()
 def get_remarks():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
         from_date = request.form.get('fromDate')
@@ -2378,8 +2439,8 @@ def get_remarks():
 
         fp_cases = []
         if username != 'ig.punjab':
-            processed_db_cursor.execute(my_followups_query, (username,))
-            fp_cases = processed_db_cursor.fetchall()
+            result = processed_db_conn(my_followups_query, (username,))
+            fp_cases = result.fetchall()
 
         followups_needed_query = f"""
                 SELECT case_number, level3_case_nature, caller_name, caller_number,
@@ -2395,8 +2456,8 @@ def get_remarks():
                   AND  assignedby_remarks = %s
             """
         followups_needed_query = followups_needed_query.format(district_condition=district_condition)
-        processed_db_cursor.execute(followups_needed_query, (name,))
-        fp_needed_cases = processed_db_cursor.fetchall()
+        result = processed_db_conn(followups_needed_query, (name,))
+        fp_needed_cases = result.fetchall()
 
         my_followups_list = [
             {
@@ -2475,12 +2536,15 @@ def get_remarks():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': 'Internal server error',
             'data': None
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.UPDATE_REMARKS['ENDPOINT'], methods=[configs.UPDATE_REMARKS['METHOD']])
@@ -2488,6 +2552,10 @@ def get_remarks():
 @require_api_key
 @jwt_required()
 def update_remarks():
+    # Connect to the databases
+    processed_db_conn = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+
     try:
         # Retrieve parameters from the request
         case_number = request.form.get('case_number')
@@ -2513,16 +2581,12 @@ def update_remarks():
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-        # Connect to the databases
-        processed_db_conn, processed_db_cursor = get_processed_db_connection()
-        log_db_conn, log_db_cursor = get_log_db_connection()
-
         # Check if the case exists
-        processed_db_cursor.execute(
+        result = processed_db_conn(
             "SELECT remarks FROM response_time WHERE case_number = %s ",
             (case_number,)
         )
-        row = processed_db_cursor.fetchone()
+        row = result.fetchone()
 
         if row:
             existing_remarks_json = row[0]
@@ -2538,7 +2602,7 @@ def update_remarks():
             updated_remarks_json = json.dumps(existing_remarks)
 
             # Update the remarks in the database
-            processed_db_cursor.execute(
+            result = processed_db_conn(
                 """
                 UPDATE response_time 
                 SET remarks = %s, remarks_status = %s
@@ -2562,11 +2626,14 @@ def update_remarks():
 
     except Exception as e:
         # Log the error and return a failure response
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.CM_DIST_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_DIST_RESPONSE_TIME['METHOD']])
@@ -2574,8 +2641,8 @@ def update_remarks():
 @require_api_key
 @jwt_required()
 def dist_response_time():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
         from_date = request.form.get('fromDate')
@@ -2626,9 +2693,9 @@ def dist_response_time():
                         """
         district_query = district_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(district_query, (from_date, to_date))
+        result = processed_db_conn(district_query, (from_date, to_date))
 
-        dist_results = processed_db_cursor.fetchall()
+        dist_results = result.fetchall()
 
         districts_response_time = {
             configs.DISTRICTS_DICTIONARY[int(district[0])]: f"{int(district[1] // 60)}:{int(district[1] % 60):02d}"
@@ -2644,11 +2711,14 @@ def dist_response_time():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.CM_PS_RESPONSE_TIME['ENDPOINT'], methods=[configs.CM_PS_RESPONSE_TIME['METHOD']])
@@ -2656,8 +2726,8 @@ def dist_response_time():
 @require_api_key
 @jwt_required()
 def cm_ps_responsetime():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
         from_date = request.form.get('fromDate')
@@ -2700,9 +2770,9 @@ def cm_ps_responsetime():
                     """
         ps_responsetime_query = ps_responsetime_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(ps_responsetime_query, (from_date, to_date, district_id))
+        result = processed_db_conn(ps_responsetime_query, (from_date, to_date, district_id))
 
-        ps_results = processed_db_cursor.fetchall()
+        ps_results = result.fetchall()
 
         ps_response_time = {
             ps[0]: f"{int(ps[1] // 60)}:{int(ps[1] % 60):02d}"
@@ -2718,11 +2788,14 @@ def cm_ps_responsetime():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.DISTRICT_FIR_DATA['ENDPOINT'], methods=[configs.DISTRICT_FIR_DATA['METHOD']])
@@ -2730,8 +2803,8 @@ def cm_ps_responsetime():
 @require_api_key
 @jwt_required()
 def district_fir_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
 
     try:
         from_date = request.form.get('fromDate')
@@ -2788,8 +2861,8 @@ def district_fir_stats():
                  """
         fir_stats_query = fir_stats_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(fir_stats_query, (from_date, to_date))
-        district_fir_data = processed_db_cursor.fetchall()
+        result = processed_db_conn(fir_stats_query, (from_date, to_date))
+        district_fir_data = result.fetchall()
 
         registered_fir_response = {
             district[0]: district[1]
@@ -2814,8 +2887,8 @@ def district_fir_stats():
 
         cases_query = cases_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(cases_query, (from_date, to_date))
-        cases = processed_db_cursor.fetchall()
+        result = processed_db_conn(cases_query, (from_date, to_date))
+        cases = result.fetchall()
 
         cases_response = {
             configs.DISTRICTS_DICTIONARY[int(case[0])]: case[1]
@@ -2841,11 +2914,14 @@ def district_fir_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.PS_FIR_DATA['ENDPOINT'], methods=[configs.PS_FIR_DATA['METHOD']])
@@ -2853,8 +2929,8 @@ def district_fir_stats():
 @require_api_key
 @jwt_required()
 def ps_fir_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
 
     try:
         district_str = request.form.get('district')
@@ -2896,8 +2972,8 @@ def ps_fir_stats():
                  """
         fir_stats_query = fir_stats_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(fir_stats_query, (from_date, to_date, district_id))
-        ps_fir_data = processed_db_cursor.fetchall()
+        result = processed_db_conn(fir_stats_query, (from_date, to_date, district_id))
+        ps_fir_data = result.fetchall()
 
         ps_fir_response = {
             ps[0]: ps[1]
@@ -2922,8 +2998,8 @@ def ps_fir_stats():
 
         cases_query = cases_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(cases_query, (from_date, to_date, district_id))
-        cases = processed_db_cursor.fetchall()
+        result = processed_db_conn(cases_query, (from_date, to_date, district_id))
+        cases = result.fetchall()
 
         cases_response = {
             case[0]: case[1]
@@ -2949,11 +3025,14 @@ def ps_fir_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.CONFERENCE_CALL_STATS['ENDPOINT'], methods=[configs.CONFERENCE_CALL_STATS['METHOD']])
@@ -2961,8 +3040,8 @@ def ps_fir_stats():
 @require_api_key
 @jwt_required()
 def conference_call_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
 
     try:
         from_date = request.form.get('fromDate')
@@ -3014,7 +3093,6 @@ def conference_call_stats():
                     date BETWEEN %s AND %s
                     AND field3 IS NOT NULL
                     AND district_id is not NULL
-                    AND district_id NOT IN ('0','41','42','43','44','45','46')
                     AND parent_id = 0
                     {district_condition}
                 GROUP BY 
@@ -3023,8 +3101,8 @@ def conference_call_stats():
 
         dist_conf_query = dist_conf_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(dist_conf_query, (from_date, to_date))
-        dist_conf_results = processed_db_cursor.fetchall()
+        result = processed_db_conn(dist_conf_query, (from_date, to_date))
+        dist_conf_results = result.fetchall()
 
         district_response = {
             configs.DISTRICTS_DICTIONARY[int(district[0])]: {
@@ -3037,11 +3115,14 @@ def conference_call_stats():
         return jsonify(district_response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.ALERT_RESPONSETIME['ENDPOINT'], methods=[configs.ALERT_RESPONSETIME['METHOD']])
@@ -3049,8 +3130,8 @@ def conference_call_stats():
 @require_api_key
 @jwt_required()
 def response_time_alerts():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
     try:
         view_role = request.form.get('view_role', type=int)
         district_str = request.form.get('district')
@@ -3103,8 +3184,8 @@ def response_time_alerts():
         """
         alerts_count_query = alerts_count_query.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(alerts_count_query, (from_date, to_date))
-        alerts = processed_db_cursor.fetchall()
+        result = processed_db_conn(alerts_count_query, (from_date, to_date))
+        alerts = result.fetchall()
 
         alerts_count = []
         for i in alerts:
@@ -3124,8 +3205,8 @@ def response_time_alerts():
 
         alerts_casenumbers = alerts_casenumbers.format(district_condition=district_condition)
 
-        processed_db_cursor.execute(alerts_casenumbers, (from_date, to_date))
-        alerts = processed_db_cursor.fetchall()
+        result = processed_db_conn(alerts_casenumbers, (from_date, to_date))
+        alerts = result.fetchall()
 
         alerts_cases = []
         for i in alerts:
@@ -3179,11 +3260,14 @@ def response_time_alerts():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.VEHICLE_LOCATIONS['ENDPOINT'], methods=[configs.VEHICLE_LOCATIONS['METHOD']])
@@ -3191,8 +3275,8 @@ def response_time_alerts():
 @require_api_key
 @jwt_required()
 def police_vehicle_locations():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
     try:
         vehicle_status = request.form.get('status')
         district_str = request.form.get('district')
@@ -3250,8 +3334,8 @@ def police_vehicle_locations():
         query = query.format(district_condition=district_condition)
 
         with processed_db_conn.cursor(cursor_factory=RealDictCursor) as processed_db_cursor:
-            processed_db_cursor.execute(query, params)
-            records = processed_db_cursor.fetchall()
+            result = processed_db_conn(query, params)
+            records = result.fetchall()
 
         data = [dict(row) for row in records]
 
@@ -3261,11 +3345,14 @@ def police_vehicle_locations():
             {"status": "success", "data": data, "message": "Police Vehicles Data fetched successfully", }), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.VWPS_STATS['ENDPOINT'], methods=[configs.VWPS_STATS['METHOD']])
@@ -3273,7 +3360,7 @@ def police_vehicle_locations():
 @require_api_key
 @jwt_required()
 def vwps_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn = get_log_db_connection()
     db_conn = db_config.get_vwps_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -3390,11 +3477,13 @@ def vwps_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
 
 
 @app.route(configs.VCCS_STATS['ENDPOINT'], methods=[configs.VCCS_STATS['METHOD']])
@@ -3402,7 +3491,7 @@ def vwps_stats():
 @require_api_key
 @jwt_required()
 def vccs_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn = get_log_db_connection()
     db_conn = db_config.get_vccs_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -3521,11 +3610,13 @@ def vccs_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
 
 
 @app.route(configs.VCM_STATS['ENDPOINT'], methods=[configs.VCM_STATS['METHOD']])
@@ -3533,7 +3624,7 @@ def vccs_stats():
 @require_api_key
 @jwt_required()
 def vcm_stats():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn = get_log_db_connection()
     db_conn = db_config.get_vcm_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -3650,19 +3741,22 @@ def vcm_stats():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+
 
 @app.route(configs.CRIME_TRENDS['ENDPOINT'], methods=[configs.CRIME_TRENDS['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
 @jwt_required()
 def crime_trends():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
     master_db_connection = db_config.get_db_connection()
     try:
         district_str = request.form.get('district')
@@ -3772,8 +3866,8 @@ def crime_trends():
                 ORDER BY {time_grouping} ASC;
                 """
 
-        processed_db_cursor.execute(query)
-        data = processed_db_cursor.fetchall()
+        result = processed_db_conn(query)
+        data = result.fetchall()
 
         crime_time_periods = [row[0] for row in data]
         total_crimes = [row[1] for row in data]
@@ -3823,8 +3917,8 @@ def crime_trends():
                 ORDER BY {time_grouping} ASC;
                 """
 
-        processed_db_cursor.execute(fir_query)
-        fir_data = processed_db_cursor.fetchall()
+        result = processed_db_conn(fir_query)
+        fir_data = result.fetchall()
 
         fir_time_periods = [row[0] for row in fir_data]
         total_firs = [row[1] for row in fir_data]
@@ -3850,11 +3944,16 @@ def crime_trends():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
+        master_cursor.close()
+        master_db_connection.close()
 
 
 @app.route(configs.CALLER_FEEDBACK['ENDPOINT'], methods=[configs.CALLER_FEEDBACK['METHOD']])
@@ -3862,8 +3961,8 @@ def crime_trends():
 @require_api_key
 @jwt_required()
 def caller_feedback():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
         view_role = request.form.get('view_role', type=int)
@@ -3874,22 +3973,22 @@ def caller_feedback():
         if view_role in [3, 4]:
             district_condition = f""" AND district IN ({', '.join(f"'{district}'" for district in districts)})"""
 
-        # processed_db_cursor.execute("""
+        # result = processed_db_conn("""
         #             SELECT accepted , dispatched , feedback , reopen ,closed , caller_feedback
         #             FROM feedback_stats
         #             ORDER BY created_at DESC
         #             LIMIT 1
         #         """)
-        # (accepted , dispatched , feedback , reopen ,closed , feedback_caller) = processed_db_cursor.fetchone()
+        # (accepted , dispatched , feedback , reopen ,closed , feedback_caller) = result.fetchone()
 
-        processed_db_cursor.execute(f"""
+        result = processed_db_conn(f"""
                             SELECT district, positive, negative, not_responding
                             FROM dist_feedback_count
                             Where 1=1
                             {district_condition}
                         """)
 
-        district_feedback_stats = processed_db_cursor.fetchall()
+        district_feedback_stats = result.fetchall()
 
         # existing_stats = {row['district']: dict(row) for row in district_feedback_stats}
 
@@ -3939,11 +4038,14 @@ def caller_feedback():
 
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.BLOOD_DONATION['ENDPOINT'], methods=[configs.BLOOD_DONATION['METHOD']])
@@ -3951,7 +4053,7 @@ def caller_feedback():
 @require_api_key
 @jwt_required()
 def blood_donation():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn = get_log_db_connection()
     db_conn = db_config.get_blood_db_connection()
     db_cursor = db_conn.cursor()
     try:
@@ -4025,7 +4127,7 @@ def blood_donation():
         SUM(CASE WHEN DATE(last_donated_at) = %s THEN 1 ELSE 0 END) AS today_blood_donated
         FROM donars
         WHERE is_active = 1 OR DATE(last_donated_at) = %s
-""", (current_date, current_date))
+        """, (current_date, current_date))
 
         result = db_cursor.fetchone()
         result = [int(value) if isinstance(value, Decimal) else value for value in result]
@@ -4080,11 +4182,13 @@ def blood_donation():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
 
 
 @app.route(configs.ESCALATED_CASES['ENDPOINT'], methods=[configs.ESCALATED_CASES['METHOD']])
@@ -4092,7 +4196,7 @@ def blood_donation():
 @require_api_key
 @jwt_required()
 def escalated_cases():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn = get_log_db_connection()
     vccs_conn = db_config.get_vccs_db_connection()
     vccs_cursor = vccs_conn.cursor()
     vwps_conn = db_config.get_vwps_db_connection()
@@ -4191,11 +4295,19 @@ def escalated_cases():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        vwps_cursor.close()
+        vwps_conn.close()
+        vccs_cursor.close()
+        vccs_conn.close()
+        vcm_cursor.close()
+        vcm_conn.close()
 
 
 @app.route(configs.CRIME_TREND_CASES['ENDPOINT'], methods=[configs.CRIME_TREND_CASES['METHOD']])
@@ -4203,8 +4315,8 @@ def escalated_cases():
 @require_api_key
 @jwt_required()
 def crime_trend_cases():
-    log_db_conn, log_db_cursor = get_log_db_connection()
-    processed_db_conn, processed_db_cursor = get_processed_db_connection()
+    log_db_conn = get_log_db_connection()
+    processed_db_conn = get_processed_db_connection()
     try:
         district_str = request.form.get('district')
         date = request.form.get('date')
@@ -4240,8 +4352,8 @@ def crime_trend_cases():
 
         params = [configs.REVERSED_DISTRICTS_DICTIONARY[district_str], start_date, end_date]
 
-        processed_db_cursor.execute(query_cases, params)
-        cases = processed_db_cursor.fetchall()
+        result = processed_db_conn(query_cases, params)
+        cases = result.fetchall()
 
         cases_list = [
             {
@@ -4272,11 +4384,14 @@ def crime_trend_cases():
         return jsonify(response), 200
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }), 500
+    finally:
+        log_db_conn.close()
+        processed_db_conn.close()
 
 
 @app.route(configs.NEGATIVE_FEEDBACK_CASES['ENDPOINT'], methods=[configs.NEGATIVE_FEEDBACK_CASES['METHOD']])
@@ -4284,7 +4399,7 @@ def crime_trend_cases():
 @require_api_key
 @jwt_required()
 def negative_feedback_cases():
-    log_db_conn, log_db_cursor = get_log_db_connection()
+    log_db_conn = get_log_db_connection()
     mysql_connection = db_config.get_db_connection()
     mysql_cursor = mysql_connection.cursor()
     try:
@@ -4376,11 +4491,15 @@ def negative_feedback_cases():
 
 
     except Exception as e:
-        utils.log_to_database(log_db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database_updated(log_db_conn, "ERROR", traceback.format_exc())
         return jsonify({
             'status': False,
             'message': f'Internal server error {e}'
         }), 400
+    finally:
+        log_db_conn.close()
+        mysql_cursor.close()
+        mysql_connection.close()
 
 
 def get_filtered_users(view_role, district, police_station):

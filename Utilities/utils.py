@@ -12,6 +12,11 @@ import sqlite3
 from dotenv import load_dotenv
 import psycopg2
 import traceback
+import json
+from typing import Optional, Dict, Any
+import firebase_admin
+from firebase_admin import messaging
+from Utilities import db_config
 
 load_dotenv()
 
@@ -534,16 +539,52 @@ def get_district_cases(district_id, fromDate, toDate, shift):
     return jsonify(response)
 
 
-def log_to_database(log_conn, log_cursor, level, message):
-    query = "INSERT INTO 15_stats_log (status, time_date, description,Host_IP_address) VALUES (%s, %s, %s, %s)"
-    data = (level, get_current_time(), message, SYS_IP)
+# def log_to_database(log_conn, log_cursor, level, message):
+#     query = "INSERT INTO 15_stats_log (status, time_date, description,Host_IP_address) VALUES (%s, %s, %s, %s)"
+#     data = (level, get_current_time(), message, SYS_IP)
+#     try:
+#         log_cursor.execute(query, data)
+#         # Print the error to the console
+#         print("ERROR:", message)
+#
+#         log_conn.commit()
+#     except mysql.connector.Error as err:
+#         print(f"Database Error: {err}")
+
+
+def log_to_pg_database(log_conn, log_cursor, level, message, client_ip=SYS_IP):
+    query = """
+        INSERT INTO emergency_i_logs (status, time_date, description, host_ip_address, client_ip_address) 
+        VALUES (%s, %s, %s, %s, %s)
+    """
+    data = (level, get_current_time(), message, SYS_IP, client_ip)
+
     try:
         log_cursor.execute(query, data)
+        log_conn.commit()
+
+    except Exception as err:
+        log_conn.rollback()
+        print(f"Database Error: {err}")
+
+
+def log_to_database_updated(log_conn, level, message):
+    query = """
+        INSERT INTO 15_stats_log (status, time_date, description, Host_IP_address)
+        VALUES (%s, %s, %s, %s)
+    """
+    data = (level, get_current_time(), message, SYS_IP)
+
+    try:
+        # Execute the INSERT query in a single command
+        log_conn.execute(query, data)
+
         # Print the error to the console
         print("ERROR:", message)
 
+        # Commit the transaction
         log_conn.commit()
-    except mysql.connector.Error as err:
+    except Exception as err:
         print(f"Database Error: {err}")
 
 
@@ -716,17 +757,46 @@ def get_processed_db_connection(database=configs.POSTGRES_PROCESSED_STATS_MAIN):
         raise
 
 
-def log_error_to_db_and_console(db_conn, log_db_cursor, error_message):
-    # Capture the error message
-    error_message = traceback.format_exc()
+def get_prod_db_connection():
+    try:
+        conn = psycopg2.connect(
+            dbname=os.getenv('PG_PROD_DB'),
+            user=os.getenv('PG_PROD_USER'),
+            password=os.getenv('PG_PROD_PASSWORD'),
+            host=os.getenv('PG_PROD_HOST'),
+            port=os.getenv('PG_PROD_PORT')
+        )
+        return conn
+    except Exception as e:
+        print(e)
+        raise
 
-    # Log the error to the database
-    log_to_database(db_conn, log_db_cursor, "ERROR", error_message)
 
-    # Print the error to the console
-    print("ERROR:", error_message)
+def get_new_processed_db_connection():
+    try:
+        conn = psycopg2.connect(
+            dbname=os.getenv('PROCESSED_DB_NAME'),
+            user=os.getenv('PROCESSED_DB_USER'),
+            password=os.getenv('PROCESSED_DB_PASSWORD'),
+            host=os.getenv('PROCESSED_DB_HOST'),
+            port=os.getenv('PROCESSED_DB_PORT')
+        )
+        return conn
+    except Exception as e:
+        print(e)
+        raise
 
 
+# def log_error_to_db_and_console(db_conn, log_db_cursor, error_message):
+#     # Capture the error message
+#     error_message = traceback.format_exc()
+#
+#     # Log the error to the database
+#     log_to_database(db_conn, log_db_cursor, "ERROR", error_message)
+#
+#     # Print the error to the console
+#     print("ERROR:", error_message)
+#
 
 # def get_category_condition(category):
 #     """Returns the SQL condition for the given category."""
@@ -771,9 +841,887 @@ def get_week_range(date_str):
     end_of_week = start_of_week + timedelta(days=6)
     return start_of_week.strftime("%Y-%m-%d"), end_of_week.strftime("%Y-%m-%d")
 
+
 def get_month_range(date_str):
     """Calculate start and end of the month."""
     start_of_month = datetime.strptime(date_str, "%Y-%m")
     next_month = start_of_month.replace(day=28) + timedelta(days=4)
     end_of_month = next_month - timedelta(days=next_month.day)
     return start_of_month.strftime("%Y-%m-%d"), end_of_month.strftime("%Y-%m-%d")
+
+
+def get_last_timestamp(remarks):
+    try:
+        # Safely evaluate the string as a Python object
+        dictionaries = json.loads(remarks)
+        if isinstance(dictionaries, list) and dictionaries:
+            last_dict = dictionaries[-1]
+            return last_dict.get('timestamp', None)
+        elif isinstance(dictionaries, dict) and dictionaries:
+            return dictionaries.get('timestamp', None)
+        return None
+    except (ValueError, SyntaxError):
+        return None
+
+
+def parse_remarks(remarks):
+    # Load the JSON string into a Python object
+    if remarks is None:
+        return []
+    try:
+        data = json.loads(remarks)
+    except json.JSONDecodeError:
+        # Handle the case where the JSON string is invalid
+        return []
+
+    # If the data is a dictionary (single object), wrap it in a list
+    if isinstance(data, dict):
+        return [data]
+    # If the data is already a list, return it as is
+    elif isinstance(data, list):
+        return data
+    # Handle any other unexpected types
+    else:
+        return []
+
+
+# def is_within_punjab(lat, lon):
+#     """Check if the given coordinates are within the boundaries of Punjab, Pakistan."""
+#     # Define the latitude and longitude boundaries of Punjab, Pakistan
+#     min_lat, max_lat = 23.6345, 32.0841
+#     min_lon, max_lon = 69.3737, 77.0369
+#
+#     return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+#
+#
+# def filter_lat_longs(lat_longs):
+#     """Filter out points that are out of bounds of Punjab."""
+#     if not lat_longs:
+#         return []  # Return an empty list if input is empty
+#
+#     filtered = []
+#
+#     for lat, lon in lat_longs:
+#         # Only include points within the boundaries of Punjab
+#         if is_within_punjab(lat, lon):
+#             filtered.append((lat, lon))
+#
+#     return filtered
+
+# def is_within_punjab(lat, lon):
+#     """Check if the given coordinates are within the boundaries of Punjab, Pakistan."""
+#     # Define the latitude and longitude boundaries of Punjab, Pakistan
+#     min_lat, max_lat = 23.6345, 32.0841
+#     min_lon, max_lon = 69.3737, 77.0369
+#     return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+
+def is_within_punjab(lat, lon):
+    """Check if the given coordinates are within the boundaries of Punjab, Pakistan."""
+    # Define the latitude and longitude boundaries of Punjab, Pakistan
+    min_lat, max_lat = 23.6345, 32.0851  # Adjusted latitude for Punjab's southern and northern boundaries
+    min_lon, max_lon = 69.3839, 76.8855  # Adjusted longitude for Punjab's western and eastern boundaries
+
+    # Check if the coordinates are within these bounds
+    return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+
+district_boundaries = {
+    "Sialkot": (31.3, 32.2, 73.8, 75.7),
+    "Lahore": (31.2, 31.9, 73.8, 75.2),
+    "Gujranwala": (31.3, 32.2, 73.3, 74.7),
+    "Bahawalpur": (29.3, 30.7, 71.3, 73.2),
+    "Faisalabad": (31.1, 31.9, 72.3, 73.7),
+    "M.B. Din": (31.3, 32.2, 73.3, 74.7),
+    "Bahawalnagar": (29.3, 30.7, 71.8, 73.7),
+    "Okara": (30.3, 31.2, 72.3, 73.2),
+    "Sahiwal": (30.3, 31.2, 71.8, 73.2),
+    "Khushab": (31.8, 32.7, 72.3, 73.7),
+    "Layyah": (30.3, 31.2, 70.3, 71.7),
+    "T.T. Singh": (31.3, 32.2, 72.3, 73.7),
+    "Muzaffargarh": (30.3, 31.7, 70.3, 72.2),
+    "Multan": (29.3, 30.2, 71.3, 72.7),
+    "Sargodha": (31.8, 32.7, 72.3, 73.7),
+    "Gujrat": (31.8, 32.7, 73.3, 74.7),
+    "Rahimyar Khan": (28.3, 29.7, 70.3, 72.7),
+    "Sheikhupura": (31.3, 32.2, 73.3, 74.7),
+    "Attock": (33.3, 34.2, 72.3, 73.7),
+    "Jhang": (31.3, 32.2, 71.8, 73.2),
+    "Khanewal": (30.3, 31.2, 71.3, 72.7),
+    "Mianwali": (31.3, 32.2, 71.3, 72.7),
+    "Rawalpindi": (33.3, 34.2, 72.3, 73.7),
+    "D.G. Khan": (30.3, 31.7, 69.8, 72.2),
+    "Pakpattan": (30.3, 31.2, 72.3, 73.2),
+    "Hafizabad": (31.8, 32.7, 73.3, 74.7),
+    "Chiniot": (31.3, 32.2, 71.8, 73.2),
+    "Narowal": (31.3, 32.2, 73.8, 75.2),
+    "Rajanpur": (29.3, 30.7, 70.3, 71.7),
+    "Vehari": (30.3, 31.2, 71.3, 72.7),
+    "Nankana Sb": (30.8, 31.7, 73.3, 74.7),
+    "Kasur": (30.899, 32.2, 73.3, 74.7),
+    "Chakwal": (31.8, 33.2, 72.3, 73.7),
+    "Bhakkar": (30.8, 31.7, 71.3, 72.7),
+    "Lodhran": (29.3, 30.2, 71.3, 72.7),
+    "Jhelum": (31.8, 33.2, 72.3, 73.7)
+}
+
+
+def district_bounding_box(district):
+    """Return the bounding box for the specified district (approximate)."""
+    return district_boundaries.get(district, None)
+
+
+def is_within_district(lat, lon, district):
+    """Check if the coordinates are within a specified district's bounding box."""
+    bounds = district_bounding_box(district)
+    if not bounds:
+        return False  # If the district is not found
+    min_lat, max_lat, min_lon, max_lon = bounds
+    return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+
+
+# def filter_lat_longs(lat_longs, districts=None):
+#     """Filter out points that are out of bounds of Punjab or the specified district(s)."""
+#     if not lat_longs:
+#         return []  # Return an empty list if input is empty
+#
+#     filtered = []
+#
+#     if districts:
+#         # Check if the districts parameter is a single district or multiple districts
+#         district_list = [district.strip() for district in districts.split(',')] if ',' in districts else [
+#             districts.strip()]
+#
+#         # If we have a single district, filter based on that district
+#         if len(district_list) == 1:
+#             for lat, lon in lat_longs:
+#                 if is_within_district(lat, lon, district_list[0]):
+#                     filtered.append((lat, lon))
+#         else:
+#             # If multiple districts are provided, filter based on the Punjab boundaries
+#             for lat, lon in lat_longs:
+#                 if is_within_punjab(lat, lon):
+#                     filtered.append((lat, lon))
+#     else:
+#         # If no district is specified, filter within Punjab boundaries
+#         for lat, lon in lat_longs:
+#             if is_within_punjab(lat, lon):
+#                 filtered.append((lat, lon))
+#
+#     return filtered
+
+def filter_lat_longs(lat_longs, districts=None):
+    """Filter out points that are out of bounds of Punjab or the specified district(s)."""
+    if not lat_longs:
+        return []  # Return an empty list if input is empty
+
+    filtered = []
+
+    if districts and districts != 'null':
+        # Check if the districts parameter is a single district or multiple districts
+        district_list = [district.strip() for district in districts.split(',')] if ',' in districts else [
+            districts.strip()]
+
+        # If we have a single district, filter based on that district
+        if len(district_list) == 1:
+            for lat, lon, _ in lat_longs:
+                if is_within_district(lat, lon, district_list[0]):
+                    filtered.append((lat, lon, _))
+        else:
+            # If no district is specified, check if the coordinates are within any district's bounding box
+            for lat, lon, _ in lat_longs:
+                # Check if the coordinates fall within any district
+                for district in district_list:
+                    if is_within_district(lat, lon, district):
+                        filtered.append((lat, lon, _))
+                        break  # If the point is within one district, no need to check further districts
+    else:
+        # If no district is specified, check if the coordinates are within any district's bounding box
+        for lat, lon, _ in lat_longs:
+            # Check if the coordinates fall within any district
+            for district in district_boundaries:
+                if is_within_district(lat, lon, district):
+                    filtered.append((lat, lon, _))
+                    break  # If the point is within one district, no need to check further districts
+
+    return filtered
+
+
+def get_remark_flags(remark_text, time_stamp):
+    """
+    Returns a tuple (status_flag, priority_flag) based on the parsed remark_text and time_stamp.
+
+    - If the remark list has only one entry, it is considered unanswered (status_flag = 0).
+    - If there are multiple entries, and the first remark's assigned_to equals the last remark's assigned_by,
+      then status_flag = 1; otherwise, status_flag = 0.
+    - priority_flag is set to 1 if time_stamp exists, the case is less than 3 days old, and the remark status is unanswered.
+    """
+    try:
+        remarks_list = json.loads(remark_text)
+    except Exception:
+        remarks_list = []
+
+    if len(remarks_list) <= 1:
+        status_flag = 0
+        unanswered = True
+    else:
+        first_remark = remarks_list[0]
+        last_remark = remarks_list[-1]
+        if first_remark.get('assigned_to') == last_remark.get('assigned_by'):
+            status_flag = 1
+            unanswered = False
+        else:
+            status_flag = 0
+            unanswered = True
+
+    priority_flag = 0
+    if time_stamp:
+        try:
+            case_time = datetime.strptime(time_stamp, "%Y-%m-%d %H:%M:%S")
+            if (datetime.now() - case_time).days < 3 and unanswered:
+                priority_flag = 1
+        except ValueError:
+            pass
+
+    return status_flag, priority_flag
+
+
+def construct_homicide_fir_query(urdu_districts):
+    # Escape district names to prevent SQL injection
+    escaped_districts = [repr(d) for d in urdu_districts]
+
+    # Construct the base query
+    if urdu_districts:
+        # Include the WHERE clause if districts are provided
+        lat_long_query = """
+            SELECT latitude, longitude
+            FROM fir_murder_psrms
+            WHERE district IN ({})
+        """.format(", ".join(escaped_districts))
+    else:
+        # Omit the WHERE clause if no districts are provided
+        lat_long_query = """
+            SELECT latitude, longitude
+            FROM fir_murder_psrms
+        """
+
+    return lat_long_query
+
+
+def allowed_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in configs.ALLOWED_IMG_EXTENSIONS
+
+
+def fetch_officer_data(cnic):
+    """ Fetch officer data from external HRMIS APIs sequentially. """
+    for url in [configs.HRMIS_API_1, configs.HRMIS_API_2]:
+        response = requests.post(url, headers=configs.LOGIN_HEADERS, data={'cnic': cnic})
+        if response.status_code == 200 and response.json().get("success"):
+            return response.json().get("data")
+    return None  # No data found in both APIs
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # This gets the Utilities folder path
+CONFIG_FILE_PATH = os.path.join(BASE_DIR, "configs.json")
+
+def load_version_config():
+    with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def get_reached_time(first_arrival_time, reached_time, accepted_time):
+    if (reached_time is None or reached_time < accepted_time) and first_arrival_time:
+        used_time = first_arrival_time
+    elif reached_time and reached_time >= accepted_time:
+        used_time = reached_time
+    else:
+        return 'N/A'
+
+    return datetime.fromtimestamp(int(used_time)).strftime("%d %b %Y %H:%M:%S")
+
+def is_negative_float(value):
+    value = float(value) if value else None
+    return isinstance(value, float) and value <= 0
+
+
+def compute_pct_change(current: int, prior: int) -> Optional[float]:
+    """
+    Return percentage change from prior to current, or None if prior is zero.
+    """
+    if prior == 0 or prior is None:
+        return None
+    return round(float(((current - prior) / prior ) * 100),2)
+
+
+def fetch_and_compute_1787_complaint_stats(period: str, dist_cond: str) -> Dict[str, Any]:
+    # 1) Build your interval params
+    if period == "week":
+        params = {"current_interval": 7, "previous_interval_end": 14}
+    else:
+        params = {"current_interval": 30, "previous_interval_end": 60}
+
+    # 2) Run your query
+    query = f"""
+        SELECT
+            -- Category 1: Non-FIR Registration
+            MAX(CASE WHEN category = 1 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS non_fir_registration_pending_prev,
+            MAX(CASE WHEN category = 1 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prev,
+            MAX(CASE WHEN category = 1 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS non_fir_registration_completed_prev,
+            MAX(CASE WHEN category = 1 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS non_fir_registration_pending_prior,
+            MAX(CASE WHEN category = 1 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prior,
+            MAX(CASE WHEN category = 1 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS non_fir_registration_completed_prior,
+            -- Category 2: Under Investigation
+            MAX(CASE WHEN category = 2 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS under_investigation_pending_prev,
+            MAX(CASE WHEN category = 2 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS under_investigation_total_prev,
+            MAX(CASE WHEN category = 2 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS under_investigation_completed_prev,
+            MAX(CASE WHEN category = 2 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS under_investigation_pending_prior,
+            MAX(CASE WHEN category = 2 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS under_investigation_total_prior,
+            MAX(CASE WHEN category = 2 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS under_investigation_completed_prior,
+            -- Category 3: Complaint Against Police
+            MAX(CASE WHEN category = 3 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_police_pending_prev,
+            MAX(CASE WHEN category = 3 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prev,
+            MAX(CASE WHEN category = 3 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_police_completed_prev,
+            MAX(CASE WHEN category = 3 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_police_pending_prior,
+            MAX(CASE WHEN category = 3 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prior,
+            MAX(CASE WHEN category = 3 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_police_completed_prior,
+            -- Category 4: Complaint Against Services
+            MAX(CASE WHEN category = 4 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_services_pending_prev,
+            MAX(CASE WHEN category = 4 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prev,
+            MAX(CASE WHEN category = 4 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_services_completed_prev,
+            MAX(CASE WHEN category = 4 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS complaint_against_services_pending_prior,
+            MAX(CASE WHEN category = 4 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prior,
+            MAX(CASE WHEN category = 4 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS complaint_against_services_completed_prior,
+            -- Category 5: Departmental Issue
+            MAX(CASE WHEN category = 5 AND period = 'current' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS departmental_issue_pending_prev,
+            MAX(CASE WHEN category = 5 AND period = 'current' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prev,
+            MAX(CASE WHEN category = 5 AND period = 'current' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS departmental_issue_completed_prev,
+            MAX(CASE WHEN category = 5 AND period = 'previous' AND status_group = 'pending' THEN complaint_count ELSE 0 END) AS departmental_issue_pending_prior,
+            MAX(CASE WHEN category = 5 AND period = 'previous' AND status_group = 'total' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prior,
+            MAX(CASE WHEN category = 5 AND period = 'previous' AND status_group = 'completed' THEN complaint_count ELSE 0 END) AS departmental_issue_completed_prior
+        FROM (
+            SELECT
+                category,
+                CASE
+                    WHEN DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= CURDATE() - INTERVAL %(current_interval)s DAY
+                         AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < CURDATE() + INTERVAL 1 DAY THEN 'current'
+                    ELSE 'previous'
+                END AS period,
+                CASE
+                    WHEN complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue') THEN 'pending'
+                    WHEN complaint_status = 'Closed (Disposed)' THEN 'completed'
+                END AS status_group,
+                COUNT(*) AS complaint_count
+            FROM complaints_view
+            WHERE source = 2
+                AND complaint_date IS NOT NULL
+                AND DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY
+                AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY
+                AND complaint_status IN ('Pending (Fresh)', 'In Proceeding', 'Pending (Reopened)', 'Overdue', 'Closed (Disposed)')
+                {dist_cond}
+            GROUP BY category, period, status_group
+            UNION ALL
+            SELECT
+                category,
+                CASE
+                    WHEN DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) >= CURDATE() - INTERVAL %(current_interval)s DAY
+                         AND DATE(FROM_UNIXTIME(COALESCE(complaint_date, 0))) < CURDATE() + INTERVAL 1 DAY THEN 'current'
+                    ELSE 'previous'
+                END AS period,
+                'total' AS status_group,
+                COUNT(*) AS complaint_count
+            FROM complaints_view
+            WHERE source = 2
+                AND complaint_date IS NOT NULL
+                AND DATE(FROM_UNIXTIME(complaint_date)) >= CURDATE() - INTERVAL %(previous_interval_end)s DAY
+                AND DATE(FROM_UNIXTIME(complaint_date)) < CURDATE() + INTERVAL 1 DAY
+            GROUP BY category, period
+        ) AS aggregated_complaints;
+    """
+    conn = db_config.get_1787_db_connection()
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(query, params)
+        row = cursor.fetchone()  # type: Dict[str, int]
+
+    # 3) Define the mapping of top-level keys → column-name prefixes
+    category_map = {
+        "investigation": "under_investigation",
+        "fir_registration": "non_fir_registration",
+        "complaint_against_police": "complaint_against_police",
+        "complaint_against_service_delivery": "complaint_against_services",
+        "departmental_issue": "departmental_issue",
+    }
+    statuses = ["pending", "total", "completed"]
+    intervals = {"prev": "_prev", "prior": "_prior"}
+
+    # 4) Define display names for categories and statuses
+    category_display_names = {
+        "fir_registration": "FIR registration complaints",
+        "investigation": "investigation complaints",
+        "complaint_against_police": "complaints against police",
+        "complaint_against_service_delivery": "complaints against service delivery",
+        "departmental_issue": "departmental issue complaints"
+    }
+    status_display_names = {
+        "pending": "pending",
+        "total": "total",
+        "completed": "completed"
+    }
+
+    # 5) Helper function to compute status and description
+    def get_status_and_description(prev, prior, pct_chng, period, display_name):
+        if prev > prior:
+            status = 'increased'
+        elif prev < prior:
+            status = 'decreased'
+        else:
+            status = 'unchanged'
+
+        if status == 'unchanged':
+            description = f"The number of {display_name} remained the same at {prev} in the most recent {period}."
+        else:
+            description = f"This represents a {abs(pct_chng):.1f}% {'increase' if status == 'increased' else 'decrease'} in {display_name}"
+        return status, description
+
+    # 6) Build the nested dict with status and description
+    result = {}
+    for top_key, prefix in category_map.items():
+        result[top_key] = {}
+        for status in statuses:
+            # Pull out the two raw counts
+            current_key = f"{prefix}_{status}{intervals['prev']}"
+            prior_key = f"{prefix}_{status}{intervals['prior']}"
+
+            curr_val = row.get(current_key, 0) if row else 0
+            prior_val = row.get(prior_key, 0) if row else 0
+            pct = compute_pct_change(curr_val, prior_val)
+
+            # Compute status and description
+            display_name = f"{status_display_names[status]} {category_display_names[top_key]}"
+            status_val, description_val = get_status_and_description(
+                curr_val, prior_val, pct, period, display_name
+            )
+
+            result[top_key][status] = {
+                "prev": curr_val,
+                "prior": prior_val,
+                "pct_chng": pct,
+                "status": status_val,
+                "description": description_val
+            }
+
+    if cursor:
+        cursor.close()
+    if conn:
+        conn.close()
+    return result
+
+
+
+
+def fetch_and_compute_1787_complaint_stats_executive_summary(period: str, dist_cond: str) -> Dict[str, Any]:
+    """
+    Fetch and compute complaint statistics for the specified period and district condition.
+
+    Args:
+        period (str): The time period for analysis ('week', 'month', 'last90days', 'last15days_yearly').
+        dist_cond (str): District condition to filter complaints (e.g., 'AND district = 1').
+
+    Returns:
+        Dict[str, Any]: Nested dictionary with complaint stats by category, including counts, percentage change,
+                        status, and description.
+    """
+    # Get today's date
+    today = datetime.now().date()
+
+    # Define date ranges and period-specific descriptions
+    if period == "week":
+        current_start = today - timedelta(days=7)
+        current_end = today + timedelta(days=1)  # Up to today inclusive
+        previous_start = today - timedelta(days=14)
+        previous_end = today - timedelta(days=7)
+        period_display = "in the most recent week"
+    elif period == "month":
+        current_start = today - timedelta(days=30)
+        current_end = today + timedelta(days=1)
+        previous_start = today - timedelta(days=60)
+        previous_end = today - timedelta(days=30)
+        period_display = "in the most recent month"
+    elif period == "last90days":
+        current_start = today - timedelta(days=90)
+        current_end = today + timedelta(days=1)
+        previous_start = today - timedelta(days=180)
+        previous_end = today - timedelta(days=90)
+        period_display = "in the last 90 days"
+    elif period == "last15days_yearly":
+        current_start = today - timedelta(days=15)
+        current_end = today + timedelta(days=1)
+        previous_start = current_start.replace(year=today.year - 1)
+        previous_end = current_end.replace(year=today.year - 1)
+        period_display = "compared to the same period last year"
+    else:
+        raise ValueError(f"Invalid period: {period}. Expected 'week', 'month', 'last90days', or 'last15days_yearly'.")
+
+    # Prepare parameters for the SQL query
+    params = {
+        "current_start": current_start.strftime('%Y-%m-%d'),
+        "current_end": current_end.strftime('%Y-%m-%d'),
+        "previous_start": previous_start.strftime('%Y-%m-%d'),
+        "previous_end": previous_end.strftime('%Y-%m-%d'),
+    }
+
+    # Updated SQL query using the date parameters
+    query = f"""
+        SELECT
+            -- Category 1: Non-FIR Registration
+            MAX(CASE WHEN category = 1 AND period = 'current' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prev,
+            MAX(CASE WHEN category = 1 AND period = 'previous' THEN complaint_count ELSE 0 END) AS non_fir_registration_total_prior,
+            -- Category 2: Under Investigation
+            MAX(CASE WHEN category = 2 AND period = 'current' THEN complaint_count ELSE 0 END) AS under_investigation_total_prev,
+            MAX(CASE WHEN category = 2 AND period = 'previous' THEN complaint_count ELSE 0 END) AS under_investigation_total_prior,
+            -- Category 3: Complaint Against Police
+            MAX(CASE WHEN category = 3 AND period = 'current' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prev,
+            MAX(CASE WHEN category = 3 AND period = 'previous' THEN complaint_count ELSE 0 END) AS complaint_against_police_total_prior,
+            -- Category 4: Complaint Against Services
+            MAX(CASE WHEN category = 4 AND period = 'current' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prev,
+            MAX(CASE WHEN category = 4 AND period = 'previous' THEN complaint_count ELSE 0 END) AS complaint_against_services_total_prior,
+            -- Category 5: Departmental Issue
+            MAX(CASE WHEN category = 5 AND period = 'current' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prev,
+            MAX(CASE WHEN category = 5 AND period = 'previous' THEN complaint_count ELSE 0 END) AS departmental_issue_total_prior
+        FROM (
+            SELECT
+                category,
+                CASE
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= %(current_start)s 
+                         AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s THEN 'current'
+                    WHEN DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s 
+                         AND DATE(FROM_UNIXTIME(complaint_date)) < %(previous_end)s THEN 'previous'
+                END AS period,
+                COUNT(*) AS complaint_count
+            FROM complaints_view
+            WHERE source = 2
+                AND complaint_date IS NOT NULL
+                AND (
+                    (DATE(FROM_UNIXTIME(complaint_date)) >= %(current_start)s 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(current_end)s)
+                    OR
+                    (DATE(FROM_UNIXTIME(complaint_date)) >= %(previous_start)s 
+                     AND DATE(FROM_UNIXTIME(complaint_date)) < %(previous_end)s)
+                )
+                {dist_cond}
+            GROUP BY category, period
+        ) AS aggregated_complaints;
+    """
+
+    # Execute the query
+    conn = db_config.get_1787_db_connection()
+    row = {}
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(query, params)
+        row = cursor.fetchone() or {}
+        cursor.close()
+        conn.close()
+
+    # Define category mappings and display names
+    category_map = {
+        "investigation": "under_investigation",
+        "fir_registration": "non_fir_registration",
+        "complaint_against_police": "complaint_against_police",
+        "complaint_against_service_delivery": "complaint_against_services",
+        "departmental_issue": "departmental_issue",
+    }
+    intervals = {"prev": "_prev", "prior": "_prior"}
+    category_display_names = {
+        "fir_registration": "FIR registration complaints",
+        "investigation": "investigation complaints",
+        "complaint_against_police": "complaints against police",
+        "complaint_against_service_delivery": "complaints against service delivery",
+        "departmental_issue": "departmental issue complaints",
+    }
+
+    # Helper function to compute percentage change
+    def compute_pct_change(prev: int, prior: int) -> float:
+        if prior == 0:
+            return 100.0 if prev > 0 else 0.0
+        return ((prev - prior) / prior) * 100
+
+    # Helper function to determine status and description
+    def get_status_and_description(prev: int, prior: int, pct_chng: float, period_display: str, display_name: str) -> \
+    tuple[str, str]:
+        status = 'increased' if prev > prior else 'decreased' if prev < prior else 'unchanged'
+        if status == 'unchanged':
+            description = f"{display_name} remained the same at {prev} {period_display}."
+        else:
+            description = f"{abs(pct_chng):.1f}% {'increase' if status == 'increased' else 'decrease'} in {display_name} {period_display}."
+        return status, description
+
+    # Build the result dictionary
+    result = {}
+    for top_key, prefix in category_map.items():
+        result[top_key] = {};
+        current_key = f"{prefix}_total{intervals['prev']}"
+        prior_key = f"{prefix}_total{intervals['prior']}"
+
+        curr_val = row.get(current_key, 0)
+        prior_val = row.get(prior_key, 0)
+        pct = compute_pct_change(curr_val, prior_val)
+
+        display_name = f"total {category_display_names[top_key]}"
+        status_val, description_val = get_status_and_description(curr_val, prior_val, pct, period_display, display_name)
+
+        result[top_key]["total"] = {
+            "prev": curr_val,
+            "prior": prior_val,
+            "pct_chng": pct,
+            "status": status_val,
+            "description": description_val,
+        }
+
+    return result
+
+
+def validate_params(district_str, view_role, period, police_station_str):
+    """Validate input parameters and return processed values."""
+    if view_role not in [1, 2, 3, 4]:
+        return None, None, None, None, jsonify({
+            'status': False,
+            'message': 'Invalid view role',
+            'data': None
+        }), 400
+
+    districts = district_str.split(",") if district_str else []
+    police_stations = police_station_str.split(",") if police_station_str else []
+    period = period or 'week'
+
+    district_ids = []
+    for district in districts:
+        if district in configs.REVERSED_DISTRICTS_DICTIONARY:
+            district_ids.append(configs.REVERSED_DISTRICTS_DICTIONARY[district])
+        else:
+            return None, None, None, None, jsonify({
+                'status': False,
+                'message': f"Invalid district name: {district}",
+                'data': None
+            }), 400
+
+    return districts, district_ids, police_stations, period, None, 200
+
+
+def get_district_conditions(view_role, district_ids, districts):
+    """Generate district conditions for SQL queries."""
+    district_condition = ""
+    additional_condition = ""
+    additional_con = ""
+    quoted_districts = [f"'{d}'" for d in district_ids]
+
+    if view_role == 2 and len(districts) == 1:
+        district_condition = f"AND district_id = '{district_ids[0]}'"
+        additional_condition = f"AND district = {quoted_districts[0]}"
+        additional_con = f"AND complainant_district = {district_ids[0]}"
+    elif view_role in [3, 4] and district_ids:
+        district_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
+        additional_condition = f" AND district IN ({', '.join(quoted_districts)})"
+        additional_con = f"AND complainant_district IN ({', '.join(map(str, district_ids))})"
+
+    return district_condition, additional_condition, additional_con
+
+
+def get_query_params(period):
+    """Return query parameters based on period."""
+    base_params = {
+        "week": {
+            "current_interval": "7 days",
+            "previous_interval_start": "14 days",
+            "previous_interval_end": "7 days"
+        },
+        "month": {
+            "current_interval": "30 days",
+            "previous_interval_start": "60 days",
+            "previous_interval_end": "30 days"
+        },
+        "last90days": {
+            "current_interval": "90 days",
+            "previous_interval_start": "180 days",
+            "previous_interval_end": "90 days"
+        }
+    }
+
+    if period == 'last15days_yearly':
+        return {
+            "current_interval": "14 days",
+            "previous_interval_start": "1 year 14 days",
+            "previous_interval_end": "1 year"
+        }
+
+    return base_params[period]
+
+
+def get_date_ranges(period):
+    today = datetime.today().date() - timedelta(days=1)
+    if period == "last15days_yearly":
+        current_start = today - timedelta(days=14)
+        current_end = today
+        previous_start = current_start.replace(year=current_start.year - 1)
+        previous_end = current_end.replace(year=current_end.year - 1)
+    else:
+        days_map = {"week": 7, "month": 30, "last90days": 90}
+        days = days_map.get(period, 7)
+        current_start = today - timedelta(days=days)
+        current_end = today
+        previous_start = today - timedelta(days=2 * days)
+        previous_end = current_start
+
+    date_format = "%Y-%m-%d"
+    return {
+        "current_start_date": current_start.strftime(date_format),
+        "current_end_date": current_end.strftime(date_format),
+        "previous_start_date": previous_start.strftime(date_format),
+        "previous_end_date": previous_end.strftime(date_format),
+    }
+
+def get_period_params(period):
+    if period == 'week':
+        period_start_pg = "CURRENT_DATE - INTERVAL '7 days'"
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 7 DAY, '%Y-%m-%d 00:00:00')"
+        query_params = {
+            "current_interval": "7 days",
+            "previous_interval_start": "14 days",
+            "previous_interval_end": "7 days"
+        }
+    elif period == 'month':
+        period_start_pg = "CURRENT_DATE - INTERVAL '30 days'"
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 30 DAY, '%Y-%m-%d 00:00:00')"
+        query_params = {
+            "current_interval": "30 days",
+            "previous_interval_start": "60 days",
+            "previous_interval_end": "30 days"
+        }
+    elif period == 'last90days':
+        period_start_pg = "CURRENT_DATE - INTERVAL '90 days'"
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 90 DAY, '%Y-%m-%d 00:00:00')"
+        query_params = {
+            "current_interval": "90 days",
+            "previous_interval_start": "180 days",
+            "previous_interval_end": "90 days"
+        }
+    elif period == 'last15days_yearly':
+        # PostgreSQL-compatible expressions
+        period_start_pg = "CURRENT_DATE - INTERVAL '14 days'"
+
+        # MySQL-compatible expression
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 14 DAY, '%Y-%m-%d 00:00:00')"
+
+        # Query parameters for comparing same 15-day period last year
+        query_params = {
+            "current_interval": "14 days",
+            "previous_interval_start": "1 year 14 days",  # start of previous year’s window
+            "previous_interval_end": "1 year"              # end of previous year’s window
+        }
+    else:
+        # Default fallback
+        period_start_pg = "CURRENT_DATE - INTERVAL '7 days'"
+        period_start_mysql = "DATE_FORMAT(CURDATE() - INTERVAL 7 DAY, '%Y-%m-%d 00:00:00')"
+        query_params = {
+            "current_interval": "7 days",
+            "previous_interval_start": "14 days",
+            "previous_interval_end": "7 days"
+        }
+
+    return period_start_pg, period_start_mysql, query_params
+    
+PUNJAB_LAT_MIN = 27.5
+PUNJAB_LAT_MAX = 34.0
+PUNJAB_LON_MAX = 76.0
+PUNJAB_LON_MIN = 69.0
+
+def is_within_punjab(latitude: float, longitude: float) -> bool:
+    """
+    Checks if the given latitude and longitude are within the approximate bounding box of Punjab, Pakistan.
+    """
+    return (
+        PUNJAB_LAT_MIN <= latitude <= PUNJAB_LAT_MAX and
+        PUNJAB_LON_MIN <= longitude <= PUNJAB_LON_MAX
+    )
+
+def filter_records_within_punjab(records: list[dict]) -> list[dict]:
+    """
+    Filters and returns only those records whose latitude and longitude fall within Punjab, Pakistan.
+
+    Parameters:
+        records (list of dict): Each dict must contain 'latitude' and 'longitude' keys.
+
+    Returns:
+        list of dict: Records within Punjab’s bounding box.
+    """
+    return [
+        record for record in records
+        if 'latitude' in record and 'longitude' in record
+        and is_within_punjab(record['latitude'], record['longitude'])
+    ]
+
+
+def adjust_counts(prev, prior):
+    """
+    Adjust prev and prior counts for IGP INSIGHTS based on conditions:
+    - If both prev and prior are less than 5, return (0, 0).
+    - If the absolute difference between prev and prior is 5, return (0, 0).
+    - Otherwise, return the original prev and prior values.
+
+    Args:
+        prev (int): Count for the current period.
+        prior (int): Count for the previous period.
+
+    Returns:
+        tuple: Adjusted (prev, prior) values.
+    """
+    if prev is None and prior is None:
+        return 0, 0
+    if (prev < 5 and prior < 5) or (abs(prev - prior) == 5):
+        return 0, 0
+    return prev, prior
+
+def merge_pkm_stats(a: dict, b: dict) -> dict:
+    merged = {}
+    for key in set(a) | set(b):
+        va, vb = a.get(key), b.get(key)
+        if isinstance(va, dict) and isinstance(vb, dict):
+            merged[key] = merge_pkm_stats(va, vb)
+        else:
+            na = va if isinstance(va, (int, float)) else 0
+            nb = vb if isinstance(vb, (int, float)) else 0
+            merged[key] = na + nb
+    return merged
+
+
+def get_mysql_date_range(period):
+    today = datetime.today().date()
+
+    if period == "last15days_yearly":
+        current_start = today - timedelta(days=14)
+        current_end = today
+        previous_start = current_start.replace(year=current_start.year - 1)
+        previous_end = current_end.replace(year=current_end.year - 1)
+    elif period == "week":
+        current_start = today - timedelta(days=7)
+        previous_start = today - timedelta(days=14)
+        previous_end = today - timedelta(days=7)
+    elif period == "month":
+        current_start = today - timedelta(days=30)
+        previous_start = today - timedelta(days=60)
+        previous_end = today - timedelta(days=30)
+    elif period == "last90days":
+        current_start = today - timedelta(days=90)
+        previous_start = today - timedelta(days=180)
+        previous_end = today - timedelta(days=90)
+    else:
+        raise ValueError("Unsupported period")
+
+    return {
+        "current_start": current_start.strftime("%Y-%m-%d"),
+        "current_end": current_end.strftime("%Y-%m-%d"),
+        "previous_start": previous_start.strftime("%Y-%m-%d"),
+        "previous_end": previous_end.strftime("%Y-%m-%d")
+    }
+
+
+def get_risk_level(crime_category):
+    """Determine the risk level for a given crime category."""
+    return configs.RISK_LEVEL_MAPPING.get(crime_category.lower(), "unknown")

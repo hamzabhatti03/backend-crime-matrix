@@ -1,6 +1,5 @@
 import psycopg2
 from psycopg2 import sql
-from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
 import time
 import traceback
@@ -9,12 +8,9 @@ from Utilities import configs, utils, db_config
 from ProcessingAgents import police_vehicle_locations_pgs as ps_vec_locs
 from ProcessingAgents import scrape_feedbacks_pgs as fb_data
 from ProcessingAgents import fir_scraper_pgs as fir_data
-# PostgreSQL connection for master database and logs
-db_conn = db_config.get_db_connection()
-log_db_cursor = db_conn.cursor()
 
 
-def process_date(db_connection, start_timestamp, end_timestamp):
+def process_date(db_connection, log_db_cursor, start_timestamp, end_timestamp):
     try:
         cursor = db_connection.cursor()
 
@@ -115,10 +111,10 @@ def process_date(db_connection, start_timestamp, end_timestamp):
 
         return results
     except Exception as e:
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
 
 
-def insert_results(db_connection, results, date):
+def insert_results(db_connection, log_db_cursor, results, date):
     try:
         cursor = db_connection.cursor()
         insert_query = sql.SQL("""
@@ -193,17 +189,17 @@ def insert_results(db_connection, results, date):
                     row['succ_conf_calls'],
                     row['unsucc_conf_calls'], row['vccs'], row['vcm']
                 ))
-                print(f"Inserted/updated: {row}")
+                # print(f"Inserted/updated: {row}")
             except Exception as e:
                 print(f"Error for district {district_id}, station {police_station}, hour {hour}: {e}")
                 # db_connection.rollback()  # Roll back the entire transaction on error
 
         db_connection.commit()
     except Exception as e:
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
 
 
-def response_time(primary_conn, processed_conn, start_timestamp, end_timestamp):
+def response_time(primary_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp):
     try:
         primary_cursor = primary_conn.cursor()
 
@@ -334,14 +330,14 @@ def response_time(primary_conn, processed_conn, start_timestamp, end_timestamp):
         processed_conn.commit()
 
     except psycopg2.Error as db_error:
-        utils.log_to_database(db_conn, log_db_cursor, "DB_ERROR", str(db_error))
+        utils.log_to_database(primary_conn, log_db_cursor, "DB_ERROR", str(db_error))
         raise
     except Exception as e:
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database(primary_conn, log_db_cursor, "ERROR", traceback.format_exc())
         raise
 
 
-def process_punjab_today(primary_conn, start_timestamp, end_timestamp):
+def process_punjab_today(primary_conn, log_db_cursor, start_timestamp, end_timestamp):
     try:
         primary_cursor = primary_conn.cursor()
 
@@ -472,10 +468,10 @@ def process_punjab_today(primary_conn, start_timestamp, end_timestamp):
         return results
 
     except Exception as e:
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database(primary_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
-def insert_punjab_today(processed_conn, results, date):
+def insert_punjab_today(db_conn, log_db_cursor, processed_conn, results, date):
     try:
         processed_cursor = processed_conn.cursor()
         insert_query = sql.SQL("""
@@ -549,453 +545,6 @@ def insert_punjab_today(processed_conn, results, date):
         processed_conn.commit()
     except Exception as e:
         utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
-
-
-def process_combined_dashboard(vccs_conn, vwps_conn, vcm_conn, start_timestamp, end_timestamp):
-    results = {}
-
-    # Define queries and connections
-    db_sources = {
-        'vccs': {
-            'conn': vccs_conn,
-            'query': """
-                        SELECT
-                            district_id,
-                            pucar_police_station,
-                            COUNT(*) AS total_vccs,
-                            SUM(CASE WHEN final_status_id = 8 THEN 1 ELSE 0 END +
-                                CASE WHEN created_at >= %s AND created_at <= %s AND final_status_id = 12 
-                                AND (handed_over_to IN (1, 3, 4, 5)) THEN 1 ELSE 0 END) AS under_inquiry_vccs,
-                            COUNT(CASE WHEN final_status_id = 7 THEN 1 ELSE NULL END) AS escalated_vccs,
-                            COUNT(CASE WHEN is_fir_registered = 1 OR is_challan_submitted = 1 THEN 1 ELSE NULL END) AS fir_vccs,
-                            COUNT(CASE WHEN is_challan_submitted = 1 THEN 1 ELSE NULL END) AS challan_vccs,
-                            SUM(CASE WHEN final_status_id = 6 THEN 1 ELSE 0 END +
-                                CASE WHEN final_status_id = 12 AND handed_over_to = 2 AND created_at >= %s AND created_at <= %s THEN 1 ELSE 0 END) AS resolved_vccs
-                        FROM case_final_status
-                        WHERE created_at BETWEEN %s AND %s
-                            AND district_id IS NOT NULL
-                        GROUP BY district_id, pucar_police_station
-                    """,
-            'params': (start_timestamp, end_timestamp, start_timestamp, end_timestamp, start_timestamp, end_timestamp)
-        },
-        'vwps': {
-            'conn': vwps_conn,
-            'query': """
-                        SELECT
-                            district_id,
-                            pucar_police_station,
-                            COUNT(*) AS total_vwps,
-                            SUM(CASE WHEN final_status_id = 8 THEN 1 ELSE 0 END +
-                                CASE WHEN final_status_id = 1 THEN 1 ELSE 0 END +
-                                CASE WHEN final_status_id = 7 THEN 1 ELSE 0 END) AS under_inquiry_vwps,
-                            COUNT(CASE WHEN final_status_id = 7 THEN 1 ELSE NULL END) AS escalated_vwps,
-                            SUM(CASE WHEN final_status_id = 2 THEN 1 ELSE 0 END +
-                                CASE WHEN final_status_id = 3 THEN 1 ELSE 0 END +
-                                CASE WHEN final_status_id IN (5, 9, 10, 11) THEN 1 ELSE 0 END) AS fir_vwps,
-                            SUM(CASE WHEN final_status_id IN (5, 9, 10, 11) THEN 1 ELSE 0 END) AS challan_vwps,
-                            SUM(CASE WHEN final_status_id = 6 THEN 1 ELSE 0 END) AS resolved_vwps
-                        FROM case_final_status
-                        WHERE created_at BETWEEN %s AND %s
-                            AND district_id IS NOT NULL
-                        GROUP BY district_id, pucar_police_station
-                    """,
-            'params': (start_timestamp, end_timestamp),
-        },
-        'vcm': {
-            'conn': vcm_conn,
-            'query': """
-                        SELECT
-                            district_id,
-                            pucar_police_station,
-                            COUNT(*) AS total_vcm,
-                            SUM(CASE WHEN final_status_id = 8 THEN 1 ELSE 0 END +
-                                CASE WHEN final_status_id = 1 THEN 1 ELSE 0 END) AS under_inquiry_vcm,
-                            SUM(CASE WHEN final_status_id = 7 THEN 1 ELSE 0 END) AS escalated_vcm,
-                            SUM(CASE WHEN final_status_id = 2 THEN 1 ELSE 0 END +
-                                CASE WHEN final_status_id = 3 THEN 1 ELSE 0 END +
-                                CASE WHEN final_status_id IN (5, 9, 10, 11) THEN 1 ELSE 0 END) AS fir_vcm,
-                            SUM(CASE WHEN final_status_id IN (5, 9, 10, 11) THEN 1 ELSE 0 END) AS challan_vcm,
-                            SUM(CASE WHEN final_status_id = 6 THEN 1 ELSE 0 END) AS resolved_vcm
-                        FROM case_final_status
-                        WHERE created_at BETWEEN %s AND %s
-                            AND district_id IS NOT NULL
-                        GROUP BY district_id, pucar_police_station
-            """,
-            'params': (start_timestamp, end_timestamp)
-        }
-    }
-
-    # Fetch data from each source
-    for key, source in db_sources.items():
-        cursor = source['conn'].cursor()
-        cursor.execute(source['query'], source['params'])
-        for row in cursor.fetchall():
-            district_id, police_station, *metrics = row
-            if isinstance(district_id, bytes):
-                district_id = district_id.decode('utf-8')
-            if isinstance(police_station, bytes):
-                police_station = police_station.decode('utf-8')
-
-            metrics = [int(c) if isinstance(c, Decimal) and c % 1 == 0 else float(c) if isinstance(c, Decimal) else c
-                       for c in metrics]
-
-            district_key = (district_id, police_station)
-            if district_key not in results:
-                results[district_key] = {}
-            results[district_key].update(dict(zip([f"{key}_{metric}" for metric in
-                                                   ['total', 'under_inquiry', 'escalated', 'fir', 'challan',
-                                                    'resolved']
-                                                   ][:len(metrics)], metrics)))
-
-    return results
-
-
-def insert_combined_dashboard_data(db_conn, data, date):
-    try:
-        cursor = db_conn.cursor()
-        for (district_id, police_station), metrics in data.items():
-            cursor.execute(sql.SQL("""
-                INSERT INTO combined_dashboards (
-                    date, district_id, police_station, 
-                    total_vccs, under_inquiry_vccs, escalated_vccs, 
-                    fir_vccs, challan_vccs, resolved_vccs, total_vwps,
-                    under_inquiry_vwps, escalated_vwps, fir_vwps, challan_vwps,
-                    resolved_vwps, total_vcm, under_inquiry_vcm, escalated_vcm,
-                    fir_vcm, challan_vcm, resolved_vcm
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                )
-                ON CONFLICT (date, district_id, police_station) DO UPDATE SET
-                    total_vccs = EXCLUDED.total_vccs,
-                    under_inquiry_vccs = EXCLUDED.under_inquiry_vccs,
-                    escalated_vccs = EXCLUDED.escalated_vccs,
-                    fir_vccs = EXCLUDED.fir_vccs,
-                    challan_vccs = EXCLUDED.challan_vccs,
-                    resolved_vccs = EXCLUDED.resolved_vccs,
-                    total_vwps = EXCLUDED.total_vwps,
-                    under_inquiry_vwps = EXCLUDED.under_inquiry_vwps,
-                    escalated_vwps = EXCLUDED.escalated_vwps,
-                    fir_vwps = EXCLUDED.fir_vwps,
-                    challan_vwps = EXCLUDED.challan_vwps,
-                    resolved_vwps = EXCLUDED.resolved_vwps,
-                    total_vcm = EXCLUDED.total_vcm,
-                    under_inquiry_vcm = EXCLUDED.under_inquiry_vcm,
-                    escalated_vcm = EXCLUDED.escalated_vcm,
-                    fir_vcm = EXCLUDED.fir_vcm,
-                    challan_vcm = EXCLUDED.challan_vcm,
-                    resolved_vcm = EXCLUDED.resolved_vcm
-            """), (
-                date,
-                district_id,
-                police_station,
-                metrics.get('vccs_total', 0),
-                metrics.get('vccs_under_inquiry', 0),
-                metrics.get('vccs_escalated', 0),
-                metrics.get('vccs_fir', 0),
-                metrics.get('vccs_challan', 0),
-                metrics.get('vccs_resolved', 0),
-                metrics.get('vwps_total', 0),
-                metrics.get('vwps_under_inquiry', 0),
-                metrics.get('vwps_escalated', 0),
-                metrics.get('vwps_fir', 0),
-                metrics.get('vwps_challan', 0),
-                metrics.get('vwps_resolved', 0),
-                metrics.get('vcm_total', 0),
-                metrics.get('vcm_under_inquiry', 0),
-                metrics.get('vcm_escalated', 0),
-                metrics.get('vcm_fir', 0),
-                metrics.get('vcm_challan', 0),
-                metrics.get('vcm_resolved', 0)
-            ))
-        db_conn.commit()
-    except Exception as e:
-        print(f"Error inserting data: {e}")
-        db_conn.rollback()
-    finally:
-        cursor.close()
-
-
-def vccs_records(db_conn, processed_conn, start_timestamp, end_timestamp):
-    try:
-        processed_cursor = processed_conn.cursor()
-        primary_cursor = db_conn.cursor()
-
-        # MySQL fetch query remains unchanged
-        query = """
-                SELECT 
-                    cfs.lead_id,
-                    cfs.pucar_time_id,
-                    cfs.pucar_case_number,
-                    cfs.pucar_district_id,
-                    cfs.pucar_district,
-                    cfs.pucar_police_station,
-                    cfs.pucar_police_station_id,
-                    cfs.level1_case_nature,
-                    cfs.pucar_level2_case_nature,
-                    cfs.level3_case_nature,
-                    cfs.pucar_caller_name,
-                    cfs.pucar_cli,
-                    cfs.final_status_id,
-                    cfs.final_status_remarks,
-                    cfs.pucar_cro_comments,
-                    cfs.created_at,
-                    cfs.handed_over_to,
-                    cfs.is_fir_registered,
-                    cfs.is_challan_submitted
-                FROM 
-                    `case_final_status` cfs
-                WHERE 
-                    cfs.pucar_status = 'CompCa' AND
-                    cfs.created_at BETWEEN %s AND %s
-                """
-
-        # Execute the query
-        primary_cursor.execute(query, (start_timestamp, end_timestamp))
-        rows = primary_cursor.fetchall()
-
-        # Process rows
-        processed_results = []
-        for row in rows:
-            processed_row = []
-            for col in row:
-                if isinstance(col, bytes):
-                    try:
-                        processed_row.append(col.decode('utf-8'))
-                    except UnicodeDecodeError:
-                        processed_row.append(int(col))
-                elif isinstance(col, (datetime)):  # Checks for both date and datetime
-                    formatted_date = col.strftime('%d-%m-%Y %H:%M:%S')
-                    processed_row.append(formatted_date)
-                elif isinstance(col, Decimal):
-                    processed_row.append(float(col))
-                else:
-                    processed_row.append(col)
-            processed_results.append(processed_row)
-
-        # Insert data into PostgreSQL with an upsert
-        insert_query = """
-            INSERT INTO vccs_cases (
-                lead_id, time_id, case_number, district_id, district, police_station, police_station_id,
-                level1_case_nature, level2_case_nature, level3_case_nature, caller_name, phone_number,
-                final_status_id, final_status_remarks, description, created_at, handed_over_to, is_fir_registered, is_challan_submitted
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-            )
-            ON CONFLICT (lead_id) DO UPDATE SET
-                time_id = EXCLUDED.time_id,
-                case_number = EXCLUDED.case_number,
-                district_id = EXCLUDED.district_id,
-                district = EXCLUDED.district,
-                police_station = EXCLUDED.police_station,
-                police_station_id = EXCLUDED.police_station_id,
-                level1_case_nature = EXCLUDED.level1_case_nature,
-                level2_case_nature = EXCLUDED.level2_case_nature,
-                level3_case_nature = EXCLUDED.level3_case_nature,
-                caller_name = EXCLUDED.caller_name,
-                phone_number = EXCLUDED.phone_number,
-                final_status_id = EXCLUDED.final_status_id,
-                final_status_remarks = EXCLUDED.final_status_remarks,
-                description = EXCLUDED.description,
-                created_at = EXCLUDED.created_at,
-                handed_over_to = EXCLUDED.handed_over_to,
-                is_fir_registered = EXCLUDED.is_fir_registered,
-                is_challan_submitted = EXCLUDED.is_challan_submitted;
-        """
-
-        for processed_row in processed_results:
-            processed_cursor.execute(insert_query, processed_row)
-
-        # Commit the transaction
-        processed_conn.commit()
-
-    except Exception as e:
-        error_message = traceback.format_exc()
-        # Log the error to the database
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", error_message)
-        # Print the error to the console
-        print("ERROR:", error_message)
-
-
-def vwps_records(db_conn, processed_conn, start_timestamp, end_timestamp):
-    try:
-        processed_cursor = processed_conn.cursor()
-        primary_cursor = db_conn.cursor()
-
-        query = """
-        SELECT 
-            cfs.lead_id,
-            cfs.pucar_time_id,
-            cfs.pucar_case_number,
-            cfs.pucar_district_id,
-            cfs.pucar_district,
-            cfs.pucar_police_station,
-            cfs.pucar_police_station_id,
-            cfs.level1_case_nature,
-            cfs.pucar_level2_case_nature,
-            cfs.level3_case_nature,
-            cfs.pucar_caller_name,
-            cfs.pucar_cli,
-            cfs.final_status_id,
-            cfs.final_status_remarks,
-            cfs.pucar_cro_comments,
-            cfs.created_at
-        FROM 
-            `case_final_status` cfs
-        WHERE 
-            cfs.pucar_status = 'CompCa' AND
-            cfs.created_at BETWEEN %s AND %s
-        """
-
-        primary_cursor.execute(query, (start_timestamp, end_timestamp))
-        rows = primary_cursor.fetchall()
-
-        processed_results = []
-
-        for row in rows:
-            processed_row = []
-            for col in row:
-                if isinstance(col, bytes):
-                    try:
-                        processed_row.append(col.decode('utf-8'))
-                    except UnicodeDecodeError:
-                        processed_row.append(int(col))
-                elif isinstance(col, datetime):  # Checks for both date and datetime
-                    formatted_date = col.strftime('%Y-%m-%d %H:%M:%S')
-                    processed_row.append(formatted_date)
-                elif isinstance(col, Decimal):
-                    processed_row.append(float(col))
-                else:
-                    processed_row.append(col)
-            processed_results.append(processed_row)
-
-        insert_query = sql.SQL("""
-            INSERT INTO vwps_cases (
-                lead_id, time_id, case_number, district_id, district, police_station, police_station_id,
-                level1_case_nature, level2_case_nature, level3_case_nature, caller_name, phone_number,
-                final_status_id, final_status_remarks, description, created_at
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-            )
-            ON CONFLICT (lead_id) DO UPDATE SET
-                time_id = EXCLUDED.time_id,
-                case_number = EXCLUDED.case_number,
-                district_id = EXCLUDED.district_id,
-                district = EXCLUDED.district,
-                police_station = EXCLUDED.police_station,
-                police_station_id = EXCLUDED.police_station_id,
-                level1_case_nature = EXCLUDED.level1_case_nature,
-                level2_case_nature = EXCLUDED.level2_case_nature,
-                level3_case_nature = EXCLUDED.level3_case_nature,
-                caller_name = EXCLUDED.caller_name,
-                phone_number = EXCLUDED.phone_number,
-                final_status_id = EXCLUDED.final_status_id,
-                final_status_remarks = EXCLUDED.final_status_remarks,
-                description = EXCLUDED.description,
-                created_at = EXCLUDED.created_at;
-        """)
-
-        for processed_row in processed_results:
-            processed_cursor.execute(insert_query, processed_row)
-
-        processed_conn.commit()
-
-    except Exception as e:
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
-        processed_conn.rollback()
-    finally:
-        primary_cursor.close()
-        processed_cursor.close()
-
-
-def vcm_records(db_conn, processed_conn, start_timestamp, end_timestamp):
-    try:
-        processed_cursor = processed_conn.cursor()
-        primary_cursor = db_conn.cursor()
-
-        query = """
-        SELECT 
-            cfs.lead_id,
-            cfs.pucar_time_id,
-            cfs.pucar_case_number,
-            cfs.pucar_district_id,
-            cfs.pucar_district,
-            cfs.pucar_police_station,
-            cfs.level1_case_nature,
-            cfs.pucar_level2_case_nature,
-            cfs.level3_case_nature,
-            cfs.pucar_caller_name,
-            cfs.pucar_cli,
-            cfs.final_status_id,
-            cfs.final_status_remarks,
-            cfs.pucar_cro_comments,
-            cfs.created_at
-        FROM 
-            `case_final_status` cfs
-        WHERE 
-            cfs.pucar_status = 'CompCa' AND
-            cfs.created_at BETWEEN %s AND %s
-        """
-
-        primary_cursor.execute(query, (start_timestamp, end_timestamp))
-        rows = primary_cursor.fetchall()
-
-        processed_results = []
-
-        for row in rows:
-            processed_row = []
-            for col in row:
-                if isinstance(col, bytes):
-                    try:
-                        processed_row.append(col.decode('utf-8'))
-                    except UnicodeDecodeError:
-                        processed_row.append(int(col))
-                elif isinstance(col, datetime):
-                    formatted_date = col.strftime('%Y-%m-%d %H:%M:%S')
-                    processed_row.append(formatted_date)
-                elif isinstance(col, Decimal):
-                    processed_row.append(float(col))
-                else:
-                    processed_row.append(col)
-            processed_results.append(processed_row)
-
-        insert_query = sql.SQL("""
-        INSERT INTO vcm_cases (
-            lead_id, time_id, case_number, district_id, district, police_station,
-            level1_case_nature, level2_case_nature, level3_case_nature, caller_name, phone_number,
-            final_status_id, final_status_remarks, description, created_at
-        ) VALUES (
-            {placeholders}
-        )
-        ON CONFLICT (lead_id) DO UPDATE SET
-            time_id = EXCLUDED.time_id,
-            case_number = EXCLUDED.case_number,
-            district_id = EXCLUDED.district_id,
-            district = EXCLUDED.district,
-            police_station = EXCLUDED.police_station,
-            level1_case_nature = EXCLUDED.level1_case_nature,
-            level2_case_nature = EXCLUDED.level2_case_nature,
-            level3_case_nature = EXCLUDED.level3_case_nature,
-            caller_name = EXCLUDED.caller_name,
-            phone_number = EXCLUDED.phone_number,
-            final_status_id = EXCLUDED.final_status_id,
-            final_status_remarks = EXCLUDED.final_status_remarks,
-            description = EXCLUDED.description,
-            created_at = EXCLUDED.created_at;
-        """).format(
-            placeholders=sql.SQL(",").join(sql.Placeholder() for _ in range(15))
-        )
-
-        for processed_row in processed_results:
-            processed_cursor.execute(insert_query, processed_row)
-
-        processed_conn.commit()
-
-    except psycopg2.Error as db_error:
-        utils.log_to_database(db_conn, log_db_cursor, "DB_ERROR", str(db_error))
-        raise
-    except Exception as e:
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
-        raise
 
 
 def process_fir_cases(db_conn, processed_conn, start_timestamp, end_timestamp, date):
@@ -1131,7 +680,7 @@ def process_fir_cases(db_conn, processed_conn, start_timestamp, end_timestamp, d
         utils.log_to_database(processed_conn, None, "ERROR", traceback.format_exc())
 
 
-def crime_trends_processing(db_conn):
+def crime_trends_processing(db_conn, log_db_cursor):
     try:
         cursor = db_conn.cursor()
 
@@ -1207,7 +756,7 @@ def crime_trends_processing(db_conn):
         utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
-def insert_crime_trends(db_connection, results):
+def insert_crime_trends(db_connection, log_db_cursor, results):
     try:
         cursor = db_connection.cursor()
         insert_query = sql.SQL("""
@@ -1270,13 +819,13 @@ def insert_crime_trends(db_connection, results):
 
         db_connection.commit()
     except Exception as e:
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
         db_connection.rollback()
     finally:
         cursor.close()
 
 
-def fir_trends_processing(db_conn):
+def fir_trends_processing(db_conn, log_db_cursor):
     try:
         cursor = db_conn.cursor()
 
@@ -1350,7 +899,7 @@ def fir_trends_processing(db_conn):
         utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 
-def insert_fir_trends(db_connection, results):
+def insert_fir_trends(db_connection, log_db_cursor, results):
     try:
         cursor = db_connection.cursor()
         insert_query = sql.SQL("""
@@ -1415,19 +964,19 @@ def insert_fir_trends(db_connection, results):
 
         db_connection.commit()
     except Exception as e:
-        utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
+        utils.log_to_database(db_connection, log_db_cursor, "ERROR", traceback.format_exc())
         db_connection.rollback()
     finally:
         cursor.close()
 
 
 def main(start_date, end_date, start):
-    try:
-        processed_conn = utils.get_processed_db_connection()  # Function to get PostgreSQL connection
-        # vccs_conn = db_config.get_vccs_db_connection()
-        # vwps_conn = db_config.get_vwps_db_connection()
-        # vcm_conn = db_config.get_vcm_db_connection()
+    db_conn = db_config.get_db_connection()
+    log_db_cursor = db_conn.cursor()
 
+    processed_conn = utils.get_processed_db_connection()  # Function to get PostgreSQL connection
+
+    try:
         with processed_conn.cursor() as processed_cursor:
             processed_cursor.execute('''
                 CREATE TABLE IF NOT EXISTS processed_data (
@@ -1503,98 +1052,6 @@ def main(start_date, end_date, start):
                                 assignedto_remarks TEXT
                             )
                         ''')
-
-            # processed_cursor.execute('''
-            #     CREATE TABLE IF NOT EXISTS combined_dashboards (
-            #         date TEXT,
-            #         district_id INTEGER,
-            #         police_station TEXT,
-            #         total_vccs INTEGER,
-            #         under_inquiry_vccs INTEGER,
-            #         escalated_vccs INTEGER,
-            #         fir_vccs INTEGER,
-            #         challan_vccs INTEGER,
-            #         resolved_vccs INTEGER,
-            #         total_vwps INTEGER,
-            #         under_inquiry_vwps INTEGER,
-            #         escalated_vwps INTEGER,
-            #         fir_vwps INTEGER,
-            #         challan_vwps INTEGER,
-            #         resolved_vwps INTEGER,
-            #         total_vcm INTEGER,
-            #         under_inquiry_vcm INTEGER,
-            #         escalated_vcm INTEGER,
-            #         fir_vcm INTEGER,
-            #         challan_vcm INTEGER,
-            #         resolved_vcm INTEGER,
-            #         PRIMARY KEY (date, district_id, police_station)
-            #     )
-            # ''')
-
-            # processed_cursor.execute('''
-            #     CREATE TABLE IF NOT EXISTS vccs_cases (
-            #         lead_id INTEGER UNIQUE,
-            #         time_id INTEGER,
-            #         case_number TEXT,
-            #         district_id INTEGER,
-            #         district TEXT,
-            #         police_station TEXT,
-            #         police_station_id INTEGER,
-            #         level1_case_nature TEXT,
-            #         level2_case_nature TEXT,
-            #         level3_case_nature TEXT,
-            #         caller_name TEXT,
-            #         phone_number TEXT,
-            #         final_status_id INTEGER,
-            #         final_status_remarks TEXT,
-            #         description TEXT,
-            #         created_at TEXT,
-            #         handed_over_to INTEGER,
-            #         is_fir_registered INTEGER,
-            #         is_challan_submitted INTEGER
-            #     )
-            # ''')
-            #
-            # processed_cursor.execute('''
-            #     CREATE TABLE IF NOT EXISTS vcm_cases (
-            #         lead_id INTEGER UNIQUE,
-            #         time_id INTEGER,
-            #         case_number TEXT,
-            #         district_id INTEGER,
-            #         district TEXT,
-            #         police_station TEXT,
-            #         level1_case_nature TEXT,
-            #         level2_case_nature TEXT,
-            #         level3_case_nature TEXT,
-            #         caller_name TEXT,
-            #         phone_number TEXT,
-            #         final_status_id INTEGER,
-            #         final_status_remarks TEXT,
-            #         description TEXT,
-            #         created_at TEXT
-            #     )
-            # ''')
-            #
-            # processed_cursor.execute('''
-            #     CREATE TABLE IF NOT EXISTS vwps_cases (
-            #         lead_id INTEGER UNIQUE,
-            #         time_id INTEGER,
-            #         case_number TEXT,
-            #         district_id INTEGER,
-            #         district TEXT,
-            #         police_station TEXT,
-            #         police_station_id INTEGER,
-            #         level1_case_nature TEXT,
-            #         level2_case_nature TEXT,
-            #         level3_case_nature TEXT,
-            #         caller_name TEXT,
-            #         phone_number TEXT,
-            #         final_status_id INTEGER,
-            #         final_status_remarks TEXT,
-            #         description TEXT,
-            #         created_at TEXT
-            #     )
-            # ''')
 
             processed_cursor.execute('''
                 CREATE TABLE IF NOT EXISTS punjab_today (
@@ -1692,14 +1149,27 @@ def main(start_date, end_date, start):
                             )
                         ''')
 
+            processed_cursor.execute("""
+                                    CREATE TABLE IF NOT EXISTS remarks (
+                                        id SERIAL PRIMARY KEY,
+                                        case_id VARCHAR(255) NOT NULL,
+                                        assigned_to VARCHAR(255),
+                                        assigned_by VARCHAR(255),
+                                        cc VARCHAR(255),
+                                        remarks TEXT,
+                                        time_stamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                        """)
+
+            processed_cursor.execute("""
+                                    CREATE TABLE IF NOT EXISTS emergency_i_user_logs (
+                                        id SERIAL PRIMARY KEY,
+                                        username VARCHAR(255) UNIQUE NOT NULL,
+                                        lastseen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);
+                        """)
+
             """ Add indexes for optimization """
-            # processed_cursor.execute('CREATE INDEX IF NOT EXISTS idx_time_id ON vccs_cases (time_id)')
-            # processed_cursor.execute('CREATE INDEX IF NOT EXISTS idx_time_id_vcm ON vcm_cases (time_id)')
-            # processed_cursor.execute('CREATE INDEX IF NOT EXISTS idx_time_id_vwps ON vwps_cases (time_id)')
             processed_cursor.execute(
                 'CREATE INDEX IF NOT EXISTS idx_date_district_ps ON processed_data (date, district_id, police_station)')
-            # processed_cursor.execute(
-                # 'CREATE INDEX IF NOT EXISTS idx_date_district_ps_combined ON combined_dashboards (date, district_id, police_station)')
             processed_cursor.execute(
                 'CREATE INDEX IF NOT EXISTS idx_date_district_ps_punjab ON punjab_today (date, district_id, police_station)')
             processed_cursor.execute(
@@ -1725,43 +1195,27 @@ def main(start_date, end_date, start):
                 (current_date + timedelta(days=configs.DELTA_DAYS)).strftime(configs.YMD_TIME)) - 1
 
             """Calls Stats Processing & Records Insertion in DB"""
-            results = process_date(db_conn, start_timestamp, end_timestamp)
-            insert_results(processed_conn, results, current_date.strftime(configs.YM_DATE))
+            results = process_date(db_conn, log_db_cursor, start_timestamp, end_timestamp)
+            insert_results(processed_conn, log_db_cursor, results, current_date.strftime(configs.YM_DATE))
 
             """Response Time Processing & Records Insertion in DB"""
-            response_time(db_conn, processed_conn, start_timestamp, end_timestamp)
+            response_time(db_conn, log_db_cursor, processed_conn, start_timestamp, end_timestamp)
 
             """Processes PUNJAB TODAY AND Inserts in DB"""
-            results = process_punjab_today(db_conn, start_timestamp, end_timestamp)
-            insert_punjab_today(processed_conn, results, current_date.strftime(configs.YM_DATE))
-
-            # current_date_str = current_date.strftime('%Y-%m-%d 00:00:00')
-            # day_end_str = current_date.strftime('%Y-%m-%d 23:59:59')
-
-            # """Porcesses VCCS,VCM & VWPS DASHBOARD STATS AND INSERTING"""
-            # results = process_combined_dashboard(vccs_conn, vwps_conn, vcm_conn, current_date, day_end_str)
-            # insert_combined_dashboard_data(processed_conn, results, current_date.strftime(configs.YM_DATE))
-            #
-            # """VCCS Table Migration"""
-            # vccs_records(vccs_conn, processed_conn, current_date_str, day_end_str)
-            #
-            # """VWPS Table Migration"""
-            # vwps_records(vwps_conn, processed_conn, current_date_str, day_end_str)
-            #
-            # """VCM Table Migration"""
-            # vcm_records(vcm_conn, processed_conn, current_date_str, day_end_str)
+            results = process_punjab_today(db_conn, log_db_cursor, start_timestamp, end_timestamp)
+            insert_punjab_today(db_conn, log_db_cursor, processed_conn, results, current_date.strftime(configs.YM_DATE))
 
             """Porcesses FIR CASES AND INSERTING"""
             process_fir_cases(db_conn, processed_conn, start_timestamp, end_timestamp,
                               current_date.strftime(configs.YM_DATE))
 
             """PROCESSES CRIME TRENDS AND INSERTING"""
-            results = crime_trends_processing(db_conn)
-            insert_crime_trends(processed_conn, results)
+            results = crime_trends_processing(db_conn, log_db_cursor)
+            insert_crime_trends(processed_conn, log_db_cursor, results)
 
             """PROCESSES FIR TRENDS AND INSERTING"""
-            results = fir_trends_processing(db_conn)
-            insert_fir_trends(processed_conn, results)
+            results = fir_trends_processing(db_conn, log_db_cursor)
+            insert_fir_trends(processed_conn, log_db_cursor, results)
 
             fir_data.main(current_date)
             fb_data.main()
@@ -1769,10 +1223,22 @@ def main(start_date, end_date, start):
 
             current_date += timedelta(days=configs.DELTA_DAYS)
         if processed_conn:
-            processed_conn.close()
             if processed_cursor:
                 processed_cursor.close()
+            processed_conn.close()
+        if db_conn:
+            if log_db_cursor:
+                log_db_cursor.close()
+            db_conn.close()
     except Exception as e:
+        if processed_conn:
+            if processed_cursor:
+                processed_cursor.close()
+            processed_conn.close()
+        if db_conn:
+            if log_db_cursor:
+                log_db_cursor.close()
+            db_conn.close()
         utils.log_to_database(db_conn, log_db_cursor, "ERROR", traceback.format_exc())
 
 

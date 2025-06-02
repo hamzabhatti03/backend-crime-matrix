@@ -5,135 +5,113 @@ from Utilities import configs as conf
 from Utilities import  db_config as db
 import mysql.connector
 from collections import defaultdict
+from psycopg2.extras import DictCursor
 import pymysql.cursors
 import json
 
-def yesterday_forecast_db(ps, district):
+def yesterday_forecast_db(ps, district,pg_conn):
+    results_for_actual_dict = None
     police_station = None
-    results_for_actual = {}
+    district_id = None
+
+    # Define category configuration
+    original_columns = [
+        "Assault/Hurt", "Vehicle Theft", "Robbery/Snatching", "Theft", "Kidnapping",
+        "Traffic Accident", "Burglary", "Murder", "Religious Offences", "Dacoity"
+    ]
+    desired_columns = [
+        "Vehicle Theft", "Robbery/Snatching", "Theft", "Traffic Accident", "Burglary", "Dacoity"
+    ]
+
     try:
-        ps_id = None
-        conn = db.get_db_connection()
-        curser = conn.cursor()
+        # Database setup and police station ID retrieval remains the same
+
+        pg_curser = pg_conn.cursor()
         district_id = conf.REVERSED_DISTRICTS_DICTIONARY.get(district)
 
         if ps is not None:
-            query = f"SELECT id FROM 15_police_stations WHERE name ='{ps}' AND district_id = '{district_id}'"
-            curser.execute(query)
-            ps_id = curser.fetchall()
-            police_station = ps_id[0][0]
+            query = 'SELECT id FROM "15_police_stations" WHERE name = %s AND district_id = %s'
+            pg_curser.execute(query, (ps, str(district_id)))
+            ps_id = pg_curser.fetchall()
+            police_station = ps_id[0][0] if ps_id else None
 
-
-        target_date_for_actual = datetime.now() - timedelta(days=1)
-        target_date_for_actual = target_date_for_actual.strftime('%Y-%m-%d')
+        # Get actual crime data from yesterday
+        target_date_for_actual = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        pg_cursor = pg_conn.cursor()
         query_for_actual = """
-                SELECT category, COUNT(*) AS count
-                FROM pred_pol_preprocessed_crime_data
-                WHERE ps_station_id = %s AND report_date = %s
-                GROUP BY category;
-                """
-        cursor = conn.cursor()
-        cursor.execute(query_for_actual, (police_station, target_date_for_actual))
-        results_for_actual = cursor.fetchall()
+            SELECT category, COUNT(*) AS count
+            FROM preprocessed_crime_data
+            WHERE ps_station_id = %s AND report_date = %s
+            GROUP BY category;
+        """
+        pg_cursor.execute(query_for_actual, (police_station, target_date_for_actual))
+        results_for_actual = pg_cursor.fetchall()
 
-        results_for_actual_dict = {}
+        # Process actual data and filter to desired categories
+        results_for_actual_dict = {category: 0 for category in desired_columns}
         for category, count in results_for_actual:
-            results_for_actual_dict[category] = count
-
-        conn.close()
+            if isinstance(category, bytes):
+                category = category.decode('utf-8')
+            if category in desired_columns:
+                results_for_actual_dict[category] = count
 
     except Exception as e:
         print(e)
+        results_for_actual_dict = {category: 0 for category in desired_columns}
 
-    target_date_for_predict = datetime.now() - timedelta(days=1)
-    target_date_for_predict = target_date_for_predict.strftime('%d-%m-%Y')
+    # Initialize prediction data structures
+    predicted_categories = {category: 0 for category in desired_columns}
+    crime_counts_for_today = {category: 0 for category in desired_columns}
 
-    predicted_categories = {}
     try:
-        connection = db.get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        target_date_for_prediction = datetime.now() - timedelta(days=1)
-        target_date_for_prediction = target_date_for_prediction.strftime('%d-%m-%Y')
+        # Get yesterday's predictions
+        pg_cursor = pg_conn.cursor(cursor_factory=DictCursor)
+        target_date_for_prediction = (datetime.now() - timedelta(days=1)).strftime('%d-%m-%Y')
+        query = "SELECT * FROM prediction WHERE district = %s AND police_station = %s AND date = %s"
+        pg_cursor.execute(query, (str(district_id), str(police_station), target_date_for_prediction))
+        rows = pg_cursor.fetchall()
 
-        query = (
-            "SELECT * FROM pred_pol_prediction "
-            "WHERE district = %s AND police_station = %s AND date = %s"
-        )
-        cursor.execute(query, (district_id, police_station, target_date_for_prediction))
-        rows = cursor.fetchall()
-
-        # Column names to categorize the data
-        columns = [
-            "Assault/Hurt", "Vehicle Theft", "Robbery/Snatching", "Theft", "Kidnapping",
-            "Traffic Accident", "Burglary", "Murder", "Religious Offences", "Dacoity"
-        ]
-
-        # Process each row
+        # Process yesterday's predictions
         for row in rows:
-            for i, category in enumerate(columns):
-                column_name = list(row.keys())[i + 3]  # Get the actual column name
+            for category in desired_columns:
+                original_idx = original_columns.index(category)
+                column_name = list(row.keys())[original_idx + 3]
                 category_data = row[column_name]
+
                 if category_data:
                     parsed_data = json.loads(category_data)
-                    # If data is a single item, wrap it in a list for uniformity
-                    if isinstance(parsed_data, dict):
-                        parsed_data = [parsed_data]
+                    parsed_data = [parsed_data] if isinstance(parsed_data, dict) else parsed_data
+                    valid_entries = [item for item in parsed_data if item.get("message")]
+                    predicted_categories[category] = len(valid_entries)
 
-                    # Check if the message is empty
-                    count = len(parsed_data) if parsed_data and parsed_data[0].get("message", "") != "" else 0
-                    predicted_categories[category] = count
-                else:
-                    predicted_categories[category] = 0
+        # Get today's predictions
+        pg_cursor = pg_conn.cursor(cursor_factory=DictCursor)
+        target_date_for_today = datetime.now().strftime('%d-%m-%Y')
+        pg_cursor.execute(query, (str(district_id), str(police_station), target_date_for_today))
+        rows = pg_cursor.fetchall()
 
-        crime_counts_for_today = {}
-        cursor = connection.cursor(dictionary=True)
-        target_date_for_today = datetime.now()
-        target_date_for_today = target_date_for_today.strftime('%d-%m-%Y')
-
-        query = (
-            "SELECT * FROM pred_pol_prediction "
-            "WHERE district = %s AND police_station = %s AND date = %s"
-        )
-        cursor.execute(query, (district_id, police_station, target_date_for_today))
-        rows = cursor.fetchall()
-
-        # Column names to categorize the data
-        columns = [
-            "Assault/Hurt", "Vehicle Theft", "Robbery/Snatching", "Theft", "Kidnapping",
-            "Traffic Accident", "Burglary", "Murder", "Religious Offences", "Dacoity"
-        ]
-
-        # Process each row
+        # Process today's predictions
         for row in rows:
-            for i, category in enumerate(columns):
-                column_name = list(row.keys())[i + 3]  # Get the actual column name
+            for category in desired_columns:
+                original_idx = original_columns.index(category)
+                column_name = list(row.keys())[original_idx + 3]
                 category_data = row[column_name]
+
                 if category_data:
                     parsed_data = json.loads(category_data)
-                    # If data is a single item, wrap it in a list for uniformity
-                    if isinstance(parsed_data, dict):
-                        parsed_data = [parsed_data]
+                    parsed_data = [parsed_data] if isinstance(parsed_data, dict) else parsed_data
+                    valid_entries = [item for item in parsed_data if item.get("message")]
+                    crime_counts_for_today[category] = len(valid_entries)
 
-                    # Check if the message is empty
-                    count = len(parsed_data) if parsed_data and parsed_data[0].get("message", "") != "" else 0
-                    crime_counts_for_today[category] = count
-                else:
-                    crime_counts_for_today[category] = 0
-
-
-    finally:
-        # Close the connection
-        if 'cursor' in locals():
-            cursor.close()
-        if 'connection' in locals() and connection.is_connected():
-            connection.close()
-
+    except Exception as e:
+        print(e)
 
     return {
         'yesterday_actual_count': results_for_actual_dict,
         'yesterday_predicted_count': predicted_categories,
         'today_predicted_count': crime_counts_for_today
     }
+
 
 
 def aggregate_crime_data(data):
@@ -215,64 +193,65 @@ def process_dashboard_stats_db(ps=None, district=None):
     }
 
 
-def get_category_data(ps,district):
+def get_category_data(ps, district, pg_conn):
     district = district
     ps = ps
 
     police_station = None
     district_id = None
+
     try:
         ps_id = None
-        conn = db.get_db_connection()
-        cursor = conn.cursor()
+        pg_cursor = pg_conn.cursor()
         district_id = conf.REVERSED_DISTRICTS_DICTIONARY.get(district)
 
         if ps is not None:
-            query = f"SELECT id FROM 15_police_stations WHERE name = %s AND district_id = %s"
-            cursor.execute(query, (ps, district_id))
-            ps_id = cursor.fetchall()
+            query = 'SELECT id FROM "15_police_stations" WHERE name = %s AND district_id = %s'
+            pg_cursor.execute(query, (ps, str(district_id)))
+            ps_id = pg_cursor.fetchall()
             if ps_id:
                 police_station = ps_id[0][0]
-        cursor.close()
-        conn.close()
+        pg_cursor.close()
     except Exception as e:
         print(e)
 
     if not district or not police_station:
         return {"error": "Both 'district' and 'police_station' parameters are required."}
 
-    connection = db.get_db_connection()
-    cursor = connection.cursor(dictionary=True)  # This makes cursor return dictionaries instead of tuples
+    pg_cursor = pg_conn.cursor(cursor_factory=DictCursor)
 
     try:
         current_date = datetime.now().strftime('%d-%m-%Y')
         query = (
-            "SELECT * FROM pred_pol_prediction "
+            "SELECT * FROM prediction "
             "WHERE district = %s AND police_station = %s AND date = %s"
         )
-        cursor.execute(query, (district_id, police_station, current_date))
-        rows = cursor.fetchall()
+        pg_cursor.execute(query, (str(district_id), str(police_station), current_date))
+        rows = pg_cursor.fetchall()
 
-        # Column names to categorize the data
-        columns = [
+        # Original columns for index mapping
+        original_columns = [
             "Assault/Hurt", "Vehicle Theft", "Robbery/Snatching", "Theft", "Kidnapping",
             "Traffic Accident", "Burglary", "Murder", "Religious Offences", "Dacoity"
+        ]
+        # Desired categories to display
+        desired_columns = [
+            "Vehicle Theft", "Robbery/Snatching", "Theft", "Traffic Accident", "Burglary", "Dacoity"
         ]
 
         category_count = []
         predicted_categories = []
 
-        # Loop through the rows returned from the query
         for row in rows:
-            for i, category in enumerate(columns):
-                # The column index starts at 3 since the first 3 columns are not category data
-                column_name = list(row.keys())[i + 3]  # Get the actual column name
+            for category in desired_columns:
+                original_index = original_columns.index(category)
+                column_index = original_index + 3  # First 3 columns are non-category
+                column_name = list(row.keys())[column_index]
                 category_data = row[column_name]
 
                 if category_data:
                     parsed_data = json.loads(category_data)
 
-                    # If data is a single item, wrap it in a list for uniformity
                     if isinstance(parsed_data, dict):
                         parsed_data = [parsed_data]
 
@@ -280,7 +259,6 @@ def get_category_data(ps,district):
                         latitude = float(item.get("latitude", 0)) if item.get("latitude") else None
                         longitude = float(item.get("longitude", 0)) if item.get("longitude") else None
 
-                        # Only append if both latitude and longitude are not None
                         if latitude is not None and longitude is not None:
                             category_count.append({
                                 "category": item.get("category", category),
@@ -290,7 +268,6 @@ def get_category_data(ps,district):
                                 "message": item.get("message", "")
                             })
 
-                    # Check if the message is empty, if so set the count to 0
                     count = len(parsed_data) if parsed_data and parsed_data[0].get("message", "") != "" else 0
 
                     predicted_categories.append({
@@ -299,14 +276,12 @@ def get_category_data(ps,district):
                         "message": parsed_data[0].get("message", "") if parsed_data else ""
                     })
                 else:
-                    # Handle cases where there is no data for a category
                     predicted_categories.append({
                         "category": category,
                         "count": 0,
                         "message": ""
                     })
 
-        # Final result
         result = {
             "category_count": category_count,
             "predicted_categories": predicted_categories
@@ -317,21 +292,22 @@ def get_category_data(ps,district):
         return {"error": str(e)}
 
     finally:
-        cursor.close()
-        connection.close()
+       if pg_cursor:
+            pg_cursor.close()
 
 
-def forecast_date(ps, district, start_date, end_date):
+def forecast_date(ps, district, start_date, end_date,pg_conn):
     police_station = None
+    district_id = None
     try:
         ps_id = None
-        conn = db.get_db_connection()
-        cursor = conn.cursor()
+
+        pg_cursor = pg_conn.cursor()
         district_id = conf.REVERSED_DISTRICTS_DICTIONARY.get(district)
         if ps is not None:
-            query = f"SELECT id FROM 15_police_stations WHERE name ='{ps}' AND district_id = '{district_id}'"
-            cursor.execute(query)
-            ps_id = cursor.fetchall()
+            query = 'SELECT id FROM "15_police_stations" WHERE name = %s AND district_id = %s'
+            pg_cursor.execute(query, (ps, str(district_id)))
+            ps_id = pg_cursor.fetchall()
             police_station = ps_id[0][0]
     except Exception as e:
         print(e)
@@ -342,50 +318,61 @@ def forecast_date(ps, district, start_date, end_date):
 
     # Get predicted category counts grouped by date
     predictions_by_date = {}
+
+
     try:
-        connection = db.get_db_connection()
-        cursor = connection.cursor(dictionary=True)
+        pg_cursor = pg_conn.cursor(cursor_factory=DictCursor)
 
         query = (
-            "SELECT * FROM pred_pol_prediction "
-            "WHERE district = %s AND police_station = %s AND date BETWEEN %s AND %s"
+            "SELECT * FROM prediction "
+            "WHERE district = %s AND police_station = %s AND TO_DATE(date, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')"
         )
-        cursor.execute(query, (district_id, police_station, start_date_prediction, end_date_prediction))
-        rows = cursor.fetchall()
+        pg_cursor.execute(query, (str(district_id), str(police_station), start_date_prediction, end_date_prediction))
+        rows = pg_cursor.fetchall()
 
         # Column names to categorize the data
+        # columns = [
+        #     "Assault/Hurt", "Vehicle Theft", "Robbery/Snatching", "Theft", "Kidnapping",
+        #     "Traffic Accident", "Burglary", "Murder", "Religious Offences", "Dacoity"
+        # ]
+
         columns = [
-            "Assault/Hurt", "Vehicle Theft", "Robbery/Snatching", "Theft", "Kidnapping",
-            "Traffic Accident", "Burglary", "Murder", "Religious Offences", "Dacoity"
+            "Vehicle Theft", "Robbery/Snatching", "Theft", "Traffic Accident", "Burglary", "Dacoity"
         ]
 
         # Process each row
         for row in rows:
-            date = row['date']  # Assuming 'date' is the column name in the table
+            # Decode bytearray fields to strings
+            date = row['date']
+
             if date not in predictions_by_date:
                 predictions_by_date[date] = {}
 
-            for i, category in enumerate(columns):
-                column_name = list(row.keys())[i + 3]  # Get the actual column name
-                category_data = row[column_name]
+            for category in columns:
+                # Get category data
+                category_data = row.get(category, None)
                 if category_data:
-                    parsed_data = json.loads(category_data)
-                    # If data is a single item, wrap it in a list for uniformity
+                    # Decode binary data to string
+                    category_data_str = category_data
+
+                    # Parse JSON data
+                    parsed_data = json.loads(category_data_str)
+
+                    # Ensure parsed data is a list for uniformity
                     if isinstance(parsed_data, dict):
                         parsed_data = [parsed_data]
 
-                    # Check if the message is empty
-                    count = len(parsed_data) if parsed_data and parsed_data[0].get("message", "") != "" else 0
+                    # Count non-empty messages
+                    count = len([item for item in parsed_data if item.get("message", "").strip() != ""])
                     predictions_by_date[date][category] = count
                 else:
+                    # Default to 0 if no data is present
                     predictions_by_date[date][category] = 0
 
     except mysql.connector.Error as err:
         print(f"Error getting predictions: {err}")
     finally:
-        if 'cursor' in locals():
-            cursor.close()
-        if 'connection' in locals() and connection.is_connected():
-            connection.close()
+        if pg_cursor:
+            pg_cursor.close()
 
     return predictions_by_date
