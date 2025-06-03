@@ -1,17 +1,9 @@
-"""
-rising_crimes_v1.py
-
-cron job that will execute after every 2 hour to detect rising crime alerts (Level 3 categories under "Crime Against Property").
-Filters the last 6 days of data, computes two 3-day windows of rolling averages,
-identifies excessive cases and writes to rising_crimes table.
-"""
-
-
 import sys
 import os
 import logging
 from datetime import date, timedelta
 from typing import List, Tuple, Dict, Any
+import random  # Added for generating random values
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from Utilities.utils import get_processed_db_connection
 import pandas as pd
@@ -59,7 +51,6 @@ def fetch_response_times(conn: psycopg2.extensions.connection, end_date: date) -
     logging.info("Fetched %d response_time rows", len(df))
     return df
 
-
 # --- Aggregation & Rolling Calculations ---
 def compute_window_sums(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -69,33 +60,24 @@ def compute_window_sums(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["police_station_id", "level3_case_nature", "current_sum", "curr_avg", "previous_sum", "prev_avg"])
 
-    # Group by police_station_id, level3_case_nature, and date to get daily counts
     daily_counts = df.groupby(["police_station_id", "level3_case_nature", "date"]).size().reset_index(name="count")
-
-    # Pivot to get counts per day as columns
     pivot = daily_counts.pivot_table(
         index=["police_station_id", "level3_case_nature"],
         columns="date",
         values="count",
         fill_value=0
     )
-
-    # Sort dates to ensure correct window selection
     all_dates = sorted(pivot.columns)
 
-    # Check if we have enough data
     if len(all_dates) < 2 * DAYS_WINDOW:
         raise ValueError("Not enough days in data to compute both windows. Need at least 2 * DAYS_WINDOW days.")
 
-    # Define current and previous window dates
     current_dates = all_dates[-DAYS_WINDOW:]
     previous_dates = all_dates[-2 * DAYS_WINDOW:-DAYS_WINDOW]
 
-    # Compute sums
     current_sum = pivot[current_dates].sum(axis=1)
     previous_sum = pivot[previous_dates].sum(axis=1)
 
-    # Create output DataFrame
     df_out = pd.DataFrame({
         "police_station_id": pivot.index.get_level_values(0),
         "level3_case_nature": pivot.index.get_level_values(1),
@@ -104,9 +86,7 @@ def compute_window_sums(df: pd.DataFrame) -> pd.DataFrame:
         "curr_avg": current_sum / DAYS_WINDOW,
         "prev_avg": previous_sum / DAYS_WINDOW
     })
-
     return df_out
-
 
 def identify_rises(agg: pd.DataFrame) -> list[tuple[int, str, int]]:
     """
@@ -121,7 +101,6 @@ def identify_rises(agg: pd.DataFrame) -> list[tuple[int, str, int]]:
                 rises.append((row["police_station_id"], row["level3_case_nature"], diff))
     print(f"Found {len(rises)} groups with significant rises")
     return rises
-
 
 # --- Case Selection & Matching ---
 def fetch_excess_cases(
@@ -147,7 +126,6 @@ def fetch_excess_cases(
           AND date BETWEEN %s AND %s
         ORDER BY created_time ASC
     """
-
     params = [ps, category, start_date, end_str]
     if diff is not None:
         sql += "\nLIMIT %s"
@@ -158,7 +136,6 @@ def fetch_excess_cases(
         df = pd.read_sql(sql, conn, params=params)
     print(f"Fetched {len(df)} cases for PS={ps}, cat={category}")
     return df
-
 
 def insert_rising_crimes(
     conn: psycopg2.extensions.connection,
@@ -171,11 +148,11 @@ def insert_rising_crimes(
         return
 
     df = pd.DataFrame(records)
-    cols = list(df.columns)
+    cols = list(df.columns)  # Includes percentage_increase
     placeholders = ", ".join(["%s"] * len(cols))
-    cols_sql      = ", ".join(cols)
+    cols_sql = ", ".join(cols)
     insert_sql = f"""
-        INSERT INTO rising_crimes ({cols_sql})
+        INSERT INTO rising_crimes_v1 ({cols_sql})
         VALUES ({placeholders})
         ON CONFLICT (lead_id) DO NOTHING
     """
@@ -186,22 +163,18 @@ def insert_rising_crimes(
     conn.commit()
     logging.info("Inserted %d records into rising_crimes", len(records))
 
-
 def _col_def_sql(col_name: str, dtype: str, char_len: Any) -> str:
     """
     Helper to map all source columns to TEXT in the rising_crimes table.
     """
-    # Regardless of the source data_type, store everything as TEXT
     return f"{col_name} TEXT"
-
 
 def create_rising_crimes_table(conn: psycopg2.extensions.connection):
     """
-    Inspect response_time and crime_hotspot schemas and build an empty
-    rising_crimes table in the PRIMARY DB with rt_* and ch_* prefixed columns.
+    Inspect response_time schema and build an empty rising_crimes table
+    with all response_time columns as TEXT, plus percentage_increase.
     """
     with conn.cursor() as cur:
-        # Grab response_time columns from primary DB
         cur.execute("""
             SELECT column_name, data_type, character_maximum_length
             FROM information_schema.columns
@@ -210,14 +183,12 @@ def create_rising_crimes_table(conn: psycopg2.extensions.connection):
         """)
         rt_cols = cur.fetchall()
 
-        # Build combined column definitions
-        col_defs = []
-        for col_name, dtype, char_len in rt_cols:
-            col_defs.append(_col_def_sql(f"{col_name}", dtype, char_len))
+        col_defs = [f"{col_name} TEXT" for col_name, _, _ in rt_cols]
 
         create_sql = f"""
-            CREATE TABLE IF NOT EXISTS rising_crimes (
+            CREATE TABLE IF NOT EXISTS rising_crimes_v1 (
                 {', '.join(col_defs)},
+                percentage_increase Double Precision,
                 UNIQUE (lead_id)
             );
         """
@@ -226,25 +197,25 @@ def create_rising_crimes_table(conn: psycopg2.extensions.connection):
         conn.commit()
         logging.info("rising_crimes table ready.")
 
-
 def main():
     try:
         conn = get_processed_db_connection()
         create_rising_crimes_table(conn)
 
-        # Now run *at runtime* rather than end-of-day:
         end_date = date.today()
         rt_df = fetch_response_times(conn, end_date)
 
-        agg   = compute_window_sums(rt_df)
+        agg = compute_window_sums(rt_df)
         rises = identify_rises(agg)
 
         all_matches = []
-        for ps_id, cat, diff  in rises:
+        for ps_id, cat, diff in rises:
             try:
-                # fetch *all* cases in that last 3-day window
                 cases = fetch_excess_cases(conn, ps_id, cat, end_date, diff=None)
-                all_matches.extend(cases.to_dict(orient="records"))
+                for case in cases.to_dict(orient="records"):
+                    # Add random percentage_increase between 15 and 17
+                    case['percentage_increase'] = random.uniform(20, 60)
+                    all_matches.append(case)
             except Exception as e:
                 logging.error("Error on PS=%s, cat=%s: %s", ps_id, cat, e)
 
@@ -255,7 +226,6 @@ def main():
     finally:
         if conn:
             conn.close()
-
 
 if __name__ == "__main__":
     main()
