@@ -11930,7 +11930,7 @@ def prism_districtwise():
                 accepted_time,
                 lat,
                 long
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date >= %s AND date <= %s
             AND district_id IS NOT NULL
         """, (delta_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d')))
@@ -11967,12 +11967,12 @@ def prism_districtwise():
         """, (today.strftime('%Y-%m-%d'),))
         enmities_district_counts = processed_db_cursor.fetchall()
 
-        # District-wise counts for today from rising_crimes_v1
+        # District-wise counts for today from rising_crimes
         processed_db_cursor.execute("""
             SELECT
                 district_id,
                 COUNT(DISTINCT (level3_case_nature, police_station)) AS unique_combinations
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date = %s
             GROUP BY district_id
         """, (today.strftime('%Y-%m-%d'),))
@@ -12118,10 +12118,10 @@ def prism_districtwise():
                                     (last_month, today.strftime('%Y-%m-%d')))
         last_month_enimities = int(processed_db_cursor.fetchone()[0])
 
-        # Total counts for rising_crimes_v1 (only representative cases)
+        # Total counts for rising_crimes (only representative cases)
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date = %s
             AND case_number = ANY(%s)
         """, (today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
@@ -12129,7 +12129,7 @@ def prism_districtwise():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date BETWEEN %s AND %s
             AND case_number = ANY(%s)
         """, (last_week, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
@@ -12137,7 +12137,7 @@ def prism_districtwise():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date BETWEEN %s AND %s
             AND case_number = ANY(%s)
         """, (last_month, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
@@ -12190,6 +12190,7 @@ def prism_districtwise():
         postgresql_pool.putconn(processed_db_conn)
 
 
+
 @app.route(f"{configs.PRISM['ENDPOINT']}/police_stations", methods=[configs.PRISM['METHOD']])
 @limiter.limit(configs.LIMITER)
 @require_api_key
@@ -12237,7 +12238,7 @@ def prism_police_station():
         # Filter event_alert cases for the requested district
         event_alert_cases = event_alert_df[event_alert_df['district'] == district][['police_station']].drop_duplicates()
 
-        # Step 3: Fetch representative case numbers from rising_crimes_v1 (for total counts)
+        # Step 3: Fetch representative case numbers from rising_crimes (for total counts)
         processed_db_cursor.execute("""
             SELECT
                 caller_name,
@@ -12250,7 +12251,7 @@ def prism_police_station():
                 accepted_time,
                 lat,
                 long
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date >= %s AND date <= %s
             AND district_id = %s
         """, (delta_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d'), str(district_id)))
@@ -12297,15 +12298,17 @@ def prism_police_station():
         """, (today.strftime('%Y-%m-%d'), str(district)))
         enmities_cases = processed_db_cursor.fetchall()
 
-        # Fetch case details for today from rising_crimes_v1
+        # Fetch case details for today from rising_crimes
         processed_db_cursor.execute("""
             SELECT
                 police_station,
                 level3_case_nature,
                 case_number,
                 accepted_time,
-                percentage_increase
-            FROM rising_crimes_v1
+                percentage_change,
+                current_count,
+                previous_count
+            FROM rising_crimes
             WHERE date = %s AND district_id = %s
         """, (today.strftime('%Y-%m-%d'), str(district_id)))
         rising_cases = processed_db_cursor.fetchall()
@@ -12317,7 +12320,7 @@ def prism_police_station():
                 level3_case_nature,
                 accepted_time,
                 caller_location
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE district_id = %s AND date >= %s
         """, (str(district_id), last_month))
         rising_peak_cases = processed_db_cursor.fetchall()
@@ -12463,7 +12466,7 @@ def prism_police_station():
                     police_station_natures[police_station].add(case_nature)
 
         # Process rising_crimes with peak_hour and high_risk_zone
-        for (police_station, case_nature, case_number, accepted_time, pct_increase) in rising_cases:
+        for (police_station, case_nature, case_number, accepted_time, pct_increase, cur_count, prev_count) in rising_cases:
             if police_station and case_nature:
                 if case_nature not in police_station_natures[police_station]:
                     peak_hour = peak_hours.get(police_station, {}).get(case_nature, "N/A")
@@ -12475,7 +12478,9 @@ def prism_police_station():
                         "peak_hour": peak_hour,
                         "accepted_time": accepted_time,
                         "high_risk_zone": high_risk_zone,
-                        "percentage_increase" : round(pct_increase,2)
+                        "percentage_increase" : round(pct_increase,2),
+                        "current_count" : cur_count,
+                        "previous_count" : prev_count
                     }
                     police_station_cases[police_station].append(case_dict)
                     police_station_natures[police_station].add(case_nature)
@@ -12567,10 +12572,10 @@ def prism_police_station():
         """, (last_month, today.strftime('%Y-%m-%d'), district))
         last_month_enmities = processed_db_cursor.fetchone()[0]
 
-        # Total counts for rising_crimes_v1 (only representative cases)
+        # Total counts for rising_crimes (only representative cases)
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date = %s AND district_id = %s
             AND case_number = ANY(%s)
         """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
@@ -12578,7 +12583,7 @@ def prism_police_station():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date BETWEEN %s AND %s AND district_id = %s
             AND case_number = ANY(%s)
         """, (last_week, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
@@ -12586,7 +12591,7 @@ def prism_police_station():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date BETWEEN %s AND %s AND district_id = %s
             AND case_number = ANY(%s)
         """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))

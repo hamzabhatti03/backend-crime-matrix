@@ -3,7 +3,7 @@ import os
 import logging
 from datetime import date, timedelta
 from typing import List, Tuple, Dict, Any
-import random  # Added for generating random values
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from Utilities.utils import get_processed_db_connection
 import pandas as pd
@@ -12,29 +12,26 @@ import warnings
 
 # --- Configuration Constants ---
 DAYS_WINDOW = 10
-DAYS_LOOKBACK = DAYS_WINDOW * 2     # 20 days total
+DAYS_LOOKBACK = DAYS_WINDOW * 2  # 20 days total
 FUZZY_THRESHOLD = 80
 
 # Configure logging
 log_dir = os.path.join(os.path.dirname(__file__), '..', 'Logs')
 os.makedirs(log_dir, exist_ok=True)
-
 log_path = os.path.join(log_dir, 'rising_crime.log')
-
 logging.basicConfig(
     filename=log_path,
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-
-# Log Execution start
 logging.info("Rising Crime ETL Started")
+
 
 # --- Data Extraction ---
 def fetch_response_times(conn: psycopg2.extensions.connection, end_date: date) -> pd.DataFrame:
     """
-    Fetch all 'Crime Against Property' calls for the 6-day window ending at end_date.
+    Fetch all 'Crime Against Property' calls for the 20-day window ending at end_date.
     """
     start_date = (end_date - timedelta(days=DAYS_LOOKBACK)).strftime('%Y-%m-%d')
     sql = """
@@ -51,6 +48,7 @@ def fetch_response_times(conn: psycopg2.extensions.connection, end_date: date) -
     logging.info("Fetched %d response_time rows", len(df))
     return df
 
+
 # --- Aggregation & Rolling Calculations ---
 def compute_window_sums(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -58,7 +56,8 @@ def compute_window_sums(df: pd.DataFrame) -> pd.DataFrame:
     Returns DataFrame with columns: police_station_id, level3_case_nature, current_sum, curr_avg, previous_sum, prev_avg
     """
     if df.empty:
-        return pd.DataFrame(columns=["police_station_id", "level3_case_nature", "current_sum", "curr_avg", "previous_sum", "prev_avg"])
+        return pd.DataFrame(
+            columns=["police_station_id", "level3_case_nature", "current_sum", "curr_avg", "previous_sum", "prev_avg"])
 
     daily_counts = df.groupby(["police_station_id", "level3_case_nature", "date"]).size().reset_index(name="count")
     pivot = daily_counts.pivot_table(
@@ -88,27 +87,41 @@ def compute_window_sums(df: pd.DataFrame) -> pd.DataFrame:
     })
     return df_out
 
-def identify_rises(agg: pd.DataFrame) -> list[tuple[int, str, int]]:
+
+def identify_rises(agg: pd.DataFrame) -> List[Tuple[int, str, float, int, int]]:
     """
-    Identify groups where curr_avg > prev_avg * 1.15 and compute excess cases.
-    Returns list of (police_station_id, level3_case_nature, diff).
+    Identify groups where curr_avg > prev_avg * 1.15 and (current_sum - previous_sum) > 5.
+    Returns list of (police_station_id, level3_case_nature, percentage_change, current_count, previous_count).
     """
     rises = []
     for _, row in agg.iterrows():
-        if row["curr_avg"] > row["prev_avg"] * 1.15:  # More than 15% increase
-            diff = int(row["current_sum"] - row["previous_sum"])  # Excess incidents
-            if diff > 5:  # Ensure there’s an increase
-                rises.append((row["police_station_id"], row["level3_case_nature"], diff))
+        if row["previous_sum"] == 0:
+            if row["current_sum"] > 0:
+                percentage_change = 100.0
+            else:
+                percentage_change = 0.0
+        else:
+            percentage_change = ((row["current_sum"] - row["previous_sum"]) / row["previous_sum"]) * 100
+
+        if row["curr_avg"] > row["prev_avg"] * 1.15 and (row["current_sum"] - row["previous_sum"]) > 5:
+            rises.append((
+                row["police_station_id"],
+                row["level3_case_nature"],
+                percentage_change,
+                int(row["current_sum"]),  # Current count as integer
+                int(row["previous_sum"])  # Previous count as integer
+            ))
     print(f"Found {len(rises)} groups with significant rises")
     return rises
 
+
 # --- Case Selection & Matching ---
 def fetch_excess_cases(
-    conn: psycopg2.extensions.connection,
-    ps: int,
-    category: str,
-    end_date: date,
-    diff: int = None,
+        conn: psycopg2.extensions.connection,
+        ps: int,
+        category: str,
+        end_date: date,
+        diff: int = None,
 ) -> pd.DataFrame:
     """
     Fetch all (or `diff` oldest) calls in the last DAYS_WINDOW days
@@ -137,10 +150,8 @@ def fetch_excess_cases(
     print(f"Fetched {len(df)} cases for PS={ps}, cat={category}")
     return df
 
-def insert_rising_crimes(
-    conn: psycopg2.extensions.connection,
-    records: List[Dict[str, Any]],
-):
+
+def insert_rising_crimes(conn: psycopg2.extensions.connection, records: List[Dict[str, Any]]):
     """
     Bulk-insert into rising_crimes. Assumes table exists with matching columns.
     """
@@ -148,11 +159,11 @@ def insert_rising_crimes(
         return
 
     df = pd.DataFrame(records)
-    cols = list(df.columns)  # Includes percentage_increase
+    cols = list(df.columns)  # Includes percentage_change, current_count, previous_count
     placeholders = ", ".join(["%s"] * len(cols))
     cols_sql = ", ".join(cols)
     insert_sql = f"""
-        INSERT INTO rising_crimes_v1 ({cols_sql})
+        INSERT INTO rising_crimes ({cols_sql})
         VALUES ({placeholders})
         ON CONFLICT (lead_id) DO NOTHING
     """
@@ -163,16 +174,11 @@ def insert_rising_crimes(
     conn.commit()
     logging.info("Inserted %d records into rising_crimes", len(records))
 
-def _col_def_sql(col_name: str, dtype: str, char_len: Any) -> str:
-    """
-    Helper to map all source columns to TEXT in the rising_crimes table.
-    """
-    return f"{col_name} TEXT"
 
 def create_rising_crimes_table(conn: psycopg2.extensions.connection):
     """
-    Inspect response_time schema and build an empty rising_crimes table
-    with all response_time columns as TEXT, plus percentage_increase.
+    Build an empty rising_crimes table with all response_time columns as TEXT,
+    plus percentage_change, current_count, and previous_count.
     """
     with conn.cursor() as cur:
         cur.execute("""
@@ -186,9 +192,11 @@ def create_rising_crimes_table(conn: psycopg2.extensions.connection):
         col_defs = [f"{col_name} TEXT" for col_name, _, _ in rt_cols]
 
         create_sql = f"""
-            CREATE TABLE IF NOT EXISTS rising_crimes_v1 (
+            CREATE TABLE IF NOT EXISTS rising_crimes (
                 {', '.join(col_defs)},
-                percentage_increase Double Precision,
+                percentage_change DOUBLE PRECISION,
+                current_count INTEGER,
+                previous_count INTEGER,
                 UNIQUE (lead_id)
             );
         """
@@ -196,6 +204,7 @@ def create_rising_crimes_table(conn: psycopg2.extensions.connection):
         cur.execute(create_sql)
         conn.commit()
         logging.info("rising_crimes table ready.")
+
 
 def main():
     try:
@@ -209,12 +218,13 @@ def main():
         rises = identify_rises(agg)
 
         all_matches = []
-        for ps_id, cat, diff in rises:
+        for ps_id, cat, percentage_change, current_count, previous_count in rises:
             try:
                 cases = fetch_excess_cases(conn, ps_id, cat, end_date, diff=None)
                 for case in cases.to_dict(orient="records"):
-                    # Add random percentage_increase between 15 and 17
-                    case['percentage_increase'] = random.uniform(20, 60)
+                    case['percentage_change'] = percentage_change
+                    case['current_count'] = current_count
+                    case['previous_count'] = previous_count
                     all_matches.append(case)
             except Exception as e:
                 logging.error("Error on PS=%s, cat=%s: %s", ps_id, cat, e)
@@ -224,8 +234,9 @@ def main():
     except Exception as e:
         logging.critical("Script failed: %s", e, exc_info=True)
     finally:
-        if conn:
+        if 'conn' in locals():
             conn.close()
+
 
 if __name__ == "__main__":
     main()
