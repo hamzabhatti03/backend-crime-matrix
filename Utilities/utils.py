@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any
 import firebase_admin
 from firebase_admin import messaging
 from Utilities import db_config
+import hashlib
 
 load_dotenv()
 
@@ -1725,3 +1726,19 @@ def get_mysql_date_range(period):
 def get_risk_level(crime_category):
     """Determine the risk level for a given crime category."""
     return configs.RISK_LEVEL_MAPPING.get(crime_category.lower(), "unknown")
+
+
+def generate_consistent_percentage(case_number, case_nature):
+    # Create a unique string based on case attributes
+    unique_string = f"{case_number}{case_nature}"
+
+    # Generate a hash value based on the unique string
+    hash_object = hashlib.sha256(unique_string.encode())
+    hash_hex = hash_object.hexdigest()
+
+    # Convert the hash to a float between 15.0 and 17.0
+    hash_int = int(hash_hex, 16)
+    percentage_increase = 15.0 + (hash_int % 1000) / 1000 * 2.0
+
+    # Round to 2 decimal places
+    return round(percentage_increase, 2)

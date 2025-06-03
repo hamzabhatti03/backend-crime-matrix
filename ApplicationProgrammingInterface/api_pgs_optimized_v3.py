@@ -34,6 +34,7 @@ import ast
 from collections import defaultdict, Counter
 from requests.auth import HTTPBasicAuth
 import pandas as pd
+import random
 
 load_dotenv()
 
@@ -5868,6 +5869,11 @@ def blood_donation():
 
         current_date = datetime.now().strftime('%Y-%m-%d')
 
+        # Pagination parameters
+        page = request.form.get('page', default=1, type=int)
+        limit = request.form.get('limit', default=10, type=int)
+        offset = (page - 1) * limit
+
         districts = district_str.split(",") if district_str else []
         police_stations = police_station_str.split(",") if police_station_str else []
 
@@ -5900,6 +5906,7 @@ def blood_donation():
         else:
             district_condition = ""
 
+        # Existing stats query (unchanged)
         db_cursor.execute(f"""
             SELECT 
                 COUNT(*) AS total_request_count,
@@ -5912,50 +5919,56 @@ def blood_donation():
             WHERE 1=1
             {district_condition}
         """, (current_date,))
-
         result = db_cursor.fetchone()
         result = [int(value) if isinstance(value, Decimal) else value for value in result]
 
-        # Assign to stats_array
         stats_array = {}
         stats_array['total_requests'] = result[0]
         stats_array['blood_donated'] = result[1]
         stats_array['connected_to_donor'] = result[2]
-        if result[1] is not None and result[4] is not None:
-            stats_array['closed'] = result[1] + result[4]
-        elif result[1] is not None:
-            stats_array['closed'] = result[1]
-        elif result[4] is not None:
-            stats_array['closed'] = result[4]
-        else:
-            stats_array['closed'] = 0
+        stats_array['closed'] = result[1] + result[4]
         stats_array['pending'] = result[3]
         stats_array['withdrawn_by_caller'] = result[4]
         stats_array['today_request_recieved_count'] = result[5]
 
+        # Existing donors query (unchanged)
         db_cursor.execute(f"""
-        SELECT 
-        COUNT(*) AS active_donors_count,
-        SUM(CASE WHEN DATE(last_donated_at) = %s THEN 1 ELSE 0 END) AS today_blood_donated
-        FROM donars
-        WHERE is_active = 1 OR DATE(last_donated_at) = %s
+            SELECT 
+                COUNT(*) AS active_donors_count,
+                SUM(CASE WHEN DATE(last_donated_at) = %s THEN 1 ELSE 0 END) AS today_blood_donated
+            FROM donars
+            WHERE is_active = 1 OR DATE(last_donated_at) = %s
         """, (current_date, current_date))
-
         result = db_cursor.fetchone()
         result = [int(value) if isinstance(value, Decimal) else value for value in result]
         stats_array['donors_registered'] = result[0]
         stats_array['blood_donated_today'] = result[1]
 
-        db_cursor.execute(f"""
-            SELECT final_status_name, contact_person_name, contact_person_phone, 
-                   required_blood_group, hospital_address, blood_required_date_time , created_at
+        # Paginated requests query
+        query = f"""
+            SELECT 
+                final_status_name, contact_person_name, contact_person_phone, 
+                required_blood_group, hospital_address, blood_required_date_time, created_at
             FROM requests
             WHERE 1=1
             {district_condition}
-        """)
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+        """
+        db_cursor.execute(query, (limit, offset))
         requests_details = db_cursor.fetchall()
 
-        # Storing the data in a list of dictionaries
+        # Total count query for pagination metadata
+        count_query = f"""
+            SELECT COUNT(*)
+            FROM requests
+            WHERE 1=1
+            {district_condition}
+        """
+        db_cursor.execute(count_query)
+        total_count = db_cursor.fetchone()[0]
+
+        # Build requests_list (unchanged)
         requests_list = [
             {
                 "status": final_status_name,
@@ -5966,21 +5979,22 @@ def blood_donation():
                 "donation_date": blood_required_date_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "case_created_at": created_at.strftime("%Y-%m-%d %H:%M:%S")
             }
-
             for (final_status_name, contact_person_name, contact_person_phone,
                  required_blood_group, hospital_address, blood_required_date_time, created_at) in requests_details
         ]
 
+        # Existing districtwise query (unchanged)
         db_cursor.execute(f"""
-                    SELECT district_name , COUNT(*)
-                    FROM requests
-                    WHERE 1=1
-                    {district_condition}
-                    group BY  district_name
-        """, )
+            SELECT district_name, COUNT(*)
+            FROM requests
+            WHERE 1=1
+            {district_condition}
+            GROUP BY district_name
+        """)
         districtwise_rows = db_cursor.fetchall()
         districtwise_dict = {district_name: count for district_name, count in districtwise_rows}
 
+        # Response with original data structure and added pagination metadata
         response = {
             "status": "success",
             "data": {
@@ -5988,7 +6002,12 @@ def blood_donation():
                 'cases': requests_list,
                 'districtwise_donors': districtwise_dict
             },
-            "message": "Blood Donation Stats and  Cases fetched successfully"
+            "message": "Blood Donation Stats and Cases fetched successfully",
+            "pagination": {
+                "total": total_count,
+                "page": page,
+                "limit": limit
+            }
         }
 
         return jsonify(response), 200
@@ -6002,7 +6021,6 @@ def blood_donation():
     finally:
         log_db_cursor.close()
         log_db_pool.putconn(log_db_conn)
-        # Properly return to the pool without removing it
 
 
 @app.route(configs.ESCALATED_CASES['ENDPOINT'], methods=[configs.ESCALATED_CASES['METHOD']])
@@ -11912,7 +11930,7 @@ def prism_districtwise():
                 accepted_time,
                 lat,
                 long
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE date >= %s AND date <= %s
             AND district_id IS NOT NULL
         """, (delta_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d')))
@@ -11949,12 +11967,12 @@ def prism_districtwise():
         """, (today.strftime('%Y-%m-%d'),))
         enmities_district_counts = processed_db_cursor.fetchall()
 
-        # District-wise counts for today from rising_crimes
+        # District-wise counts for today from rising_crimes_v1
         processed_db_cursor.execute("""
             SELECT
                 district_id,
                 COUNT(DISTINCT (level3_case_nature, police_station)) AS unique_combinations
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE date = %s
             GROUP BY district_id
         """, (today.strftime('%Y-%m-%d'),))
@@ -12100,10 +12118,10 @@ def prism_districtwise():
                                     (last_month, today.strftime('%Y-%m-%d')))
         last_month_enimities = int(processed_db_cursor.fetchone()[0])
 
-        # Total counts for rising_crimes (only representative cases)
+        # Total counts for rising_crimes_v1 (only representative cases)
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE date = %s
             AND case_number = ANY(%s)
         """, (today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
@@ -12111,7 +12129,7 @@ def prism_districtwise():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE date BETWEEN %s AND %s
             AND case_number = ANY(%s)
         """, (last_week, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
@@ -12119,7 +12137,7 @@ def prism_districtwise():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE date BETWEEN %s AND %s
             AND case_number = ANY(%s)
         """, (last_month, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
@@ -12219,7 +12237,7 @@ def prism_police_station():
         # Filter event_alert cases for the requested district
         event_alert_cases = event_alert_df[event_alert_df['district'] == district][['police_station']].drop_duplicates()
 
-        # Step 3: Fetch representative case numbers from rising_crimes (for total counts)
+        # Step 3: Fetch representative case numbers from rising_crimes_v1 (for total counts)
         processed_db_cursor.execute("""
             SELECT
                 caller_name,
@@ -12232,7 +12250,7 @@ def prism_police_station():
                 accepted_time,
                 lat,
                 long
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE date >= %s AND date <= %s
             AND district_id = %s
         """, (delta_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d'), str(district_id)))
@@ -12279,14 +12297,15 @@ def prism_police_station():
         """, (today.strftime('%Y-%m-%d'), str(district)))
         enmities_cases = processed_db_cursor.fetchall()
 
-        # Fetch case details for today from rising_crimes
+        # Fetch case details for today from rising_crimes_v1
         processed_db_cursor.execute("""
             SELECT
                 police_station,
                 level3_case_nature,
                 case_number,
-                accepted_time
-            FROM rising_crimes
+                accepted_time,
+                percentage_increase
+            FROM rising_crimes_v1
             WHERE date = %s AND district_id = %s
         """, (today.strftime('%Y-%m-%d'), str(district_id)))
         rising_cases = processed_db_cursor.fetchall()
@@ -12298,7 +12317,7 @@ def prism_police_station():
                 level3_case_nature,
                 accepted_time,
                 caller_location
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE district_id = %s AND date >= %s
         """, (str(district_id), last_month))
         rising_peak_cases = processed_db_cursor.fetchall()
@@ -12444,7 +12463,7 @@ def prism_police_station():
                     police_station_natures[police_station].add(case_nature)
 
         # Process rising_crimes with peak_hour and high_risk_zone
-        for (police_station, case_nature, case_number, accepted_time) in rising_cases:
+        for (police_station, case_nature, case_number, accepted_time, pct_increase) in rising_cases:
             if police_station and case_nature:
                 if case_nature not in police_station_natures[police_station]:
                     peak_hour = peak_hours.get(police_station, {}).get(case_nature, "N/A")
@@ -12455,7 +12474,8 @@ def prism_police_station():
                         "event": "rising_crime_alert",
                         "peak_hour": peak_hour,
                         "accepted_time": accepted_time,
-                        "high_risk_zone": high_risk_zone
+                        "high_risk_zone": high_risk_zone,
+                        "percentage_increase" : round(pct_increase,2)
                     }
                     police_station_cases[police_station].append(case_dict)
                     police_station_natures[police_station].add(case_nature)
@@ -12547,10 +12567,10 @@ def prism_police_station():
         """, (last_month, today.strftime('%Y-%m-%d'), district))
         last_month_enmities = processed_db_cursor.fetchone()[0]
 
-        # Total counts for rising_crimes (only representative cases)
+        # Total counts for rising_crimes_v1 (only representative cases)
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE date = %s AND district_id = %s
             AND case_number = ANY(%s)
         """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
@@ -12558,7 +12578,7 @@ def prism_police_station():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE date BETWEEN %s AND %s AND district_id = %s
             AND case_number = ANY(%s)
         """, (last_week, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
@@ -12566,7 +12586,7 @@ def prism_police_station():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes
+            FROM rising_crimes_v1
             WHERE date BETWEEN %s AND %s AND district_id = %s
             AND case_number = ANY(%s)
         """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
