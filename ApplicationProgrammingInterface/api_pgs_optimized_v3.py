@@ -12125,11 +12125,11 @@ def prism_districtwise():
         """, (last_month, today.strftime('%Y-%m-%d'), last_month, today.strftime('%Y-%m-%d')))
         repeated_cases_month = processed_db_cursor.fetchall()
 
-        # Add today's repeated cases to district_total_counts
-        for district_id, count in repeated_cases_today:
-            district_name = configs.DISTRICTS_DICTIONARY.get(int(district_id))
-            if district_name:
-                district_total_counts[district_name] += int(count)
+        # # Add today's repeated cases to district_total_counts
+        # for district_id, count in repeated_cases_today:
+        #     district_name = configs.DISTRICTS_DICTIONARY.get(int(district_id))
+        #     if district_name:
+        #         district_total_counts[district_name] += int(count)
 
         # Calculate total repeated cases for each time period
         total_repeated_today = sum(int(count) for _, count in repeated_cases_today)
@@ -12194,9 +12194,9 @@ def prism_districtwise():
         last_month_anomaly = int(processed_db_cursor.fetchone()[0])
 
         # Existing Step 5: Calculate total alerts (now including repeated cases)
-        total_alerts = int(total_enimities + total_rising + early_event_today + today_anomaly + total_repeated_today)
-        last_week_alerts = int(last_week_enimities + week_rising + early_event_week + last_week_anomaly + total_repeated_week)
-        last_month_alerts = int(last_month_enimities + month_rising + early_event_month + last_month_anomaly + total_repeated_month)
+        total_alerts = int(total_enimities + total_rising + early_event_today + today_anomaly) #  + total_repeated_today
+        last_week_alerts = int(last_week_enimities + week_rising + early_event_week + last_week_anomaly) #  + total_repeated_week
+        last_month_alerts = int(last_month_enimities + month_rising + early_event_month + last_month_anomaly) # + total_repeated_month
 
         # Existing Step 6: Construct response
         data = {
@@ -12572,20 +12572,20 @@ def prism_police_station():
 
                 child_case_list = [{"case_number": cn, "accepted_time": at} for cn, at in child_cases]
 
-                # Create a dictionary for the repeated case
-                repeated_case_dict = {
-                    "parent_case": {
-                        "case_number": case_number,
-                        "level3_case_nature": case_nature,
-                        "accepted_time": accepted_time
-                    },
-                    "child_cases": child_case_list,
-                    "event": "repeated_case",
-                    "description": f"This case has {child_count} repeated cases."
-                }
-
-                # Append to police_station_cases
-                police_station_cases[police_station].append(repeated_case_dict)
+                # # Create a dictionary for the repeated case
+                # repeated_case_dict = {
+                #     "parent_case": {
+                #         "case_number": case_number,
+                #         "level3_case_nature": case_nature,
+                #         "accepted_time": accepted_time
+                #     },
+                #     "child_cases": child_case_list,
+                #     "event": "repeated_case",
+                #     "description": f"This case has {child_count} repeated cases."
+                # }
+                #
+                # # Append to police_station_cases
+                # police_station_cases[police_station].append(repeated_case_dict)
 
         # Step 7: Total counts for found_old_enmities
         processed_db_cursor.execute("""
@@ -12689,9 +12689,30 @@ def prism_police_station():
         total_repeated_month = len(repeated_parents_month)
 
         # Step 5: Update total alerts with repeated case counts
-        total_alerts = total_enmities + total_rising + total_event_alerts + today_anomaly + total_repeated_today
-        last_week_alerts = last_week_enmities + week_rising + total_event_alerts + last_week_anomaly + total_repeated_week
-        last_month_alerts = last_month_enmities + month_rising + total_event_alerts + last_month_anomaly + total_repeated_month
+        total_alerts = total_enmities + total_rising + total_event_alerts + today_anomaly # + total_repeated_today
+        last_week_alerts = last_week_enmities + week_rising + total_event_alerts + last_week_anomaly # + total_repeated_week
+        last_month_alerts = last_month_enmities + month_rising + total_event_alerts + last_month_anomaly # + total_repeated_month
+
+        event_counts = {
+            'old_enmities_count': 0,
+            'rising_crimes_count': 0,
+            'early_warning_alert_count': 0,
+            'anomaly_detection_count': 0,
+            'repeated_cases_count': 0
+        }
+
+        for police_station, cases in police_station_cases.items():
+            for case in cases:
+                event = case['event']
+                if event == 'old_enmities':
+                    event_counts['old_enmities_count'] += 1
+                elif event == 'rising_crime_alert':
+                    event_counts['rising_crimes_count'] += 1
+                elif event == 'early_warning_alert':
+                    event_counts['early_warning_alert_count'] += 1
+                elif event == 'anomaly_detection':
+                    event_counts['anomaly_detection_count'] += 1
+
 
         # Step 9: Construct response
         data = {
@@ -12703,8 +12724,9 @@ def prism_police_station():
                 for police_station, cases in police_station_cases.items()
             ],
             'total_alerts': total_alerts,
-            'last_week_alerts': last_week_alerts,
-            'last_month_alerts': last_month_alerts
+            # 'last_week_alerts': last_week_alerts,
+            # 'last_month_alerts': last_month_alerts
+            'event_counts' : event_counts
         }
 
         response = {
