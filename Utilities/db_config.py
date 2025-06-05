@@ -26,6 +26,26 @@ def get_db_connection():
         print(f"Error: {err}")
         return None
 
+
+def get_15_staging_db_connection():
+    """Create and return a connection to the MySQL database."""
+    try:
+        connection = mysql.connector.connect(
+
+            host=os.getenv('STAGING_HOST'),
+
+            database=os.getenv('STAGING_DB'),
+            user=os.getenv('STAGING_USER'),
+            password=os.getenv('STAGING_PASSWORD')
+        )
+        if connection.is_connected():
+            # print("Successfully connected to the database.")
+            return connection
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return None
+
+
 def get_vccs_db_connection():
     """Create and return a connection to the MySQL database."""
     try:

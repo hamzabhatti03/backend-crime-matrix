@@ -12203,7 +12203,11 @@ def prism_districtwise():
             'district_counts': district_counts_list,
             'total_alerts': total_alerts,
             'last_week_alerts': last_week_alerts,
-            'last_month_alerts': last_month_alerts
+            'last_month_alerts': last_month_alerts,
+            'old_enmities_count': total_enimities,
+            'rising_crimes_count': total_rising,
+            'early_warning_alert_count': early_event_today,
+            'anomaly_detection_count': today_anomaly #sum(count for _, count in anomaly_district_mapped_count)
         }
 
         response = {
