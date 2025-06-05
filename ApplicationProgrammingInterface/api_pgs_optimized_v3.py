@@ -12351,6 +12351,7 @@ def prism_police_station():
                 previous_count
             FROM rising_crimes
             WHERE date = %s AND district_id = %s
+            AND (current_count >= 5 OR previous_count >= 5)
         """, (today.strftime('%Y-%m-%d'), str(district_id)))
         rising_cases = processed_db_cursor.fetchall()
 
@@ -12509,23 +12510,29 @@ def prism_police_station():
         # Process rising_crimes with peak_hour and high_risk_zone
         for (police_station, case_nature, case_number, accepted_time, pct_increase, cur_count, prev_count) in rising_cases:
             if police_station and case_nature:
+
+                cur_count = int(cur_count) if cur_count is not None else 0
+                prev_count = int(prev_count) if prev_count else 0
+
+                if cur_count < 5 and prev_count < 5:
+                    continue
+
                 if case_nature not in police_station_natures[police_station]:
                     peak_hour = peak_hours.get(police_station, {}).get(case_nature, "N/A")
                     high_risk_zone = high_risk_zones.get((police_station, case_nature), "N/A")
-                    if cur_count > 5 and prev_count > 5:
-                        case_dict = {
-                            "case_number": case_number,
-                            "level3_case_nature": case_nature,
-                            "event": "rising_crime_alert",
-                            "peak_hour": peak_hour,
-                            "accepted_time": accepted_time,
-                            "high_risk_zone": high_risk_zone,
-                            "percentage_increase" : round(pct_increase,2),
-                            "current_count" : cur_count,
-                            "previous_count" : prev_count
-                        }
-                        police_station_cases[police_station].append(case_dict)
-                        police_station_natures[police_station].add(case_nature)
+                    case_dict = {
+                        "case_number": case_number,
+                        "level3_case_nature": case_nature,
+                        "event": "rising_crime_alert",
+                        "peak_hour": peak_hour,
+                        "accepted_time": accepted_time,
+                        "high_risk_zone": high_risk_zone,
+                        "percentage_increase" : round(pct_increase,2),
+                        "current_count" : cur_count if cur_count is not None else 0,
+                        "previous_count" : prev_count if prev_count else 0
+                    }
+                    police_station_cases[police_station].append(case_dict)
+                    police_station_natures[police_station].add(case_nature)
 
         # Process event_alert cases from Excel
         total_event_alerts = 0
@@ -12620,6 +12627,7 @@ def prism_police_station():
             FROM rising_crimes
             WHERE date = %s AND district_id = %s
             AND case_number = ANY(%s)
+            AND (current_count >= 5 OR previous_count >= 5)
         """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         total_rising = processed_db_cursor.fetchone()[0]
 
@@ -12628,6 +12636,7 @@ def prism_police_station():
             FROM rising_crimes
             WHERE date BETWEEN %s AND %s AND district_id = %s
             AND case_number = ANY(%s)
+            AND (current_count >= 5 OR previous_count >= 5)
         """, (last_week, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         week_rising = processed_db_cursor.fetchone()[0]
 
@@ -12635,6 +12644,7 @@ def prism_police_station():
             SELECT COUNT(*)
             FROM rising_crimes
             WHERE date BETWEEN %s AND %s AND district_id = %s
+            AND (current_count >= 5 OR previous_count >= 5)
             AND case_number = ANY(%s)
         """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         month_rising = processed_db_cursor.fetchone()[0]
@@ -12701,7 +12711,7 @@ def prism_police_station():
         event_counts = {
             'old_enmities_count': 0,
             'rising_crimes_count': 0,
-            'early_event_alerts_count': 0,
+            'early_warning_alert_count': 0,
             'anomaly_detection_count': 0,
             'repeated_cases_count': 0
         }
@@ -12714,7 +12724,7 @@ def prism_police_station():
                 elif event == 'rising_crime_alert':
                     event_counts['rising_crimes_count'] += 1
                 elif event == 'early_warning_alert':
-                    event_counts['early_event_alerts_count'] += 1
+                    event_counts['early_warning_alert_count'] += 1
                 elif event == 'anomaly_detection':
                     event_counts['anomaly_detection_count'] += 1
 
