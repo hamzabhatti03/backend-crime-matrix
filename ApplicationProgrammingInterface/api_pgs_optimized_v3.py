@@ -12627,7 +12627,7 @@ def prism_police_station():
             FROM rising_crimes
             WHERE date = %s AND district_id = %s
             AND case_number = ANY(%s)
-            AND (current_count >= 5 OR previous_count >= 5)
+            AND (current_count >= 7 OR previous_count >= 7)
         """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         total_rising = processed_db_cursor.fetchone()[0]
 
