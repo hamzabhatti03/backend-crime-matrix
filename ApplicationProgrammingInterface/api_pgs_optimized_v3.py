@@ -12512,19 +12512,20 @@ def prism_police_station():
                 if case_nature not in police_station_natures[police_station]:
                     peak_hour = peak_hours.get(police_station, {}).get(case_nature, "N/A")
                     high_risk_zone = high_risk_zones.get((police_station, case_nature), "N/A")
-                    case_dict = {
-                        "case_number": case_number,
-                        "level3_case_nature": case_nature,
-                        "event": "rising_crime_alert",
-                        "peak_hour": peak_hour,
-                        "accepted_time": accepted_time,
-                        "high_risk_zone": high_risk_zone,
-                        "percentage_increase" : round(pct_increase,2),
-                        "current_count" : cur_count,
-                        "previous_count" : prev_count
-                    }
-                    police_station_cases[police_station].append(case_dict)
-                    police_station_natures[police_station].add(case_nature)
+                    if cur_count > 5 and prev_count > 5:
+                        case_dict = {
+                            "case_number": case_number,
+                            "level3_case_nature": case_nature,
+                            "event": "rising_crime_alert",
+                            "peak_hour": peak_hour,
+                            "accepted_time": accepted_time,
+                            "high_risk_zone": high_risk_zone,
+                            "percentage_increase" : round(pct_increase,2),
+                            "current_count" : cur_count,
+                            "previous_count" : prev_count
+                        }
+                        police_station_cases[police_station].append(case_dict)
+                        police_station_natures[police_station].add(case_nature)
 
         # Process event_alert cases from Excel
         total_event_alerts = 0
@@ -12700,7 +12701,7 @@ def prism_police_station():
         event_counts = {
             'old_enmities_count': 0,
             'rising_crimes_count': 0,
-            'early_warning_alert_count': 0,
+            'early_event_alerts_count': 0,
             'anomaly_detection_count': 0,
             'repeated_cases_count': 0
         }
@@ -12713,7 +12714,7 @@ def prism_police_station():
                 elif event == 'rising_crime_alert':
                     event_counts['rising_crimes_count'] += 1
                 elif event == 'early_warning_alert':
-                    event_counts['early_warning_alert_count'] += 1
+                    event_counts['early_event_alerts_count'] += 1
                 elif event == 'anomaly_detection':
                     event_counts['anomaly_detection_count'] += 1
 
