@@ -12011,6 +12011,7 @@ def prism_districtwise():
                 COUNT(DISTINCT (level3_case_nature, police_station)) AS unique_combinations
             FROM rising_crimes
             WHERE date = %s
+            AND (current_count >= 7 OR previous_count >= 7)
             GROUP BY district_id
         """, (today.strftime('%Y-%m-%d'),))
         rising_district_counts = processed_db_cursor.fetchall()
@@ -12161,6 +12162,7 @@ def prism_districtwise():
             FROM rising_crimes
             WHERE date = %s
             AND case_number = ANY(%s)
+            AND (current_count >= 7 OR previous_count >= 7)
         """, (today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
         total_rising = int(processed_db_cursor.fetchone()[0])
 
