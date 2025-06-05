@@ -410,15 +410,18 @@ def serve_apk(filename):
 @require_login_key
 @limiter.limit(configs.LIMITER)
 def login():
+    # Establish database connections
     users_db_conn, usersdb_cursor = get_users_db_connection()
     db_conn, db_cursor = get_log_pg_db_connection()
 
     try:
+        # Extract request parameters
         username = request.form.get('username')
         password = request.form.get('password')
         cnic = request.form.get('cnic')
         app_version = request.form.get('version', default="1.1.0")
 
+        # Validate required fields
         if not (username and password and cnic):
             return jsonify({
                 'status': False,
@@ -426,52 +429,49 @@ def login():
                 'data': None
             }), 400
 
+        # Check app version
         version_config = utils.load_version_config()
         latest_version = version_config.get("latest_version")
         apk_file = version_config.get("apk_file")
-
         if app_version != latest_version:
-            # Construct APK Download Link
             apk_download_url = request.host_url + 'static/apk/' + apk_file
             return jsonify({
                 'status': False,
                 'message': f'New version {latest_version} available. Please update the app.',
                 'update_required': True,
                 'download_url': apk_download_url
-            }), 426  # HTTP 426: Upgrade Required
+            }), 426
 
+        # Hash the password
         hashed_pass = hashlib.md5(password.encode()).hexdigest()
 
+        # Fetch user from users table
         usersdb_cursor.execute("SELECT * FROM users WHERE user_name_emergency = %s", (username,))
         user = usersdb_cursor.fetchone()
-
-        user_status = user[13]
-
-        if user_status.lower() == 'inactive':
-            return jsonify({
-                'status': False,
-                'message': 'Your account is inactive. Please contact the administrator.'
-            }), 403
-
         if not user or user[4] != hashed_pass:
             return jsonify({
                 'status': False,
                 'message': 'Incorrect Username or Password'
             }), 400
 
-        user_role = user[5]
+        # Check user status
+        user_status = user[13]
+        if user_status.lower() == 'inactive':
+            return jsonify({
+                'status': False,
+                'message': 'Your account is inactive. Please contact the administrator.'
+            }), 403
 
-        # **Skip Validation for Specific Roles**
+        user_role = user[5]
+        # Skip validation for specific roles (e.g., admin)
         if user_role == 1 or user[17] == 0:
             access_token = create_access_token(identity=username)
-
             usersdb_cursor.execute("""
                 UPDATE users
                 SET access_token = %s
                 WHERE user_name_emergency = %s
             """, (access_token, username))
             users_db_conn.commit()
-
             return jsonify({
                 'data': {
                     'username': user[3],
@@ -486,70 +486,103 @@ def login():
                 'status': True
             }), 200
 
-        # **Proceed with validation for other users**
-        officer_data = utils.fetch_officer_data(cnic)
+        # Fetch officer data from officers_data table
+        db_cursor.execute("SELECT cnic, designation_name, posting_district, ps_name_eng, last_synced FROM officers_data WHERE cnic = %s", (cnic.strip(),))
+        officer = db_cursor.fetchone()
+        if not officer:
+            return jsonify({
+                'status': False,
+                'message': 'No officer data found for provided CNIC'
+            }), 403
 
-        if not officer_data:
-            return jsonify({'status': False, 'message': 'No officer data found for provided CNIC'}), 403
+        # Extract officer data (tuple indices: 0-cnic, 1-designation_name, 2-posting_district, 3-ps_name_eng, 4-last_synced)
+        designation_name = officer[1].lower() if officer[1] else None
+        posting_district = officer[2].lower() if officer[2] else None
+        ps_name_eng = officer[3].lower() if officer[3] else None
 
-        if 'exception' in officer_data:
-            designation_name = officer_data['original']['officer_details'].get("designation_name", "").strip()
-            dst_name = officer_data['original']['officer_details'].get("posting_district", "").split(' ')[
-                0].strip().lower() \
-                if officer_data['original']['officer_details'].get("posting_district", "") else None
-        else:
-            designation_name = officer_data.get("designation_name", "").strip()
-            dst_name = officer_data.get("dst_name").split(' ')[0].strip().lower() if officer_data.get(
-                'dst_name') else None
+        # Extract designation from username
+        username_parts = username.split('@')[0].split('.')
+        designation_from_username = username_parts[0].lower()
 
-        ps_name_eng = officer_data.get("ps_name_eng", "").strip().lower() if officer_data.get("ps_name_eng") else None
-        cleaned_ps_name_eng = ps_name_eng.replace("PS. ", "").replace("ps.", "").replace(" ",
-                                                                                         "").lower() if ps_name_eng else None
+        # Extract district code from username (last part before '@')
+        district_code = username_parts[-1].lower()
+        # Map district code to district name
+        district_name = configs.district_code_mapping.get(district_code, "").lower()
+        if not district_name:
+            return jsonify({
+                'status': False,
+                'message': 'Authentication error: Invalid district code in username'
+            }), 403
 
-        assigned_ps_emergency = user[9].decode('utf-8') if isinstance(user[9], bytes) else user[9]
+        # Validate district
+        if not are_names_similar(district_name, posting_district):
+            return jsonify({
+                'status': False,
+                'message': 'Authentication error: District mismatch'
+            }), 403
 
-        if designation_name.startswith("DSP") or designation_name.startswith("SDPO"):
-            extracted_ps_name = designation_name.replace("DSP", "").replace("SDPO", "").strip().split(",")[0].lower()
 
-            if not username.startswith("sho."):
-                extracted_username_section = username.split("@")[0].split(".")[1].lower()
-            else:
-                extracted_username_section = None
+        if designation_from_username == 'sho':
+            assigned_ps = 'ps' + user[9].decode('utf-8').lower().replace(" ", "").replace(".", "") if isinstance(user[9], bytes) else 'ps' + user[9].lower().replace(" ", "").replace(".", "")
+            officer_ps = ps_name_eng.replace(" ", "").replace(".", "") if ps_name_eng else None
+            if assigned_ps == 'j.p.bhattian':
+                assigned_ps = 'psjalalpurbhattian'
+            if district_name.lower() == 'attock' and assigned_ps == 'pscity':
+                assigned_ps = 'pscityattock'
+            if not officer_ps or not are_names_similar(officer_ps, assigned_ps) or not are_names_similar(designation_name,designation_from_username):
+                return jsonify({
+                    'status': False,
+                    'message': 'Authentication error: Police station mismatch'
+                }), 403
 
-            if extracted_ps_name != extracted_username_section:
-                return jsonify({'status': False, 'message': 'Authentication error: Designation mismatch'}), 403
+        elif designation_from_username == 'sdpo':
+            assigned_circle = user[3].split('.')[0].lower() + user[3].split('.')[1].lower() + ',' + user[7].lower()
+            officer_circle = officer[1].replace(' ','').lower()
 
-        elif any(designation in designation_name for designation in ["SSP", "SP"]):
-            extracted_district_code = username.split("@")[0].split(".")[-1].lower()
-            mapped_district = configs.district_code_mapping.get(extracted_district_code, "").lower()
+            if not officer_circle or not are_names_similar(assigned_circle,officer_circle):
+                return jsonify({
+                    'status': False,
+                    'message': 'Authentication error: Police Circle mismatch'
+                }), 403
 
-            if mapped_district != dst_name:
+        elif designation_from_username in ['dpo','cpo','ccpo']:
+            assigned_district = user[7].lower()
+
+            if not posting_district or not are_names_similar(posting_district,assigned_district):
+                return jsonify({
+                    'status': False,
+                    'message': 'Authentication error: Designated District mismatch'
+                }), 403
+
+        elif designation_from_username == 'rpo':
+            assigned_district = user[7].lower()
+
+            if not posting_district or not posting_district in assigned_district:
+                return jsonify({
+                    'status': False,
+                    'message': 'Authentication error: Designated Region mismatch'
+                }), 403
+
+        elif designation_from_username in ['sp', 'ssp']:
+            username_parts = user[3].split('@')[0].split('.')
+            if len(username_parts) < 3:
+                return jsonify({'status': False, 'message': 'Invalid username format'}), 400
+
+            # Validate section
+            section = ''.join(username_parts[1:-1]).lower()
+            designation_name_normalized = officer[1].replace(' ', '').lower()
+            if section not in designation_name_normalized:
+                return jsonify({'status': False, 'message': 'Authentication error: Section mismatch'}), 403
+
+            # Validate district
+            district_code = username_parts[-1].lower()
+            district_name = configs.district_code_mapping.get(district_code, "").lower()
+            assigned_district = user[7].lower()
+            if not assigned_district or not are_names_similar(district_name, assigned_district):
                 return jsonify({'status': False, 'message': 'Authentication error: District mismatch'}), 403
 
-        elif any(designation in designation_name for designation in ["DPO", "RPO", "CPO", "CCPO"]):
-            extracted_district_code = username.split("@")[0].split(".")[-1].lower()
-            mapped_district = configs.district_code_mapping.get(extracted_district_code, "").lower()
-
-            if mapped_district != dst_name:
-                return jsonify({'status': False, 'message': 'Authentication error: District mismatch'}), 403
-
-        elif designation_name.lower() == "sho":
-            # cleaned_ps_name_eng_normalized = clean_string(cleaned_ps_name_eng)
-            # assigned_ps_emergency_normalized = clean_string(assigned_ps_emergency)
-            # if cleaned_ps_name_eng_normalized != assigned_ps_emergency_normalized:
-            if assigned_ps_emergency == 'J.P. Bhattian':
-                assigned_ps_emergency = 'JALAL PUR BHATTIAN'
-            if not are_names_similar(cleaned_ps_name_eng, assigned_ps_emergency):
-                return jsonify({'status': False,
-                                'message': 'Authentication error: User is not assigned to this police station'}), 403
-
-        else:
-            return jsonify({'status': False, 'message': 'Authentication error: Invalid designation'}), 403
-
-        # Generate access token
+        # All validations passed, generate access token
         access_token = create_access_token(identity=username)
-
-        # Store access token in the database
         usersdb_cursor.execute("""
             UPDATE users
             SET access_token = %s
@@ -557,6 +590,7 @@ def login():
         """, (access_token, username))
         users_db_conn.commit()
 
+        # Return successful response
         return jsonify({
             'data': {
                 'username': user[3],
@@ -572,12 +606,15 @@ def login():
         }), 200
 
     except Exception as e:
+        # Log error and return server error response
         utils.log_to_pg_database(db_conn, db_cursor, "ERROR", traceback.format_exc(), request.remote_addr)
         return jsonify({
             'status': False,
-            'message': f'Internal server error, Please Try Again Later.'
+            'message': 'Internal server error, Please Try Again Later.'
         }), 500
+
     finally:
+        # Clean up database connections
         db_cursor.close()
         log_db_pool.putconn(db_conn)
         usersdb_cursor.close()
@@ -11930,7 +11967,7 @@ def prism_districtwise():
                 accepted_time,
                 lat,
                 long
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date >= %s AND date <= %s
             AND district_id IS NOT NULL
         """, (delta_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d')))
@@ -11967,12 +12004,12 @@ def prism_districtwise():
         """, (today.strftime('%Y-%m-%d'),))
         enmities_district_counts = processed_db_cursor.fetchall()
 
-        # District-wise counts for today from rising_crimes_v1
+        # District-wise counts for today from rising_crimes
         processed_db_cursor.execute("""
             SELECT
                 district_id,
                 COUNT(DISTINCT (level3_case_nature, police_station)) AS unique_combinations
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date = %s
             GROUP BY district_id
         """, (today.strftime('%Y-%m-%d'),))
@@ -12088,11 +12125,11 @@ def prism_districtwise():
         """, (last_month, today.strftime('%Y-%m-%d'), last_month, today.strftime('%Y-%m-%d')))
         repeated_cases_month = processed_db_cursor.fetchall()
 
-        # Add today's repeated cases to district_total_counts
-        for district_id, count in repeated_cases_today:
-            district_name = configs.DISTRICTS_DICTIONARY.get(int(district_id))
-            if district_name:
-                district_total_counts[district_name] += int(count)
+        # # Add today's repeated cases to district_total_counts
+        # for district_id, count in repeated_cases_today:
+        #     district_name = configs.DISTRICTS_DICTIONARY.get(int(district_id))
+        #     if district_name:
+        #         district_total_counts[district_name] += int(count)
 
         # Calculate total repeated cases for each time period
         total_repeated_today = sum(int(count) for _, count in repeated_cases_today)
@@ -12118,10 +12155,10 @@ def prism_districtwise():
                                     (last_month, today.strftime('%Y-%m-%d')))
         last_month_enimities = int(processed_db_cursor.fetchone()[0])
 
-        # Total counts for rising_crimes_v1 (only representative cases)
+        # Total counts for rising_crimes (only representative cases)
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date = %s
             AND case_number = ANY(%s)
         """, (today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
@@ -12129,7 +12166,7 @@ def prism_districtwise():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date BETWEEN %s AND %s
             AND case_number = ANY(%s)
         """, (last_week, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
@@ -12137,7 +12174,7 @@ def prism_districtwise():
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date BETWEEN %s AND %s
             AND case_number = ANY(%s)
         """, (last_month, today.strftime('%Y-%m-%d'), list(representative_case_numbers)))
@@ -12157,16 +12194,20 @@ def prism_districtwise():
         last_month_anomaly = int(processed_db_cursor.fetchone()[0])
 
         # Existing Step 5: Calculate total alerts (now including repeated cases)
-        total_alerts = int(total_enimities + total_rising + early_event_today + today_anomaly + total_repeated_today)
-        last_week_alerts = int(last_week_enimities + week_rising + early_event_week + last_week_anomaly + total_repeated_week)
-        last_month_alerts = int(last_month_enimities + month_rising + early_event_month + last_month_anomaly + total_repeated_month)
+        total_alerts = int(total_enimities + total_rising + early_event_today + today_anomaly) #  + total_repeated_today
+        last_week_alerts = int(last_week_enimities + week_rising + early_event_week + last_week_anomaly) #  + total_repeated_week
+        last_month_alerts = int(last_month_enimities + month_rising + early_event_month + last_month_anomaly) # + total_repeated_month
 
         # Existing Step 6: Construct response
         data = {
             'district_counts': district_counts_list,
             'total_alerts': total_alerts,
             'last_week_alerts': last_week_alerts,
-            'last_month_alerts': last_month_alerts
+            'last_month_alerts': last_month_alerts,
+            'old_enmities_count': total_enimities,
+            'rising_crimes_count': total_rising,
+            'early_warning_alert_count': early_event_today,
+            'anomaly_detection_count': today_anomaly #sum(count for _, count in anomaly_district_mapped_count)
         }
 
         response = {
@@ -12188,6 +12229,7 @@ def prism_districtwise():
         log_db_pool.putconn(log_db_conn)
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
 
 
 @app.route(f"{configs.PRISM['ENDPOINT']}/police_stations", methods=[configs.PRISM['METHOD']])
@@ -12237,7 +12279,7 @@ def prism_police_station():
         # Filter event_alert cases for the requested district
         event_alert_cases = event_alert_df[event_alert_df['district'] == district][['police_station']].drop_duplicates()
 
-        # Step 3: Fetch representative case numbers from rising_crimes_v1 (for total counts)
+        # Step 3: Fetch representative case numbers from rising_crimes (for total counts)
         processed_db_cursor.execute("""
             SELECT
                 caller_name,
@@ -12250,7 +12292,7 @@ def prism_police_station():
                 accepted_time,
                 lat,
                 long
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date >= %s AND date <= %s
             AND district_id = %s
         """, (delta_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d'), str(district_id)))
@@ -12297,16 +12339,19 @@ def prism_police_station():
         """, (today.strftime('%Y-%m-%d'), str(district)))
         enmities_cases = processed_db_cursor.fetchall()
 
-        # Fetch case details for today from rising_crimes_v1
+        # Fetch case details for today from rising_crimes
         processed_db_cursor.execute("""
             SELECT
                 police_station,
                 level3_case_nature,
                 case_number,
                 accepted_time,
-                percentage_increase
-            FROM rising_crimes_v1
+                percentage_change,
+                current_count,
+                previous_count
+            FROM rising_crimes
             WHERE date = %s AND district_id = %s
+            AND (current_count >= 5 OR previous_count >= 5)
         """, (today.strftime('%Y-%m-%d'), str(district_id)))
         rising_cases = processed_db_cursor.fetchall()
 
@@ -12317,7 +12362,7 @@ def prism_police_station():
                 level3_case_nature,
                 accepted_time,
                 caller_location
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE district_id = %s AND date >= %s
         """, (str(district_id), last_month))
         rising_peak_cases = processed_db_cursor.fetchall()
@@ -12463,8 +12508,15 @@ def prism_police_station():
                     police_station_natures[police_station].add(case_nature)
 
         # Process rising_crimes with peak_hour and high_risk_zone
-        for (police_station, case_nature, case_number, accepted_time, pct_increase) in rising_cases:
+        for (police_station, case_nature, case_number, accepted_time, pct_increase, cur_count, prev_count) in rising_cases:
             if police_station and case_nature:
+
+                cur_count = int(cur_count) if cur_count is not None else 0
+                prev_count = int(prev_count) if prev_count else 0
+
+                if cur_count < 5 and prev_count < 5:
+                    continue
+
                 if case_nature not in police_station_natures[police_station]:
                     peak_hour = peak_hours.get(police_station, {}).get(case_nature, "N/A")
                     high_risk_zone = high_risk_zones.get((police_station, case_nature), "N/A")
@@ -12475,7 +12527,9 @@ def prism_police_station():
                         "peak_hour": peak_hour,
                         "accepted_time": accepted_time,
                         "high_risk_zone": high_risk_zone,
-                        "percentage_increase" : round(pct_increase,2)
+                        "percentage_increase" : round(pct_increase,2),
+                        "current_count" : cur_count if cur_count is not None else 0,
+                        "previous_count" : prev_count if prev_count else 0
                     }
                     police_station_cases[police_station].append(case_dict)
                     police_station_natures[police_station].add(case_nature)
@@ -12530,20 +12584,20 @@ def prism_police_station():
 
                 child_case_list = [{"case_number": cn, "accepted_time": at} for cn, at in child_cases]
 
-                # Create a dictionary for the repeated case
-                repeated_case_dict = {
-                    "parent_case": {
-                        "case_number": case_number,
-                        "level3_case_nature": case_nature,
-                        "accepted_time": accepted_time
-                    },
-                    "child_cases": child_case_list,
-                    "event": "repeated_case",
-                    "description": f"This case has {child_count} repeated cases."
-                }
-
-                # Append to police_station_cases
-                police_station_cases[police_station].append(repeated_case_dict)
+                # # Create a dictionary for the repeated case
+                # repeated_case_dict = {
+                #     "parent_case": {
+                #         "case_number": case_number,
+                #         "level3_case_nature": case_nature,
+                #         "accepted_time": accepted_time
+                #     },
+                #     "child_cases": child_case_list,
+                #     "event": "repeated_case",
+                #     "description": f"This case has {child_count} repeated cases."
+                # }
+                #
+                # # Append to police_station_cases
+                # police_station_cases[police_station].append(repeated_case_dict)
 
         # Step 7: Total counts for found_old_enmities
         processed_db_cursor.execute("""
@@ -12567,27 +12621,30 @@ def prism_police_station():
         """, (last_month, today.strftime('%Y-%m-%d'), district))
         last_month_enmities = processed_db_cursor.fetchone()[0]
 
-        # Total counts for rising_crimes_v1 (only representative cases)
+        # Total counts for rising_crimes (only representative cases)
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date = %s AND district_id = %s
             AND case_number = ANY(%s)
+            AND (current_count >= 5 OR previous_count >= 5)
         """, (today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         total_rising = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date BETWEEN %s AND %s AND district_id = %s
             AND case_number = ANY(%s)
+            AND (current_count >= 5 OR previous_count >= 5)
         """, (last_week, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         week_rising = processed_db_cursor.fetchone()[0]
 
         processed_db_cursor.execute("""
             SELECT COUNT(*)
-            FROM rising_crimes_v1
+            FROM rising_crimes
             WHERE date BETWEEN %s AND %s AND district_id = %s
+            AND (current_count >= 5 OR previous_count >= 5)
             AND case_number = ANY(%s)
         """, (last_month, today.strftime('%Y-%m-%d'), str(district_id), list(representative_case_numbers)))
         month_rising = processed_db_cursor.fetchone()[0]
@@ -12647,9 +12704,30 @@ def prism_police_station():
         total_repeated_month = len(repeated_parents_month)
 
         # Step 5: Update total alerts with repeated case counts
-        total_alerts = total_enmities + total_rising + total_event_alerts + today_anomaly + total_repeated_today
-        last_week_alerts = last_week_enmities + week_rising + total_event_alerts + last_week_anomaly + total_repeated_week
-        last_month_alerts = last_month_enmities + month_rising + total_event_alerts + last_month_anomaly + total_repeated_month
+        total_alerts = total_enmities + total_rising + total_event_alerts + today_anomaly # + total_repeated_today
+        last_week_alerts = last_week_enmities + week_rising + total_event_alerts + last_week_anomaly # + total_repeated_week
+        last_month_alerts = last_month_enmities + month_rising + total_event_alerts + last_month_anomaly # + total_repeated_month
+
+        event_counts = {
+            'old_enmities_count': 0,
+            'rising_crimes_count': 0,
+            'early_warning_alert_count': 0,
+            'anomaly_detection_count': 0,
+            'repeated_cases_count': 0
+        }
+
+        for police_station, cases in police_station_cases.items():
+            for case in cases:
+                event = case['event']
+                if event == 'old_enmities':
+                    event_counts['old_enmities_count'] += 1
+                elif event == 'rising_crime_alert':
+                    event_counts['rising_crimes_count'] += 1
+                elif event == 'early_warning_alert':
+                    event_counts['early_warning_alert_count'] += 1
+                elif event == 'anomaly_detection':
+                    event_counts['anomaly_detection_count'] += 1
+
 
         # Step 9: Construct response
         data = {
@@ -12661,8 +12739,9 @@ def prism_police_station():
                 for police_station, cases in police_station_cases.items()
             ],
             'total_alerts': total_alerts,
-            'last_week_alerts': last_week_alerts,
-            'last_month_alerts': last_month_alerts
+            # 'last_week_alerts': last_week_alerts,
+            # 'last_month_alerts': last_month_alerts
+            'event_counts' : event_counts
         }
 
         response = {
