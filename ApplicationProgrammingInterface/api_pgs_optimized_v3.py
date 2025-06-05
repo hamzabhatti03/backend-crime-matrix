@@ -12351,7 +12351,7 @@ def prism_police_station():
                 previous_count
             FROM rising_crimes
             WHERE date = %s AND district_id = %s
-            AND (current_count >= 5 OR previous_count >= 5)
+            AND (current_count >= 7 OR previous_count >= 7)
         """, (today.strftime('%Y-%m-%d'), str(district_id)))
         rising_cases = processed_db_cursor.fetchall()
 
@@ -12514,7 +12514,7 @@ def prism_police_station():
                 cur_count = int(cur_count) if cur_count is not None else 0
                 prev_count = int(prev_count) if prev_count else 0
 
-                if cur_count < 5 and prev_count < 5:
+                if cur_count < 6 and prev_count < 6:
                     continue
 
                 if case_nature not in police_station_natures[police_station]:
