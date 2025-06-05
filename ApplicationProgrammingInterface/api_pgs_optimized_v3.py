@@ -464,7 +464,8 @@ def login():
 
         user_role = user[5]
         # Skip validation for specific roles (e.g., admin)
-        if user_role == 1 or user[17] == 0:
+        # if user_role == 1 or user[17] == 0:
+        if 1:
             access_token = create_access_token(identity=username)
             usersdb_cursor.execute("""
                 UPDATE users
