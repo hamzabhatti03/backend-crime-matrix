@@ -514,7 +514,12 @@ def login():
                 'message': 'Authentication error: Invalid district code in username'
             }), 403
 
-        # Validate district
+        if 'region' in posting_district.lower():  # Case-insensitive check
+            words = posting_district.split(' ')
+            if len(words) > 1 and words[-1].lower() == 'region':
+                posting_district = ' '.join(words[:-1])
+
+                # Validate district
         if not are_names_similar(district_name, posting_district):
             return jsonify({
                 'status': False,
@@ -555,9 +560,9 @@ def login():
                 }), 403
 
         elif designation_from_username == 'rpo':
-            assigned_district = user[7].lower()
+            assigned_district = user[16].lower()
 
-            if not posting_district or not posting_district in assigned_district:
+            if not posting_district or not are_names_similar(posting_district,assigned_district):
                 return jsonify({
                     'status': False,
                     'message': 'Authentication error: Designated Region mismatch'
@@ -12763,6 +12768,155 @@ def prism_police_station():
         log_db_pool.putconn(log_db_conn)
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
+
+
+@app.route(f"{configs.PSCA_COVERED_AREAS['ENDPOINT']}/report", methods=[configs.PSCA_COVERED_AREAS['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def psca_covered_areas():
+    """
+    API endpoint to generate a report with summary counts and details of not traced cases.
+    Expects 'from_date' and 'to_date' in YYYY-MM-DD format via POST request form data.
+    Returns a JSON response with summary statistics and a list of not traced case details.
+    """
+    # Initialize database connections and cursors
+    log_db_conn, log_db_cursor = get_log_pg_db_connection()
+    db_conn = None
+    db_cursor = None
+
+    try:
+        # Get database connection and cursor for the main database
+        db_conn = db_config.get_15_staging_db_connection()
+        db_cursor = db_conn.cursor()
+
+        # Extract date parameters from the request
+        from_date_str = request.form.get('from_date')
+        to_date_str = request.form.get('to_date')
+
+        # Validate that date parameters are provided
+        if not from_date_str or not to_date_str:
+            return jsonify({
+                'status': False,
+                'message': 'Missing from_date or to_date parameters'
+            }), 400
+
+        # Parse date strings into datetime objects
+        try:
+            from_date = datetime.strptime(from_date_str, '%Y-%m-%d')
+            to_date = datetime.strptime(to_date_str, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({
+                'status': False,
+                'message': 'Invalid date format. Use YYYY-MM-DD.'
+            }), 400
+
+        # Ensure from_date is not after to_date
+        if from_date > to_date:
+            return jsonify({
+                'status': False,
+                'message': 'from_date cannot be after to_date.'
+            }), 400
+
+        # convert to Unix epoch timestamps
+        from_date_with_time = datetime.strptime(f"{from_date_str} 00:00:00", '%Y-%m-%d %H:%M:%S')
+        to_date_with_time = datetime.strptime(f"{to_date_str} 23:59:59", '%Y-%m-%d %H:%M:%S')
+
+        from_timestamp = int(from_date_with_time.timestamp())
+        to_timestamp = int(to_date_with_time.timestamp())
+
+        # SQL query for counts
+        summary_query = """
+            SELECT
+                COALESCE(SUM(CASE WHEN l.is_coverage_area != 1 THEN 1 ELSE 0 END), 0) AS not_covered_count,
+                COALESCE(SUM(CASE WHEN l.is_coverage_area = 1 THEN 1 ELSE 0 END), 0) AS covered_count,
+                COALESCE(SUM(CASE WHEN l.is_coverage_area = 1 AND cac.status = 'Traced' THEN 1 ELSE 0 END), 0) AS traced_count,
+                COALESCE(SUM(CASE WHEN l.is_coverage_area = 1 AND cac.status = 'Not Traced' THEN 1 ELSE 0 END), 0) AS not_traced_count
+            FROM
+                leads_in AS l
+            LEFT JOIN
+                coverage_area_cases AS cac ON l.lead_id = cac.lead_id AND l.is_coverage_area = 1
+            WHERE
+                l.time_id BETWEEN %s AND %s
+        """
+        db_cursor.execute(summary_query, (from_timestamp, to_timestamp))
+        summary_row = db_cursor.fetchone()
+
+        # query for details of not traced cases
+        details_query = """
+            SELECT
+                l.case_number,
+                cac.status,
+                cac.reason,
+                l.police_station,
+                l.district
+            FROM
+                leads_in AS l
+            INNER JOIN
+                coverage_area_cases AS cac ON l.lead_id = cac.lead_id
+            WHERE
+                l.is_coverage_area = 1
+                AND cac.status = 'Not Traced'
+                AND l.time_id BETWEEN %s AND %s
+        """
+
+        db_cursor.execute(details_query, (from_timestamp, to_timestamp))
+        details_rows = db_cursor.fetchall()
+
+        summary_data = {
+            "not_covered_count": int(summary_row[0]) if summary_row[0] else 0,
+            "covered_count": int(summary_row[1]) if summary_row[1] else 0,
+            "traced_count": int(summary_row[2]) if summary_row[2] else 0,
+            "not_traced_count": int(summary_row[3]) if summary_row[3] else 0
+        }
+
+        not_traced_details = [
+            {
+                "lead_id": row[0],
+                "status": row[1],
+                "reason": row[2],
+                "police_station": row[3],
+                "district" : row[4]
+            } for row in details_rows
+        ]
+
+        data = {
+            'summary': summary_data,
+            'not_traced_details': not_traced_details
+        }
+
+        return jsonify({
+            'status': True,
+            'message': 'Report generated successfully',
+            'data' : data
+        }), 200
+
+    except Exception as e:
+        # Log the error to the database
+        utils.log_to_pg_database(
+            log_db_conn,
+            log_db_cursor,
+            "ERROR",
+            traceback.format_exc(),
+            request.remote_addr
+        )
+        # Return an error response
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error: {str(e)}'
+        }), 500
+
+    finally:
+        # Clean up database resources
+        if log_db_cursor:
+            log_db_cursor.close()
+        if log_db_conn:
+            log_db_pool.putconn(log_db_conn)
+        if db_cursor:
+            db_cursor.close()
+        if db_conn:
+            db_conn.close()
+
 
 if __name__ == '__main__':
     app.run(host=configs.HOST, port=5010, debug=False)  # configs.DEBUG_
