@@ -7327,11 +7327,14 @@ def combined_igp_metrics_api():
             # Multiple districts: Aggregate counts and average percentage_change
             query = """
                 WITH aggregated_metrics AS (
-                    SELECT 
+                    SELECT
                         metric_name,
                         COALESCE(SUM(current_count), 0) AS total_current,
                         COALESCE(SUM(previous_count), 0) AS total_previous,
-                        COALESCE(AVG(percentage_change) FILTER (WHERE percentage_change IS NOT NULL), NULL) AS avg_percentage_change
+                        CASE
+                            WHEN COALESCE(SUM(previous_count), 0) = 0 THEN NULL
+                            ELSE ((COALESCE(SUM(previous_count), 0) - COALESCE(SUM(current_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
+                        END AS overall_percentage_change
                     FROM igp_insights
                     WHERE period_type = %(period)s
                     AND district_id IN %(district_ids)s
@@ -7342,12 +7345,12 @@ def combined_igp_metrics_api():
                     GROUP BY metric_name
                 ),
                 ranked_districts AS (
-                    SELECT 
+                    SELECT
                         metric_name,
                         district_id,
                         percentage_change,
                         ROW_NUMBER() OVER (
-                            PARTITION BY metric_name 
+                            PARTITION BY metric_name
                             ORDER BY percentage_change DESC
                         ) AS rank
                     FROM igp_insights
@@ -7359,11 +7362,11 @@ def combined_igp_metrics_api():
                     AND previous_start_date = %(previous_start)s
                     AND previous_end_date = %(previous_end)s
                 )
-                SELECT 
+                SELECT
                     am.metric_name,
                     am.total_current,
                     am.total_previous,
-                    am.avg_percentage_change,
+                    am.overall_percentage_change,
                     rd.district_id,
                     rd.percentage_change
                 FROM aggregated_metrics am
@@ -7371,6 +7374,7 @@ def combined_igp_metrics_api():
                     ON am.metric_name = rd.metric_name
                     AND rd.rank <= 3
                 ORDER BY am.metric_name
+
             """
             params = {
                 'period': period,
@@ -7385,11 +7389,14 @@ def combined_igp_metrics_api():
             district_id = district_ids[0]
             query = """
                 WITH district_data AS (
-                    SELECT 
+                    SELECT
                         metric_name,
-                        COALESCE(current_count, 0) AS total_current,
-                        COALESCE(previous_count, 0) AS total_previous,
-                        percentage_change AS district_percentage_change
+                        COALESCE(SUM(current_count), 0) AS total_current,
+                        COALESCE(SUM(previous_count), 0) AS total_previous,
+                        CASE
+                            WHEN COALESCE(SUM(previous_count), 0) = 0 THEN NULL
+                            ELSE ((COALESCE(SUM(previous_count), 0) - COALESCE(SUM(current_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
+                        END AS district_percentage_change
                     FROM igp_insights
                     WHERE period_type = %(period)s
                     AND district_id = %(district_id)s
@@ -7397,14 +7404,15 @@ def combined_igp_metrics_api():
                     AND current_end_date = %(current_end)s
                     AND previous_start_date = %(previous_start)s
                     AND previous_end_date = %(previous_end)s
+                    GROUP BY metric_name
                 ),
                 ranked_police_stations AS (
-                    SELECT 
+                    SELECT
                         metric_name,
                         police_station,
                         percentage_change,
                         ROW_NUMBER() OVER (
-                            PARTITION BY metric_name 
+                            PARTITION BY metric_name
                             ORDER BY percentage_change DESC
                         ) AS rank
                     FROM igp_insights
@@ -7416,13 +7424,13 @@ def combined_igp_metrics_api():
                     AND previous_start_date = %(previous_start)s
                     AND previous_end_date = %(previous_end)s
                 )
-                SELECT 
+                SELECT
                     dd.metric_name,
                     dd.total_current,
                     dd.total_previous,
                     dd.district_percentage_change,
                     rps.police_station,
-                    rps.percentage_change
+                    rps.percentage_change AS police_station_percentage_change
                 FROM district_data dd
                 LEFT JOIN ranked_police_stations rps
                     ON dd.metric_name = rps.metric_name
@@ -11634,11 +11642,14 @@ def executive_summary():
         # Construct the SQL query based on multiple or single district
         if len(districts) > 1:
             query = """
-                SELECT 
+                SELECT
                     metric_name,
                     COALESCE(SUM(current_count), 0) AS total_current,
                     COALESCE(SUM(previous_count), 0) AS total_previous,
-                    COALESCE(AVG(percentage_change) FILTER (WHERE percentage_change IS NOT NULL), NULL) AS avg_percentage_change
+                    CASE
+                        WHEN COALESCE(SUM(previous_count), 0) = 0 THEN NULL
+                        ELSE ((COALESCE(SUM(previous_count), 0) - COALESCE(SUM(current_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
+                    END AS overall_percentage_change
                 FROM igp_insights
                 WHERE period_type = %(period)s
                 AND district_id IN %(district_ids)s
@@ -11661,11 +11672,14 @@ def executive_summary():
             # Single district: Get district-level data
             district_id = district_ids[0]
             query = """
-                SELECT 
+                SELECT
                     metric_name,
-                    COALESCE(current_count, 0) AS total_current,
-                    COALESCE(previous_count, 0) AS total_previous,
-                    percentage_change AS district_percentage_change
+                    COALESCE(SUM(current_count), 0) AS total_current,
+                    COALESCE(SUM(previous_count), 0) AS total_previous,
+                    CASE
+                        WHEN COALESCE(SUM(previous_count), 0) = 0 THEN NULL
+                        ELSE ((COALESCE(SUM(previous_count), 0) - COALESCE(SUM(current_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
+                    END AS overall_percentage_change
                 FROM igp_insights
                 WHERE period_type = %(period)s
                 AND district_id = %(district_id)s
@@ -11673,6 +11687,7 @@ def executive_summary():
                 AND current_end_date = %(current_end)s
                 AND previous_start_date = %(previous_start)s
                 AND previous_end_date = %(previous_end)s
+                GROUP BY metric_name
                 ORDER BY metric_name
             """
             params = {
