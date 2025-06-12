@@ -3023,7 +3023,7 @@ def punjab_case_details():
             """
             db_cursor.execute(responder_query, (responder_id,))
             result = db_cursor.fetchone()
-            responder_name = result[0].decode('utf-8')
+            responder_name = result[0].decode('utf-8') if isinstance(result[0], bytes) else result[0]
 
         # Query remarks (if applicable) or get assigned users list ---
         # Initialize variables that will be used in the response.
@@ -7333,7 +7333,7 @@ def combined_igp_metrics_api():
                         COALESCE(SUM(previous_count), 0) AS total_previous,
                         CASE
                             WHEN COALESCE(SUM(previous_count), 0) = 0 THEN NULL
-                            ELSE ((COALESCE(SUM(previous_count), 0) - COALESCE(SUM(current_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
+                            ELSE ((COALESCE(SUM(current_count), 0) - COALESCE(SUM(previous_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
                         END AS overall_percentage_change
                     FROM igp_insights
                     WHERE period_type = %(period)s
@@ -7395,7 +7395,7 @@ def combined_igp_metrics_api():
                         COALESCE(SUM(previous_count), 0) AS total_previous,
                         CASE
                             WHEN COALESCE(SUM(previous_count), 0) = 0 THEN NULL
-                            ELSE ((COALESCE(SUM(previous_count), 0) - COALESCE(SUM(current_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
+                            ELSE ((COALESCE(SUM(current_count), 0) - COALESCE(SUM(previous_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
                         END AS district_percentage_change
                     FROM igp_insights
                     WHERE period_type = %(period)s
@@ -11648,7 +11648,7 @@ def executive_summary():
                     COALESCE(SUM(previous_count), 0) AS total_previous,
                     CASE
                         WHEN COALESCE(SUM(previous_count), 0) = 0 THEN NULL
-                        ELSE ((COALESCE(SUM(previous_count), 0) - COALESCE(SUM(current_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
+                        ELSE ((COALESCE(SUM(current_count), 0) - COALESCE(SUM(previous_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
                     END AS overall_percentage_change
                 FROM igp_insights
                 WHERE period_type = %(period)s
@@ -11678,7 +11678,7 @@ def executive_summary():
                     COALESCE(SUM(previous_count), 0) AS total_previous,
                     CASE
                         WHEN COALESCE(SUM(previous_count), 0) = 0 THEN NULL
-                        ELSE ((COALESCE(SUM(previous_count), 0) - COALESCE(SUM(current_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
+                        ELSE ((COALESCE(SUM(current_count), 0) - COALESCE(SUM(previous_count), 0)) * 100.0 / COALESCE(SUM(previous_count), 0))
                     END AS overall_percentage_change
                 FROM igp_insights
                 WHERE period_type = %(period)s
@@ -11716,7 +11716,11 @@ def executive_summary():
                 percentage_change = float(avg_percentage_change) if avg_percentage_change is not None else None
             else:
                 metric_name, total_current, total_previous, district_percentage_change = row
-                percentage_change = float(district_percentage_change) if district_percentage_change is not None else None
+                percentage_change = float(
+                    district_percentage_change) if district_percentage_change is not None else None
+
+            # Format the metric name for display
+            formatted_metric_name = metric_name.replace('_', ' ').title()
 
             # Determine status
             if total_current > total_previous:
@@ -11726,21 +11730,22 @@ def executive_summary():
             else:
                 status = 'unchanged'
 
-            # Generate description
+            # Generate description using the formatted metric name
             if status == 'unchanged':
-                description = f'The number of {metric_name} remained the same at {total_current} in the most recent {period}.'
+                description = f'The number of {formatted_metric_name} remained the same at {total_current} in the most recent {period}.'
             else:
                 if percentage_change is not None:
-                    description = f'{abs(percentage_change):.1f}% {"increase" if status == "increased" else "decrease"} in {metric_name}.'
+                    description = f'{abs(percentage_change):.1f}% {"increase" if status == "increased" else "decrease"} in {formatted_metric_name}.'
                 else:
-                    description = f'{"increase" if status == "increased" else "decrease"} in {metric_name}.'
+                    description = f'{"Increase" if status == "increased" else "Decrease"} in {formatted_metric_name}.'
 
             metric_data[metric_name] = {
                 'total_current': total_current,
                 'total_previous': total_previous,
                 'percentage_change': percentage_change,
                 'status': status,
-                'description': description
+                'description': description,
+                'formatted_metric_name': formatted_metric_name  # Optionally store the formatted name in the dictionary
             }
 
         # Step 7: Populate the response
@@ -12145,11 +12150,11 @@ def prism_districtwise():
         """, (last_month, today.strftime('%Y-%m-%d'), last_month, today.strftime('%Y-%m-%d')))
         repeated_cases_month = processed_db_cursor.fetchall()
 
-        # # Add today's repeated cases to district_total_counts
-        # for district_id, count in repeated_cases_today:
-        #     district_name = configs.DISTRICTS_DICTIONARY.get(int(district_id))
-        #     if district_name:
-        #         district_total_counts[district_name] += int(count)
+        # Add today's repeated cases to district_total_counts
+        for district_id, count in repeated_cases_today:
+            district_name = configs.DISTRICTS_DICTIONARY.get(int(district_id))
+            if district_name:
+                district_total_counts[district_name] += int(count)
 
         # Calculate total repeated cases for each time period
         total_repeated_today = sum(int(count) for _, count in repeated_cases_today)
@@ -12214,7 +12219,7 @@ def prism_districtwise():
         last_month_anomaly = int(processed_db_cursor.fetchone()[0])
 
         # Existing Step 5: Calculate total alerts (now including repeated cases)
-        total_alerts = int(total_enimities + total_rising + early_event_today + today_anomaly) #  + total_repeated_today
+        total_alerts = int(total_enimities + total_rising + early_event_today + today_anomaly + total_repeated_today) #
         last_week_alerts = int(last_week_enimities + week_rising + early_event_week + last_week_anomaly) #  + total_repeated_week
         last_month_alerts = int(last_month_enimities + month_rising + early_event_month + last_month_anomaly) # + total_repeated_month
 
@@ -12226,6 +12231,7 @@ def prism_districtwise():
             'last_month_alerts': last_month_alerts,
             'old_enmities_count': total_enimities,
             'rising_crimes_count': total_rising,
+            'repeated_cases_count' : total_repeated_today,
             'early_warning_alert_count': early_event_today,
             'anomaly_detection_count': today_anomaly #sum(count for _, count in anomaly_district_mapped_count)
         }
@@ -12249,7 +12255,6 @@ def prism_districtwise():
         log_db_pool.putconn(log_db_conn)
         processed_db_cursor.close()
         postgresql_pool.putconn(processed_db_conn)
-
 
 
 @app.route(f"{configs.PRISM['ENDPOINT']}/police_stations", methods=[configs.PRISM['METHOD']])
@@ -12605,19 +12610,19 @@ def prism_police_station():
                 child_case_list = [{"case_number": cn, "accepted_time": at} for cn, at in child_cases]
 
                 # # Create a dictionary for the repeated case
-                # repeated_case_dict = {
-                #     "parent_case": {
-                #         "case_number": case_number,
-                #         "level3_case_nature": case_nature,
-                #         "accepted_time": accepted_time
-                #     },
-                #     "child_cases": child_case_list,
-                #     "event": "repeated_case",
-                #     "description": f"This case has {child_count} repeated cases."
-                # }
-                #
-                # # Append to police_station_cases
-                # police_station_cases[police_station].append(repeated_case_dict)
+                repeated_case_dict = {
+                    "parent_case": {
+                        "case_number": case_number,
+                        "level3_case_nature": case_nature,
+                        "accepted_time": accepted_time
+                    },
+                    "child_cases": child_case_list,
+                    "event": "repeated_case",
+                    "description": f"This case has {child_count} repeated cases."
+                }
+
+                # Append to police_station_cases
+                police_station_cases[police_station].append(repeated_case_dict)
 
         # Step 7: Total counts for found_old_enmities
         processed_db_cursor.execute("""
@@ -12724,7 +12729,7 @@ def prism_police_station():
         total_repeated_month = len(repeated_parents_month)
 
         # Step 5: Update total alerts with repeated case counts
-        total_alerts = total_enmities + total_rising + total_event_alerts + today_anomaly # + total_repeated_today
+        total_alerts = total_enmities + total_rising + total_event_alerts + today_anomaly + total_repeated_today #
         last_week_alerts = last_week_enmities + week_rising + total_event_alerts + last_week_anomaly # + total_repeated_week
         last_month_alerts = last_month_enmities + month_rising + total_event_alerts + last_month_anomaly # + total_repeated_month
 
@@ -12747,7 +12752,8 @@ def prism_police_station():
                     event_counts['early_warning_alert_count'] += 1
                 elif event == 'anomaly_detection':
                     event_counts['anomaly_detection_count'] += 1
-
+                elif event == 'repeated_case' :
+                    event_counts['repeated_cases_count'] += 1
 
         # Step 9: Construct response
         data = {
@@ -12931,6 +12937,127 @@ def psca_covered_areas():
             db_cursor.close()
         if db_conn:
             db_conn.close()
+
+
+@app.route(f"{configs.PSCA_COVERED_AREAS['ENDPOINT']}/districts", methods=[configs.PSCA_COVERED_AREAS['METHOD']])
+@limiter.limit(configs.LIMITER)
+@require_api_key
+@validate_ownership
+def psca_covered_areas_districts():
+    try:
+        log_db_conn, log_db_cursor = get_log_pg_db_connection()
+        processed_db_conn, processed_db_cursor = get_processed_db_connection()
+
+        from_date = request.form.get('fromDate', datetime.now().strftime(configs.YM_DATE))
+        to_date = request.form.get('toDate', datetime.now().strftime(configs.YM_DATE))
+        view_role = request.form.get('view_role', type=int)
+        district_str = request.form.get('district')
+        police_station_str = request.form.get('police_station')
+        is_covered = request.form.get('is_covered', type=int)
+
+        districts = district_str.split(",") if district_str else []
+        police_stations = police_station_str.split(",") if police_station_str else []
+
+        if not all([from_date, to_date, view_role,str(is_covered)]):
+            return jsonify({
+                'status': False,
+                'message': 'Missing required date parameters',
+                'data': None
+            }), 400
+
+        # Validate date format
+        try:
+            datetime.strptime(from_date, configs.YM_DATE)
+            datetime.strptime(to_date, configs.YM_DATE)
+        except ValueError:
+            return jsonify({
+                'status': False,
+                'message': 'Invalid date format. Use YYYY-MM-DD',
+                'data': None
+            }), 400
+
+        district_ids = []
+        if districts:
+            for district in districts:
+                if district in configs.REVERSED_DISTRICTS_DICTIONARY:
+                    district_ids.append(configs.REVERSED_DISTRICTS_DICTIONARY[district])
+                else:
+                    return jsonify({
+                        'status': False,
+                        'message': f"Invalid district name: {district}",
+                        'data': None
+                    }), 400
+
+        district_condition = ""
+        if view_role == 2 and len(district_ids) == 1:
+            # Special case for view_role 2 with a single district
+            district_condition = f"AND district_id = {district_ids[0]}"
+        elif (view_role == 3 or view_role == 4) and district_ids:
+            district_condition = f"AND district_id IN ({', '.join(map(str, district_ids))})"
+        elif view_role == 5 and district_ids:
+            district_condition = (
+                f"AND district_id IN ({', '.join(map(str, district_ids))}) "
+                f"AND police_station IN ({', '.join([repr(ps) for ps in police_stations])})"
+            )
+        # Query to get district-wise case counts
+        cases_query = """
+                SELECT
+                    district_id, 
+                    COUNT(*) AS total_cases
+                FROM 
+                    psca_coverage_cases
+                WHERE 
+                    district_id NOT IN ('0', '41', '42', '43', '44', '45')
+                    AND district_id IS NOT NULL
+                    AND date BETWEEN %s AND %s
+                    {district_condition}
+                    AND parent_id = 0
+                    AND response_time IS NOT NULL
+                    AND response_time > 0
+                    AND is_covered = %s
+                GROUP BY
+                    district_id;
+            """
+        cases_query = cases_query.format(district_condition=district_condition)
+        processed_db_cursor.execute(cases_query, (from_date, to_date, int(is_covered)))
+        cases_summary = processed_db_cursor.fetchall()
+
+        district_stats = {
+            configs.DISTRICTS_DICTIONARY.get(int(district_id)): count
+            for district_id, count in cases_summary
+        }
+
+        response = {
+            'status': True,
+            'message': 'District-wise PSCA covered/not-covered stats fetched successfully',
+            'data': district_stats
+        }
+
+        return jsonify(response), 200
+
+
+    except Exception as e:
+        # Log the error to the database
+        utils.log_to_pg_database(
+            log_db_conn,
+            log_db_cursor,
+            "ERROR",
+            traceback.format_exc(),
+            request.remote_addr
+        )
+        # Return an error response
+        return jsonify({
+            'status': False,
+            'message': f'Internal server error: {str(e)}'
+        }), 500
+
+    finally:
+        # Clean up database resources
+        if log_db_cursor:
+            log_db_cursor.close()
+        if log_db_conn:
+            log_db_pool.putconn(log_db_conn)
+
 
 
 if __name__ == '__main__':
