@@ -3024,7 +3024,7 @@ def punjab_case_details():
             """
             db_cursor.execute(responder_query, (responder_id,))
             result = db_cursor.fetchone()
-            responder_name = result[0].decode('utf-8')
+            responder_name = result[0].decode('utf-8') if isinstance(result[0], bytes) else result[0]
 
         # Query remarks (if applicable) or get assigned users list ---
         # Initialize variables that will be used in the response.
